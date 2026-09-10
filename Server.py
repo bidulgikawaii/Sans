@@ -12,6 +12,7 @@ from Config import (
     STEALTH_DURATION_MS,
 )
 from Weapon import WEAPONS
+from Lobby import LobbyState
 import random
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -26,6 +27,7 @@ next_bullet_event_id = 1
 destroyed_treasures = set()
 player_count = 0
 next_player_id = 1
+lobby = LobbyState()
 
 
 def update_player_count(delta):
@@ -76,6 +78,13 @@ def handle_client(conn, player_id):
 
             client_data = pickle.loads(data)
 
+            if client_data.get("type") == "lobby_join":
+                with player_lock:
+                    lobby.join(player_id, client_data.get("mode"))
+                    lobby_status = lobby.status()
+                conn.sendall(pickle.dumps(lobby_status))
+                continue
+
             for treasure in client_data.get("destroyed_treasures", []):
                 if len(treasure) == 2:
                     destroyed_treasures.add((int(treasure[0]), int(treasure[1])))
@@ -116,7 +125,14 @@ def handle_client(conn, player_id):
 
 
             # 4. 현재 접속한 모든 유저들의 데이터를 통째로 패킹해서 응답
-            snapshot = pickle.loads(pickle.dumps(players))
+            with player_lock:
+                active_ids = lobby.active_player_ids()
+                active_players = {
+                    active_id: players[active_id]
+                    for active_id in active_ids
+                    if active_id in players
+                }
+            snapshot = pickle.loads(pickle.dumps(active_players))
             pending_bullets = [
                 bullet for bullet in bullet_events
                 if bullet["event_id"] > last_sent_bullet_event_id
@@ -132,8 +148,9 @@ def handle_client(conn, player_id):
     finally:
         print(f"[퇴장] 플레이어 {player_id}번 접속 종료")
 
-        if player_id in players:
-            del players[player_id]
+        with player_lock:
+            players.pop(player_id, None)
+            lobby.leave(player_id)
 
         current_count = update_player_count(-1)
         print(f"[카운트] 현재 접속 인원: {current_count}")

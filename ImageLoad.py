@@ -1,8 +1,8 @@
 import os
 import re
 import pygame
-from Config import PISTOL_IMAGE_SIZE, SKILL_ICON_SIZE
-
+from Config import MAIN_SCREEN_IMAGE_SIZES, PISTOL_IMAGE_SIZE, SKILL_ICON_SIZE
+from pathlib import Path
 
 class Imageload():
     def __init__(self):
@@ -13,6 +13,8 @@ class Imageload():
         self.Pistol = self._load_image("pistol_idle_transparent.png")
         if self.Pistol:
             self.Pistol = pygame.transform.smoothscale(self.Pistol, PISTOL_IMAGE_SIZE)
+        self.PistolFire = self._load_scaled_image("pistol_fire_transparent.png", PISTOL_IMAGE_SIZE)
+        self.PistolSmoke = self._load_scaled_image("pistol_smoke_transparent.png", PISTOL_IMAGE_SIZE)
         self.HBlade = self._load_animation("H_blade")
         self.Expo = self._load_animation("Expo")
         
@@ -36,6 +38,37 @@ class Imageload():
 
         self.SkillWindow = pygame.image.load(os.path.join(current_dir,"Image","SkillWindow.png")).convert_alpha()
         self.QuickSlot = pygame.image.load(os.path.join(current_dir, "Image", "QuickSlot.png")).convert_alpha()
+        self.TanChang = pygame.image.load(
+            os.path.join(current_dir, "Image", "Tanchang.png")
+        ).convert_alpha()
+
+        self.TitleImages = []
+        
+        
+        # 1. Pygame 초기화
+    
+
+        # 2. 이미지가 저장된 폴더 설정
+        image_dir = Path(current_dir) / "Image" / "MainScreen"
+
+        # 3. 이미지들을 담을 딕셔너리 생성
+        self.TitleImages = {}
+
+        # 4. 지원할 이미지 확장자 정의
+        valid_extensions = {".png"}
+
+        # rglob("*")을 사용하면 하위 폴더의 모든 파일까지 탐색합니다.
+        for file_path in image_dir.rglob("*"):
+            # 파일의 확장자가 이미지 형식인지 확인
+            if file_path.suffix.lower() in valid_extensions:
+                # 파일 이름(확장자 제외)을 키(Key)로 사용하여 Pygame 이미지 로드
+                # 예: images/player.png -> 'player'
+                image = pygame.image.load(str(file_path)).convert_alpha()
+                image_size = MAIN_SCREEN_IMAGE_SIZES.get(file_path.stem)
+                if image_size:
+                    image = pygame.transform.smoothscale(image, image_size)
+                self.TitleImages[file_path.stem] = image
+        # [확인용] 로드된 이미지 목록 출
         
         # ===== 스킬 아이콘 이미지 로드 =====
         self.skill_icons = {}
@@ -45,7 +78,7 @@ class Imageload():
         ]
 
 
-    
+
         
         for skill_name, skill_file in zip(skill_names, skill_files):
             try:
@@ -72,6 +105,12 @@ class Imageload():
         if not os.path.exists(path):
             return None
         return pygame.transform.smoothscale(pygame.image.load(path).convert_alpha(), (64, 64))
+
+    def _load_scaled_image(self, filename, size):
+        path = os.path.join(os.path.dirname(self.player_path), filename)
+        if not os.path.exists(path):
+            return None
+        return pygame.transform.smoothscale(pygame.image.load(path).convert_alpha(), size)
     def _load_animation(self, prefix):
         image_dir = os.path.dirname(self.player_path)
         filenames = [
@@ -86,6 +125,13 @@ class Imageload():
         filenames.sort(key=lambda filename: int(re.search(r"\((\d+)\)", filename).group(1)))
         return [self._load_image(filename) for filename in filenames]
 
+
+    def GetTitles(self):
+        return self.TitleImages
+
+    def GetTitiles(self):
+        """기존 호출부 호환을 위한 오탈자 메서드 별칭입니다."""
+        return self.GetTitles()
     # 2. 이미 크기가 줄어든 상태이므로 원본을 바로 리턴하면 됩니다.
     def GetShotGun(self, index=0):
         # index 인자를 주면 ShotGun[0]뿐만 아니라 다른 프레임(1~7)도 가져올 수 있어 확장성에 좋습니다.
@@ -96,6 +142,12 @@ class Imageload():
 
     def GetPistol(self):
         return self.Pistol
+
+    def GetPistolFire(self):
+        return self.PistolFire
+
+    def GetPistolSmoke(self):
+        return self.PistolSmoke
 
     def GetBladeFrames(self):
         return self.HBlade

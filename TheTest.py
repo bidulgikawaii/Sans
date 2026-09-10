@@ -14,18 +14,33 @@ from Tool_Cordinate import *
 from SkillAndSlot import *
 from Weapon import WeaponState, WEAPONS, WEAPON_KEYS
 from Effects import ParticleSystem
+from MainScreen import MainScreenRenderer
+from GameRendering import (
+    draw_ammo_status,
+    draw_health_bar,
+    draw_local_aim_ray,
+    draw_quick_slot_cooldowns,
+    draw_teleport_anchor,
+    draw_visibility_geometry,
+)
+from GameAudio import load_effect_sound, play_effect_sound
 
 pygame.init()
 pygame.display.set_caption("전설적인 게임")
 display = pygame.display.set_mode((ScreenX, ScreenY), 0, 32)
 clock = pygame.time.Clock()
 ScreenState = "MainView"
+selected_game_mode = GAME_MODE_NORMAL
+lobby_status = {
+    "count": 0,
+    "max_players": MAX_PLAYERS,
+    "mode": GAME_MODE_NORMAL,
+    "started": False,
+}
+last_lobby_request_at = 0
 # [커스텀 가능] 게임 전체에서 사용할 기본 폰트입니다. 서체와 크기를 여기서 조정합니다.
-GuiFont = pygame.font.Font(
-    os.path.join(
-        os.path.dirname(
-            os.path.abspath(__file__)
-            ),"Font","HeirofLightRegular.ttf"
+GuiFont = pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__)
+        ),"Font","HeirofLightRegular.ttf"
             ), 30)
 
 
@@ -40,8 +55,9 @@ my_id = init_data["init_id"]
 print(f"내 아이디:{my_id}번 입니다.")
 
 
-map = random.seed(init_data["seed"])  # 시드 고정
+random.seed(init_data["seed"])
 IML = Imageload()
+main_screen = MainScreenRenderer(display, IML.GetTitles(), GuiFont, (ScreenX, ScreenY))
 set_ui_assets(IML.SkillWindow, IML.QuickSlot)
 set_image_loader(IML)  # SkillAndSlot에 이미지 로더 전달
 TileGene = TileGenerator()
@@ -118,98 +134,13 @@ vision_overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
 # 방향과 모양이 크게 바뀔 때만 시야 폴리곤을 다시 계산합니다.
 visibility_polygon_cache = {}
 mouse_fire_hold = False
+aim_lock_until = 0
+aim_locked_pos = None
+weapon_fire_until = 0
+weapon_smoke_until = 0
 preserve_magazine_after_chest = False
 teleport_anchor = None
 teleport_anchor_expires_at = 0
-
-def draw_visibility_geometry(surface, geometry, camera_x, camera_y, zoom):
-    """시야 부분을 마스크에서 투명하게 뚫습니다."""
-    if geometry.is_empty:
-        return
-    polygons = geometry.geoms if geometry.geom_type == "MultiPolygon" else (geometry,)
-    for polygon in polygons:
-        points = [
-            ((world_x - camera_x) * zoom, (world_y - camera_y) * zoom)
-            for world_x, world_y in polygon.exterior.coords
-        ]
-        if len(points) >= 3:
-            pygame.draw.polygon(surface, (0, 0, 0, 0), points)
-
-
-def get_aim_ray_endpoint(origin_x, origin_y, angle_degrees):
-    """로컬 플레이어의 조준 ray가 벽에 닿는 월드 좌표를 계산합니다."""
-    angle = math.radians(angle_degrees)
-    step = max(4, TileGene.tile_size // 4)
-    last_x, last_y = origin_x, origin_y
-    for distance in range(step, BULLET_TARGET_DISTANCE + step, step):
-        ray_x = origin_x + math.cos(angle) * distance
-        ray_y = origin_y + math.sin(angle) * distance
-        ray_rect = pygame.Rect(round(ray_x) - 2, round(ray_y) - 2, 4, 4)
-        if TileGene.check_wall_collision(ray_rect):
-            return last_x, last_y
-        last_x, last_y = ray_x, ray_y
-    return last_x, last_y
-
-
-def draw_local_aim_ray(surface, start_x, start_y, angle_degrees):
-    """현재 클라이언트의 조준선만 그립니다."""
-    end_x, end_y = get_aim_ray_endpoint(
-        (start_x + CameraPosX) / camera_zoom,
-        (start_y + CameraPosY) / camera_zoom,
-        angle_degrees,
-    )
-    end_screen = world_to_screen(end_x, end_y, CameraPosX, CameraPosY, camera_zoom)
-    pygame.draw.line(
-        surface,
-        (255, 0, 0),
-        (round(start_x), round(start_y)),
-        (round(end_screen[0]), round(end_screen[1])),
-        max(1, round(2 * camera_zoom)),
-    )
-
-
-def draw_teleport_anchor(surface, anchor_x, anchor_y):
-    """설치된 텔포석상을 로컬 화면에 지속적으로 표시합니다."""
-    screen_x, screen_y = world_to_screen(anchor_x, anchor_y, CameraPosX, CameraPosY, camera_zoom)
-    center = (round(screen_x), round(screen_y))
-    width = max(8, round(18 * camera_zoom))
-    height = max(16, round(48 * camera_zoom))
-    pygame.draw.ellipse(
-        surface,
-        (100, 255, 150),
-        (center[0] - width, center[1] + height // 3, width * 2, max(4, height // 3)),
-        2,
-    )
-    pygame.draw.polygon(
-        surface,
-        (150, 255, 180),
-        [
-            (center[0], center[1] - height),
-            (center[0] - width, center[1] + height // 3),
-            (center[0] + width, center[1] + height // 3),
-        ],
-        2,
-    )
-    pygame.draw.circle(surface, (220, 255, 220), center, max(3, round(6 * camera_zoom)), 2)
-
-def load_effect_sound(filename):
-    """효과음 파일이 아직 없어도 게임이 실행되도록 선택적으로 로드합니다."""
-    sound_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Sound", filename)
-    try:
-        return pygame.mixer.Sound(sound_path)
-    except (pygame.error, OSError) as error:
-        print(f"[사운드 로드 실패] {filename}: {error}")
-        return None
-
-
-def play_effect_sound(sound, filename):
-    if sound is None:
-        return
-    try:
-        sound.play()
-    except pygame.error as error:
-        print(f"[사운드 재생 실패] {filename}: {error}")
-
 
 def spawn_supply_drop(now):
     """안전한 바닥 타일에 보급품을 하나 생성합니다."""
@@ -282,91 +213,80 @@ inventory_open = False
 weapon_state = WeaponState()
 vision_shape_override = None
 
-def draw_ui_gauge(surface, x, y, current_val, max_val):
-    """투명 중앙이 뚫린 HP 프레임 안쪽에 HP 게이지를 그립니다."""
-    
-    frame_width, frame_height = HpBarFrame.get_size()
-    ratio = max(0, min(current_val, max_val)) / max(1, max_val)
-
-    global hp_color
-    # HpBar.png의 중앙 투명 영역 비율에 맞춘 내부 게이지 영역
-    inner_x = int(frame_width * 0.11)
-    inner_y = int(frame_height * 0.34)
-    inner_width = int(frame_width * 0.78)
-    inner_height = int(frame_height * 0.27)
-    
-    inner_rect = pygame.Rect(x + inner_x, y + inner_y, inner_width, inner_height)
-
-    # 1. 배경 사각형 그리기 (피가 달았을 때 비어있는 공간을 나타낼 어두운 색)
-    bg_color = pygame.Color("gray20")  # 어두운 회색 (또는 (40, 40, 40))
-    pygame.draw.rect(surface, bg_color, inner_rect)
-
-    # 2. 체력 비율에 따른 게이지 색상 결정 (인자 fill_color 대신 실시간 계산)
-    health_ratio = current_val / max(1, max_val)
-    if health_ratio >= HEALTH_GREEN_THRESHOLD:
-        hp_color = pygame.Color("green")
-    elif health_ratio >= HEALTH_YELLOW_THRESHOLD:
-        hp_color = pygame.Color("yellow")
-    else:
-        hp_color = pygame.Color("red")
-        
-    # 3. 현재 체력만큼 게이지 채워 그리기
-    fill_rect = inner_rect.copy()
-    fill_rect.width = int(inner_rect.width * ratio)
-    
-    if fill_rect.width > 0:
-        pygame.draw.rect(surface, hp_color, fill_rect)
-
-    # 4. 중앙 게이지 위에 테두리 이미지를 올려 프레임이 게이지를 감쌉니다.
-    surface.blit(HpBarFrame, (x, y))
-
-
-def draw_ammo_status(surface):
-    """현재 무기와 탄창/예비 탄약을 화면 오른쪽 아래에 표시합니다."""
-    config = weapon_state.config
-    # [커스텀 가능] 탄약 표시 폰트: 서체("malgungothic"), 크기(24)
-    ammo_font = GuiFont
-    name_text = ammo_font.render(config.name, True, (255, 220, 120))
-    if weapon_state.is_reloading_now():
-        ammo_text = ammo_font.render("재장전 중...", True, (255, 180, 120))
-    else:
-        ammo_text = ammo_font.render(weapon_state.ammo_text(), True, (255, 255, 255))
-    surface.blit(name_text, (ScreenX - 210, ScreenY - 72))
-    surface.blit(ammo_text, (ScreenX - 80, ScreenY - 72))
-
-
-def draw_quick_slot_cooldowns(surface):
-    """스킬 쿨타임을 각 슬롯에 표시합니다."""
-    now = pygame.time.get_ticks()
-    for slot in quick_slots:
-        if not slot.assigned_skill:
-            continue
-        end_time = skill_cooldowns.get(slot.assigned_skill, 0)
-        if end_time <= now:
-            continue
-        remain = max(0.0, (end_time - now) / 1000.0)
-        overlay = pygame.Surface((slot.rect.width, slot.rect.height), pygame.SRCALPHA)
-        pygame.draw.rect(overlay, (0, 0, 0, 170), overlay.get_rect(), border_radius=8)
-        surface.blit(overlay, slot.rect.topleft)
-        # [커스텀 가능] 쿨타임 표시 폰트: 서체("malgungothic"), 크기(14)
-        text = GuiFont.render(f"{remain:.1f}s", True, (255, 255, 255))
-        surface.blit(text, (slot.rect.centerx - text.get_width() / 2, slot.rect.centery - 8))
-
-
 def MainView():
-    global running, ScreenState
-    # [커스텀 가능] 메인 화면 타이틀 (GuiFont는 기본 폰트)
-    gf = GuiFont.render("안녕하살법 전설적인 테스트", 1, pygame.Color("White"))
-    display.blit(gf, (20, 20))
+    global running, ScreenState, selected_game_mode
+    button_rects = main_screen.draw_main()
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
-        if event.type == pygame.KEYDOWN:
+        elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 running = False
             if event.key == pygame.K_SPACE:
-                ScreenState = "GameView"
+                ScreenState = "ModeSelectView"
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if button_rects["start"].collidepoint(event.pos):
+                ScreenState = "ModeSelectView"
+            elif button_rects["debug"].collidepoint(event.pos):
+                selected_game_mode = GAME_MODE_DEBUG
+                ScreenState = "LoadingView"
+            elif button_rects["exit"].collidepoint(event.pos):
+                running = False
+
+
+def ModeSelectView():
+    global running, ScreenState, selected_game_mode
+    button_rects = main_screen.draw_mode_select()
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                ScreenState = "MainView"
+            elif event.key == pygame.K_1:
+                selected_game_mode = GAME_MODE_NORMAL
+                ScreenState = "LoadingView"
+            elif event.key == pygame.K_2:
+                selected_game_mode = GAME_MODE_DEBUG
+                ScreenState = "LoadingView"
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if button_rects["normal"].collidepoint(event.pos):
+                selected_game_mode = GAME_MODE_NORMAL
+                ScreenState = "LoadingView"
+            elif button_rects["debug"].collidepoint(event.pos):
+                selected_game_mode = GAME_MODE_DEBUG
+                ScreenState = "LoadingView"
+            elif button_rects["back"].collidepoint(event.pos):
+                ScreenState = "MainView"
+
+
+def LoadingView():
+    global running, ScreenState, lobby_status, last_lobby_request_at
+    now = pygame.time.get_ticks()
+    if now - last_lobby_request_at >= 100:
+        client.sendall(pickle.dumps({"type": "lobby_join", "mode": selected_game_mode}))
+        response = pickle.loads(client.recv(4096))
+        if response.get("type") == "lobby_status":
+            lobby_status = response
+        last_lobby_request_at = now
+
+    main_screen.draw_loading(
+        lobby_status,
+        selected_game_mode,
+        MAX_PLAYERS,
+        GAME_MODE_DEBUG,
+    )
+
+    if lobby_status.get("started"):
+        ScreenState = "GameView"
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            ScreenState = "ModeSelectView"
 
 
 def GameOverView():
@@ -594,7 +514,8 @@ def fire_knife():
 
 
 def fire_bullet():
-    global bullets, screen_shake, system_message
+    global bullets, screen_shake, system_message, aim_lock_until, aim_locked_pos
+    global weapon_fire_until, weapon_smoke_until
     config = weapon_state.config
 
     if weapon_state.is_reloading_now():
@@ -636,6 +557,11 @@ def fire_bullet():
     muzzle_x = center_x + math.cos(base_angle) * 40
     muzzle_y = center_y + math.sin(base_angle) * 40
     weapon_state.consume_round()
+    aim_locked_pos = current_mouse_pos
+    aim_lock_until = pygame.time.get_ticks() + 500
+    animation_started_at = pygame.time.get_ticks()
+    weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
+    weapon_smoke_until = animation_started_at + WEAPON_SMOKE_ANIMATION_MS
     screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + int(config.recoil * 2))
     particles.emit(muzzle_x, muzzle_y, (255, 220, 100), count=10, speed=70, lifetime=220, size=4)
 
@@ -733,6 +659,7 @@ def GameView():
     global vision_shape_override, vision_skill_until, shield_until, haste_until
     global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys
     global visibility_polygon_cache, mouse_fire_hold, last_effect_tick, preserve_magazine_after_chest
+    global aim_lock_until, aim_locked_pos, weapon_fire_until
     global teleport_anchor, teleport_anchor_expires_at
 
     MousePos = pygame.mouse.get_pos()
@@ -746,10 +673,14 @@ def GameView():
         skill_cooldowns["텔포"] = now + TELEPORT_COOLDOWN_MS
         system_message = "텔포석상이 사라졌습니다. 15초 후 다시 사용할 수 있습니다."
     handle_game_events()
-    Weapon_Pos = pygame.mouse.get_pos()
 
     if mouse_fire_hold and weapon_state.config.automatic and weapon_state.can_fire():
         fire_bullet()
+
+    if now < aim_lock_until and aim_locked_pos is not None:
+        Weapon_Pos = aim_locked_pos
+    else:
+        Weapon_Pos = pygame.mouse.get_pos()
 
     my_player.handle_input()
     weapon_state.update_reload()
@@ -909,7 +840,12 @@ def GameView():
     player_center_screen_x, player_center_screen_y = get_player_screen_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height(), CameraPosX, CameraPosY, camera_zoom)
 
     Weapon_Angle = Tool.GetAtn2Angle_Degrees((player_center_screen_x, player_center_screen_y), Weapon_Pos)
-    weapon_image = IML.GetPistol() if weapon_state.weapon_id == "pistol" else IML.GetShotGun()
+    if weapon_state.weapon_id == "pistol" and now < weapon_fire_until and IML.GetPistolFire():
+        weapon_image = IML.GetPistolFire()
+    elif weapon_state.weapon_id == "pistol" and now < weapon_smoke_until and IML.GetPistolSmoke():
+        weapon_image = IML.GetPistolSmoke()
+    else:
+        weapon_image = IML.GetPistol() if weapon_state.weapon_id == "pistol" else IML.GetShotGun()
     weapon_image = weapon_image or IML.GetShotGun()
     if weapon_state.weapon_id == "pistol":
         weapon_image = pygame.transform.flip(weapon_image, True, False)
@@ -925,9 +861,9 @@ def GameView():
     # 같은 프레임에서 같은 대상은 한 번만 벽 가림을 계산합니다.
     visibility_cache = {}
 
-    def is_visible(point_x, point_y):
+    def is_visible(point_x, point_y, fov_bonus=0):
         """다른 플레이어가 현재 시야 안에 있는지 확인합니다."""
-        point = (point_x, point_y)
+        point = (point_x, point_y, fov_bonus)
         if point not in visibility_cache:
             visibility_cache[point] = TileGene.is_point_visible_from(
                 player_world_x,
@@ -937,7 +873,7 @@ def GameView():
                 current_vision.vision_radius,
                 vision_shape=current_vision_shape,
                 direction_angle=Weapon_Angle,
-                fov_angle=current_vision.vision_fov,
+                fov_angle=current_vision.vision_fov + fov_bonus,
                 vision_width=current_vision.vision_width,
             )
         return visibility_cache[point]
@@ -1048,7 +984,12 @@ def GameView():
         if p_info.get("stealth", False) and not (p_info.get("in_bush", False) and close_to_bush):
             continue
 
-        if not is_visible(other_world_x, other_world_y):
+        bush_fov_bonus = (
+            BUSH_VISION_FOV_BONUS
+            if p_info.get("in_bush", False) and close_to_bush
+            else 0
+        )
+        if not is_visible(other_world_x, other_world_y, bush_fov_bonus):
             continue
 
         other_screen_x, other_screen_y = world_to_screen(p_info["posX"], p_info["posY"], CameraPosX, CameraPosY, camera_zoom)
@@ -1070,9 +1011,9 @@ def GameView():
         display.blit(other_rotated_gun, other_gun_rect)
 
     # 내 캐릭터 및 무기 그리기
-    if now < stealth_until:
+    if now < stealth_until or in_bush:
         stealth_image = my_player.image.copy()
-        stealth_image.set_alpha(75)
+        stealth_image.set_alpha(75 if now < stealth_until else 145)
         display.blit(
             stealth_image,
             ((my_player.rect.x - CameraPosX) * camera_zoom,
@@ -1151,7 +1092,17 @@ def GameView():
     display.blit(dark_overlay, (0, 0))
 
     # 조준선은 로컬 화면에만 그리므로 다른 플레이어에게 동기화되지 않습니다.
-    draw_local_aim_ray(display, player_center_screen_x, player_center_screen_y, Weapon_Angle)
+    draw_local_aim_ray(
+        display,
+        player_center_screen_x,
+        player_center_screen_y,
+        Weapon_Angle,
+        CameraPosX,
+        CameraPosY,
+        camera_zoom,
+        TileGene,
+        BULLET_TARGET_DISTANCE,
+    )
 
     # 시야 밖에 있어도 총알은 항상 보이도록 최종 레이어에서 다시 그립니다.
     for bullet in bullets:
@@ -1213,7 +1164,13 @@ def GameView():
     particles.draw(display, CameraPosX, CameraPosY, camera_zoom)
 
     if teleport_anchor is not None:
-        draw_teleport_anchor(display, *teleport_anchor)
+        draw_teleport_anchor(
+            display,
+            *teleport_anchor,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+        )
 
     if shield_until > pygame.time.get_ticks():
         shield_center = get_player_screen_center(
@@ -1238,7 +1195,16 @@ def GameView():
     # =================================================================
     ui_x = 30
     ui_y = 80  
-    draw_ui_gauge(display, ui_x, ui_y, my_player.Hp, my_player.MaxHp)
+    draw_health_bar(
+        display,
+        ui_x,
+        ui_y,
+        my_player.Hp,
+        my_player.MaxHp,
+        HpBarFrame,
+        HP_FRAME_SIZE,
+        (HEALTH_GREEN_THRESHOLD, HEALTH_YELLOW_THRESHOLD),
+    )
     
     # [커스텀 가능] HP 텍스트 표시 폰트 (GuiFont 사용)
     hp_text = GuiFont.render(f"HP: {my_player.Hp} / {my_player.MaxHp}", True, (255, 255, 255))
@@ -1257,8 +1223,17 @@ def GameView():
         slot.update(MousePos)  # 호버 상태 업데이트
         slot.draw(display)
 
-    draw_quick_slot_cooldowns(display)
-    draw_ammo_status(display)
+    draw_quick_slot_cooldowns(display, quick_slots, skill_cooldowns, GuiFont)
+    draw_ammo_status(
+        display,
+        weapon_state,
+        GuiFont,
+        ScreenX,
+        ScreenY,
+        IML.TanChang,
+        AMMO_PANEL_SIZE,
+        AMMO_PANEL_MARGIN,
+    )
     
     # ★ [추가] 스킬 툴팁 그리기 (마우스 raycast 무시 - 드래그 중이 아닐 때만)
     if hovered_skill and dragging_skill is None:
@@ -1288,6 +1263,10 @@ while running:
     display.fill((0,0,0))
     if ScreenState == "MainView":
         MainView()
+    elif ScreenState == "ModeSelectView":
+        ModeSelectView()
+    elif ScreenState == "LoadingView":
+        LoadingView()
     elif ScreenState == "GameView":
         GameView()
     elif ScreenState == "GameOver":

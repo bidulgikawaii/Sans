@@ -9,6 +9,9 @@ from Config import (
     MAP_SAFE_ZONE_MAX,
     MAP_SAFE_ZONE_MIN,
     MAP_BUSH_COUNT,
+    MAP_BUSH_CLUSTER_COUNT,
+    MAP_BUSH_CLUSTER_RADIUS_MIN,
+    MAP_BUSH_CLUSTER_RADIUS_MAX,
     MAP_TREASURE_CHANCE,
 )
 from shapely.geometry import Polygon
@@ -212,17 +215,34 @@ class TileGenerator:
         self._vision_wall_rects = None
 
     def _place_bushes(self):
-        """집과 외곽 벽을 피해 맵 곳곳에 은신용 덤불을 배치합니다."""
-        candidates = [
+        """집과 외곽 벽을 피해 여러 클러스터로 은신용 덤불을 배치합니다."""
+        available = {
             (x, y)
             for y in range(1, self.map_height - 1)
             for x in range(1, self.map_width - 1)
             if self.map_data[(x, y)].tile_type == 0
             and not any(house.collidepoint(x, y) for house in self.house_rects)
-        ]
-        random.shuffle(candidates)
-        for tile_x, tile_y in candidates[:MAP_BUSH_COUNT]:
-            self.map_data[(tile_x, tile_y)] = Tile(tile_type=4, is_walkable=True)
+        }
+        centers = list(available)
+        random.shuffle(centers)
+        placed = 0
+
+        for center_x, center_y in centers[:MAP_BUSH_CLUSTER_COUNT]:
+            if placed >= MAP_BUSH_COUNT or (center_x, center_y) not in available:
+                continue
+            radius = random.randint(MAP_BUSH_CLUSTER_RADIUS_MIN, MAP_BUSH_CLUSTER_RADIUS_MAX)
+            cluster = [
+                (tile_x, tile_y)
+                for tile_x, tile_y in available
+                if (tile_x - center_x) ** 2 + (tile_y - center_y) ** 2 <= radius ** 2
+            ]
+            random.shuffle(cluster)
+            for tile_x, tile_y in cluster:
+                if placed >= MAP_BUSH_COUNT:
+                    break
+                self.map_data[(tile_x, tile_y)] = Tile(tile_type=4, is_walkable=True)
+                available.remove((tile_x, tile_y))
+                placed += 1
 
     def is_in_bush(self, world_x, world_y):
         """월드 좌표가 덤불 안에 있는지 확인합니다."""

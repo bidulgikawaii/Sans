@@ -10,9 +10,13 @@ from Config import (
     SERVER_PORT,
     SERVER_SEED,
     STEALTH_DURATION_MS,
+    HEADSHOT_DAMAGE_MULTIPLIER,
+    MAP_HEIGHT_TILES,
+    MAP_WIDTH_TILES,
 )
 from Weapon import WEAPONS
 from Lobby import LobbyState
+from Zone import MagneticZone
 import random
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -28,6 +32,7 @@ destroyed_treasures = set()
 player_count = 0
 next_player_id = 1
 lobby = LobbyState()
+magnetic_zone = MagneticZone(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, 32)
 
 
 def update_player_count(delta):
@@ -66,6 +71,10 @@ def handle_client(conn, player_id):
         "in_bush": False,
         "stealth_token": 0,
         "stealth_until": 0.0,
+        "stunned_until": 0.0,
+        "zone_outside_since": None,
+        "zone_damage_credit": 0.0,
+        "zone_last_tick": time.monotonic(),
         "bullets": [],
     }
 
@@ -80,8 +89,15 @@ def handle_client(conn, player_id):
 
             if client_data.get("type") == "lobby_join":
                 with player_lock:
-                    lobby.join(player_id, client_data.get("mode"))
+                    accepted = lobby.join(
+                        player_id,
+                        client_data.get("mode"),
+                        debug_enabled=bool(client_data.get("debug_enabled", False)),
+                    )
                     lobby_status = lobby.status()
+                    lobby_status["accepted"] = accepted
+                    if not accepted:
+                        lobby_status["message"] = "게임이 진행 중이라 참가할 수 없습니다."
                 conn.sendall(pickle.dumps(lobby_status))
                 continue
 
@@ -93,7 +109,6 @@ def handle_client(conn, player_id):
             players[player_id]["posX"] = client_data["posX"]
             players[player_id]["posY"] = client_data["posY"]
             players[player_id]["angle"] = client_data["angle"]
-            players[player_id]["hp"] = max(0, client_data.get("hp", PLAYER_MAX_HP))
             weapon_id = client_data.get("weapon_id", DEFAULT_WEAPON_ID)
             players[player_id]["weapon_id"] = weapon_id if weapon_id in WEAPONS else DEFAULT_WEAPON_ID
             players[player_id]["magazine_ammo"] = max(
@@ -115,6 +130,50 @@ def handle_client(conn, player_id):
                 )
             )
 
+            lobby_state = lobby.status()
+            zone_elapsed_ms = (
+                lobby_state.get("elapsed_ms", 0)
+                if lobby.zone_enabled_for(player_id)
+                else 0
+            )
+            zone_now = time.monotonic()
+            player_center_x = players[player_id]["posX"] + 32
+            player_center_y = players[player_id]["posY"] + 32
+            if zone_elapsed_ms and not magnetic_zone.is_inside(
+                player_center_x, player_center_y, zone_elapsed_ms
+            ):
+                if players[player_id]["zone_outside_since"] is None:
+                    players[player_id]["zone_outside_since"] = zone_now
+                outside_ms = (zone_now - players[player_id]["zone_outside_since"]) * 1000
+                tick_seconds = max(0.0, zone_now - players[player_id]["zone_last_tick"])
+                players[player_id]["zone_damage_credit"] += (
+                    magnetic_zone.damage_per_second(outside_ms) * tick_seconds
+                )
+                damage = int(players[player_id]["zone_damage_credit"])
+                if damage:
+                    players[player_id]["hp"] = max(0, players[player_id]["hp"] - damage)
+                    players[player_id]["zone_damage_credit"] -= damage
+            else:
+                players[player_id]["zone_outside_since"] = None
+                players[player_id]["zone_damage_credit"] = 0.0
+            players[player_id]["zone_last_tick"] = zone_now
+
+            for hit_event in client_data.get("hit_events", []):
+                target_id = int(hit_event.get("target_id", 0))
+                target = players.get(target_id)
+                if not target or target["hp"] <= 0:
+                    continue
+                damage = max(0, int(hit_event.get("damage", 0)))
+                if hit_event.get("hit_part") == "head":
+                    damage *= HEADSHOT_DAMAGE_MULTIPLIER
+                target["hp"] = max(0, target["hp"] - damage)
+                stun_ms = max(0, int(hit_event.get("stun_ms", 0)))
+                if stun_ms:
+                    target["stunned_until"] = max(
+                        target.get("stunned_until", 0.0),
+                        time.monotonic() + stun_ms / 1000,
+                    )
+
             with player_lock:
                 for bullet in client_data.get("bullets", []):
                     bullet_event = dict(bullet)
@@ -132,6 +191,16 @@ def handle_client(conn, player_id):
                     for active_id in active_ids
                     if active_id in players
                 }
+                alive_ids = [
+                    active_id for active_id in active_ids
+                    if active_id in players and players[active_id]["hp"] > 0
+                ]
+                lobby_mode = lobby.status()["mode"]
+                winner_id = (
+                    alive_ids[0]
+                    if lobby.started and lobby_mode == "normal" and len(alive_ids) == 1
+                    else None
+                )
             snapshot = pickle.loads(pickle.dumps(active_players))
             pending_bullets = [
                 bullet for bullet in bullet_events
@@ -142,6 +211,11 @@ def handle_client(conn, player_id):
             for player in snapshot.values():
                 player["bullets"] = list(pending_bullets)
                 player["destroyed_treasures"] = list(destroyed_treasures)
+                player["winner_id"] = winner_id
+                player["zone_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
+                player["stun_ms_remaining"] = max(
+                    0, round((player.get("stunned_until", 0.0) - time.monotonic()) * 1000)
+                )
             conn.sendall(pickle.dumps(snapshot))
     except Exception as e:
         print(f"[네트워크 오류] 플레이어 {player_id}번: {e}")

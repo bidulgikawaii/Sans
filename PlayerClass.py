@@ -150,10 +150,10 @@ class Player:
         
         return True
 
-    def draw(self, surface, camera_x=0, camera_y=0, zoom=1.0):
+    def draw(self, surface, camera_x=0, camera_y=0, zoom=1.0, offset_x=0, offset_y=0):
         # 카메라 위치를 차감하여 화면용 상대 좌표 계산
-        screen_x = (self.rect.x - camera_x) * zoom
-        screen_y = (self.rect.y - camera_y) * zoom
+        screen_x = (self.rect.x - camera_x) * zoom + offset_x
+        screen_y = (self.rect.y - camera_y) * zoom + offset_y
         
         # 화면 좌표 기준 캐릭터 렌더링
         image = self.image if zoom == 1.0 else pygame.transform.scale(

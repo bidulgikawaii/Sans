@@ -16,6 +16,7 @@ class Bullet:
         damage=DEFAULT_BULLET_DAMAGE,
         owner_id=None,
         weapon_id=DEFAULT_WEAPON_ID,
+        stun_ms=0,
     ):
         image_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
@@ -29,6 +30,7 @@ class Bullet:
             bullet_image,
             (image_width, image_height),
         )
+        self.surface.fill((255, 255, 255, 255), special_flags=pygame.BLEND_RGBA_MULT)
         
         # 좌표 및 속도 초기화
         self.x = 0
@@ -41,15 +43,17 @@ class Bullet:
         self.damage = damage
         self.owner_id = owner_id
         self.weapon_id = weapon_id
+        self.stun_ms = stun_ms
         self.angle = 0.0
         self.life_time = 2.5
         self.spawn_time = 0.0
+        self.flight_start_time = 0.0
 
     @property
     def rect(self):
         return pygame.Rect(round(self.x), round(self.y), self.surface.get_width(), self.surface.get_height())
 
-    def launch(self, start_x, start_y, target_x, target_y, speed=15):
+    def launch(self, start_x, start_y, target_x, target_y, speed=15, hold_ms=45):
         # 발사 위치 설정 (보통 플레이어의 화면 중심 좌표)
         self.x = start_x
         self.y = start_y
@@ -69,10 +73,13 @@ class Bullet:
         # 총알 활성화
         self.is_active = True
         self.spawn_time = time.monotonic()
+        self.flight_start_time = self.spawn_time + max(0, hold_ms) / 1000
 
     def update(self):
         # 활성화 상태일 때만 매 프레임 위치 이동
         if self.is_active:
+            if time.monotonic() < self.flight_start_time:
+                return
             self.x += self.speed_x
             self.y += self.speed_y
 

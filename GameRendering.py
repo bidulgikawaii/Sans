@@ -16,6 +16,20 @@ def draw_visibility_geometry(surface, geometry, camera_x, camera_y, zoom):
             pygame.draw.polygon(surface, (0, 0, 0, 0), points)
 
 
+def draw_player_hitboxes(surface, head_rect, body_rect, camera_x, camera_y, zoom):
+    for world_rect, color in (
+        (head_rect, (255, 80, 80)),
+        (body_rect, (80, 220, 255)),
+    ):
+        screen_rect = pygame.Rect(
+            round((world_rect.x - camera_x) * zoom),
+            round((world_rect.y - camera_y) * zoom),
+            max(1, round(world_rect.width * zoom)),
+            max(1, round(world_rect.height * zoom)),
+        )
+        pygame.draw.rect(surface, color, screen_rect, max(1, round(2 * zoom)))
+
+
 def get_aim_ray_endpoint(origin_x, origin_y, angle_degrees, tile_generator, target_distance):
     angle = math.radians(angle_degrees)
     step = max(4, tile_generator.tile_size // 4)
@@ -61,10 +75,20 @@ def draw_local_aim_ray(
     )
 
 
-def draw_teleport_anchor(surface, anchor_x, anchor_y, camera_x, camera_y, zoom):
+def draw_teleport_anchor(surface, anchor_x, anchor_y, camera_x, camera_y, zoom, image=None):
     screen_x = (anchor_x - camera_x) * zoom
     screen_y = (anchor_y - camera_y) * zoom
     center = (round(screen_x), round(screen_y))
+    if image is not None:
+        scaled_image = pygame.transform.smoothscale(
+            image,
+            (
+                max(1, round(image.get_width() * zoom)),
+                max(1, round(image.get_height() * zoom)),
+            ),
+        )
+        surface.blit(scaled_image, scaled_image.get_rect(center=center))
+        return
     width = max(8, round(18 * zoom))
     height = max(16, round(48 * zoom))
     pygame.draw.ellipse(
@@ -122,7 +146,7 @@ def draw_ammo_status(
     config = weapon_state.config
     name_text = font.render(config.name, True, (255, 220, 120))
     ammo_text = font.render(
-        "재장전 중..." if weapon_state.is_reloading_now() else weapon_state.ammo_text(),
+        "재장전 중..." if weapon_state.is_reloading_now() else f"{weapon_state.magazine_ammo} / {config.magazine_size}",
         True,
         (255, 180, 120) if weapon_state.is_reloading_now() else (255, 255, 255),
     )
@@ -130,8 +154,8 @@ def draw_ammo_status(
     panel_x = screen_width - panel_size[0] - panel_margin[0]
     panel_y = screen_height - panel_size[1] - panel_margin[1]
     surface.blit(panel, (panel_x, panel_y))
-    name_rect = name_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 32))
-    ammo_rect = ammo_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 64))
+    name_rect = name_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 25))
+    ammo_rect = ammo_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 53))
     surface.blit(name_text, name_rect)
     surface.blit(ammo_text, ammo_rect)
 

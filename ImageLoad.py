@@ -16,7 +16,8 @@ class Imageload():
         self.PistolFire = self._load_scaled_image("pistol_fire_transparent.png", PISTOL_IMAGE_SIZE)
         self.PistolSmoke = self._load_scaled_image("pistol_smoke_transparent.png", PISTOL_IMAGE_SIZE)
         self.HBlade = self._load_animation("H_blade")
-        self.Expo = self._load_animation("Expo")
+        self.Expo = self._load_animation("Expo", (128, 128))
+        self.Sniper = self._load_scaled_image("Sniper.png", (192, 64))
         
         # 1. 반복문 안에서 불러오기 -> 크기 조절 -> 최적화를 한 번에 처리
         self.ShotGun = []
@@ -41,6 +42,7 @@ class Imageload():
         self.TanChang = pygame.image.load(
             os.path.join(current_dir, "Image", "Tanchang.png")
         ).convert_alpha()
+        self.TpStatue = self._load_scaled_image("TpStatue.png", (64, 96))
 
         self.TitleImages = []
         
@@ -72,9 +74,9 @@ class Imageload():
         
         # ===== 스킬 아이콘 이미지 로드 =====
         self.skill_icons = {}
-        skill_names = ["달팽이 세개", "매의 눈", "보호막", "은신", "텔포"]
+        skill_names = ["달팽이 세개", "매의 눈", "보호막", "은신", "텔포", "기절탄"]
         skill_files = [
-            "Bomb.png", "egle_Eyes.png", "ProtectShield.png", "Invis.png", "Tp.png",
+            "Bomb.png", "egle_Eyes.png", "ProtectShield.png", "Invis.png", "Tp.png", "Stun_Icon.png",
         ]
 
 
@@ -111,19 +113,25 @@ class Imageload():
         if not os.path.exists(path):
             return None
         return pygame.transform.smoothscale(pygame.image.load(path).convert_alpha(), size)
-    def _load_animation(self, prefix):
+    
+    def _load_animation(self, prefix, target_size=None):
         image_dir = os.path.dirname(self.player_path)
         filenames = [
             filename for filename in os.listdir(image_dir)
             if filename.lower().startswith(prefix.lower()) and filename.lower().endswith(".png")
         ]
-        numbered_filenames = [
-            filename for filename in filenames if re.search(r"\((\d+)\)", filename)
-        ]
-        if numbered_filenames:
-            filenames = numbered_filenames
-        filenames.sort(key=lambda filename: int(re.search(r"\((\d+)\)", filename).group(1)))
-        return [self._load_image(filename) for filename in filenames]
+        filenames.sort(
+            key=lambda filename: (
+                int(match.group(1)) if (match := re.search(r"\((\d+)\)", filename)) else -1
+            )
+        )
+        frames = []
+        for filename in filenames:
+            image = pygame.image.load(os.path.join(image_dir, filename)).convert_alpha()
+            if target_size:
+                image = pygame.transform.smoothscale(image, target_size)
+            frames.append(image)
+        return frames 
 
 
     def GetTitles(self):
@@ -148,6 +156,9 @@ class Imageload():
 
     def GetPistolSmoke(self):
         return self.PistolSmoke
+
+    def GetSniper(self):
+        return self.Sniper
 
     def GetBladeFrames(self):
         return self.HBlade

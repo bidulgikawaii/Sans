@@ -14,30 +14,27 @@ class MainScreenRenderer:
         image = self.titles[image_name]
         return image, image.get_rect(center=(self.screen_width // 2, center_y))
 
-    def draw_main(self):
-        profile, profile_rect = self._center_rect("MainProfile", 150)
-        start, start_rect = self._center_rect("GameStart", 360)
-        debug, debug_rect = self._center_rect("Practice", 500)
-        exit_image, exit_rect = self._center_rect("Exit", 640)
+    def draw_main(self, weapon_name=None):
+        title, title_rect = self._center_rect("TitleText", 210)
+        profile, profile_rect = self._center_rect("MainProfile", 700)
+        self.surface.blit(title, title_rect)
         self.surface.blit(profile, profile_rect)
-        self.surface.blit(start, start_rect)
-        self.surface.blit(debug, debug_rect)
-        self.surface.blit(exit_image, exit_rect)
-        return {"start": start_rect, "debug": debug_rect, "exit": exit_rect}
+        if weapon_name:
+            weapon_text = self.font.render(f"무기: {weapon_name}  [1~6 선택]", True, (220, 235, 255))
+            self.surface.blit(weapon_text, weapon_text.get_rect(center=(self.screen_width // 2, 820)))
+        return {"profile": profile_rect}
 
     def draw_mode_select(self):
-        title = self.font.render("게임 모드 선택", True, (255, 255, 255))
-        self.surface.blit(title, title.get_rect(center=(self.screen_width // 2, 150)))
-        normal, normal_rect = self._center_rect("GameStart", 320)
-        debug, debug_rect = self._center_rect("Practice", 475)
-        back, back_rect = self._center_rect("Exit", 630)
+        normal, normal_rect = self._center_rect("GameStart", 330)
+        debug, debug_rect = self._center_rect("Practice", 520)
+        back, back_rect = self._center_rect("Exit", 710)
         self.surface.blit(normal, normal_rect)
         self.surface.blit(debug, debug_rect)
         self.surface.blit(back, back_rect)
         return {"normal": normal_rect, "debug": debug_rect, "back": back_rect}
 
     def draw_loading(self, lobby_status, selected_game_mode, max_players, debug_mode):
-        profile, profile_rect = self._center_rect("MainProfile", 150)
+        profile, profile_rect = self._center_rect("GameStart", 150)
         self.surface.blit(profile, profile_rect)
         title = self.font.render("게임 로딩", True, (255, 255, 255))
         self.surface.blit(title, title.get_rect(center=(self.screen_width // 2, 280)))
@@ -48,7 +45,13 @@ class MainScreenRenderer:
         )
         self.surface.blit(count_text, count_text.get_rect(center=(self.screen_width // 2, 390)))
         mode_name = "디버그 모드" if selected_game_mode == debug_mode else "일반 모드"
-        status_name = "게임 시작 중..." if lobby_status.get("started") else "다른 플레이어를 기다리는 중..."
+        countdown_ms = lobby_status.get("countdown_ms", 0)
+        if lobby_status.get("accepted") is False:
+            status_name = lobby_status.get("message", "게임이 진행 중이라 참가할 수 없습니다.")
+        elif countdown_ms > 0:
+            status_name = f"게임 시작까지 {max(1, (countdown_ms + 999) // 1000)}초"
+        else:
+            status_name = "게임 시작 중..." if lobby_status.get("started") else "다른 플레이어를 기다리는 중..."
         mode_text = self.font.render(mode_name, True, (255, 220, 120))
         status_text = self.font.render(status_name, True, (220, 220, 220))
         self.surface.blit(mode_text, mode_text.get_rect(center=(self.screen_width // 2, 470)))

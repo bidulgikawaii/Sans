@@ -13,6 +13,8 @@ from Config import (
     MAP_BUSH_CLUSTER_RADIUS_MIN,
     MAP_BUSH_CLUSTER_RADIUS_MAX,
     MAP_TREASURE_CHANCE,
+    MAP_RUNE_COUNT,
+    MAP_WATER_RADIUS,
 )
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
@@ -121,6 +123,25 @@ class TileGenerator:
             pygame.draw.line(bush, (120, 190, 90), (center, center), tip, 2)
         self.tile_images[4] = bush
 
+        rune = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
+        rune_center = self.tile_size // 2
+        rune_points = [
+            (rune_center, 4),
+            (self.tile_size - 5, rune_center),
+            (rune_center, self.tile_size - 4),
+            (5, rune_center),
+        ]
+        pygame.draw.polygon(rune, (40, 180, 210, 120), rune_points)
+        pygame.draw.polygon(rune, (170, 245, 255, 230), rune_points, 2)
+        pygame.draw.circle(rune, (230, 255, 180, 220), (rune_center, rune_center), 3)
+        self.tile_images[5] = rune
+
+        water = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
+        water.fill((45, 145, 205, 210))
+        pygame.draw.line(water, (150, 225, 255), (4, self.tile_size // 3), (self.tile_size - 4, self.tile_size // 3), 2)
+        pygame.draw.line(water, (100, 205, 245), (8, self.tile_size * 2 // 3), (self.tile_size - 6, self.tile_size * 2 // 3), 2)
+        self.tile_images[6] = water
+
     def generate_map(self, width_tiles, height_tiles, seed_value=None):
         """★멀티플레이 동기화 핵심★: 서버 시드로 난수를 고정하여 모두에게 똑같은 집을 배치합니다."""
         if seed_value is not None:
@@ -209,6 +230,8 @@ class TileGenerator:
                 self.map_data[(treasure_x, treasure_y)] = Tile(tile_type=3, is_walkable=True)  # 보물상자
 
         self._place_bushes()
+        self._place_runes()
+        self._place_central_water()
 
         self._build_world_surface()
         self._visibility_cache.clear()
@@ -244,12 +267,39 @@ class TileGenerator:
                 available.remove((tile_x, tile_y))
                 placed += 1
 
+    def _place_runes(self):
+        """맵마다 같은 씨앗으로 탐험 지점을 만드는 발광 룬을 배치합니다."""
+        available = [
+            position
+            for position, tile in self.map_data.items()
+            if tile.tile_type == 0
+        ]
+        random.shuffle(available)
+        for tile_x, tile_y in available[:MAP_RUNE_COUNT]:
+            self.map_data[(tile_x, tile_y)] = Tile(tile_type=5, is_walkable=True)
+
+    def _place_central_water(self):
+        center_x = self.map_width // 2
+        center_y = self.map_height // 2
+        for tile_y in range(center_y - MAP_WATER_RADIUS, center_y + MAP_WATER_RADIUS + 1):
+            for tile_x in range(center_x - MAP_WATER_RADIUS, center_x + MAP_WATER_RADIUS + 1):
+                if (tile_x - center_x) ** 2 + (tile_y - center_y) ** 2 <= MAP_WATER_RADIUS ** 2:
+                    tile = self.map_data.get((tile_x, tile_y))
+                    if tile and tile.tile_type in (0, 5):
+                        self.map_data[(tile_x, tile_y)] = Tile(tile_type=6, is_walkable=True)
+
     def is_in_bush(self, world_x, world_y):
         """월드 좌표가 덤불 안에 있는지 확인합니다."""
         tile_x = int(world_x // self.tile_size)
         tile_y = int(world_y // self.tile_size)
         tile = self.map_data.get((tile_x, tile_y))
         return bool(tile and tile.tile_type == 4)
+
+    def is_in_water(self, world_x, world_y):
+        tile_x = int(world_x // self.tile_size)
+        tile_y = int(world_y // self.tile_size)
+        tile = self.map_data.get((tile_x, tile_y))
+        return bool(tile and tile.tile_type == 6)
 
     def _build_world_surface(self):
         """정적인 맵을 한 장으로 합쳐 매 프레임 타일을 반복 그리지 않습니다."""
@@ -606,6 +656,18 @@ class TileGenerator:
                 tile = self.map_data.get((tile_x, tile_y))
                 if tile and tile.tile_type == 3:
                     self.destroy_treasure(tile_x, tile_y)
+                    return tile_x, tile_y
+        return None
+
+    def treasure_at(self, rect):
+        start_x = max(0, int(rect.left // self.tile_size))
+        end_x = min(self.map_width - 1, int(rect.right // self.tile_size))
+        start_y = max(0, int(rect.top // self.tile_size))
+        end_y = min(self.map_height - 1, int(rect.bottom // self.tile_size))
+        for tile_y in range(start_y, end_y + 1):
+            for tile_x in range(start_x, end_x + 1):
+                tile = self.map_data.get((tile_x, tile_y))
+                if tile and tile.tile_type == 3:
                     return tile_x, tile_y
         return None
 

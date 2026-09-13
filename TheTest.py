@@ -20,6 +20,8 @@ from GameRendering import (
     draw_health_bar,
     draw_local_aim_ray,
     draw_player_hitboxes,
+    draw_damage_numbers,
+    draw_supply_drop,
     draw_quick_slot_cooldowns,
     draw_teleport_anchor,
     draw_visibility_geometry,
@@ -83,6 +85,31 @@ spawn_world_y = spawn_tile_y * TileGene.tile_size
 my_player = Player(spawn_world_x, spawn_world_y, (p_w, p_h), IML, TileGene)
 my_player.image = IML.Player
 print(f"🎮 플레이어가 ({spawn_tile_x}, {spawn_tile_y}) 타일에 스폰되었습니다.")
+
+training_dummy = None
+damage_numbers = []
+easter_egg_found = False
+easter_egg_flash_until = 0
+
+
+def respawn_training_dummy():
+    """연습모드 더미를 플레이어 근처의 이동 가능한 위치에 둡니다."""
+    global training_dummy
+    center_x, center_y = get_player_world_center(
+        my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
+    )
+    candidates = ((220, 0), (-220, 0), (0, 220), (0, -220))
+    for offset_x, offset_y in candidates:
+        dummy_x = center_x + offset_x - IML.Player.get_width() / 2
+        dummy_y = center_y + offset_y - IML.Player.get_height() / 2
+        dummy_rect = pygame.Rect(round(dummy_x), round(dummy_y), p_w, p_h)
+        if not TileGene.check_collision(dummy_rect):
+            training_dummy = Player(dummy_x, dummy_y, (p_w, p_h), IML, TileGene)
+            training_dummy.image = IML.Player
+            training_dummy.MaxHp = TRAINING_DUMMY_MAX_HP
+            training_dummy.Hp = TRAINING_DUMMY_MAX_HP
+            training_dummy.respawn_at = 0
+            return
 
 # 보내는 데이터 - 멀티플레이 동기화용
 # [커스텀 가능] 서버로 보낼 플레이어 동기화 데이터입니다.
@@ -166,6 +193,7 @@ def spawn_supply_drop(now):
         "x": (tile_x + 0.5) * TileGene.tile_size,
         "y": (tile_y + 0.5) * TileGene.tile_size,
         "type": reward_type,
+        "warning_until": now + SUPPLY_DROP_WARNING_MS,
         "expires_at": now + SUPPLY_DROP_LIFETIME_MS,
     })
 
@@ -245,7 +273,16 @@ vision_shape_override = None
 
 def MainView():
     global running, ScreenState, selected_game_mode, debug_mode
-    button_rects = main_screen.draw_main(weapon_state.config.name)
+    if weapon_state.weapon_id == "pistol":
+        preview_image = IML.GetPistol()
+    elif weapon_state.weapon_id == "sniper":
+        preview_image = IML.GetSniper()
+    elif weapon_state.weapon_id == "knife":
+        blade_frames = IML.GetBladeFrames()
+        preview_image = blade_frames[0] if blade_frames else IML.GetShotGun()
+    else:
+        preview_image = IML.GetShotGun()
+    button_rects = main_screen.draw_main(weapon_state.config.name, preview_image)
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -567,6 +604,7 @@ def cycle_vision_shape():
 def fire_knife():
     """칼 공격: 근거리 범위 내의 모든 적에게 데미지를 줍니다."""
     global screen_shake, system_message, knife_attack_until
+    global training_dummy, damage_numbers
     config = weapon_state.config
     knife_attack_until = pygame.time.get_ticks() + MELEE_ATTACK_DURATION_MS
     
@@ -598,6 +636,23 @@ def fire_knife():
                 "damage": config.damage,
                 "hit_part": "body",
             })
+
+    if debug_mode and training_dummy is not None and training_dummy.Hp > 0:
+        dummy_center_x = training_dummy.rect.centerx
+        dummy_center_y = training_dummy.rect.centery
+        if math.hypot(center_x - dummy_center_x, center_y - dummy_center_y) <= knife_range:
+            training_dummy.Hp = max(0, training_dummy.Hp - config.damage)
+            damage_numbers.append({
+                "x": dummy_center_x,
+                "y": training_dummy.rect.top,
+                "damage": config.damage,
+                "color": (255, 255, 255),
+                "started_at": pygame.time.get_ticks(),
+                "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+            })
+            if training_dummy.Hp <= 0:
+                training_dummy.respawn_at = pygame.time.get_ticks() + TRAINING_DUMMY_RESPAWN_MS
+            attacked_count += 1
     
     weapon_state.consume_round()
     screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + MELEE_SHAKE)
@@ -788,12 +843,19 @@ def GameView():
     global visibility_polygon_cache, mouse_fire_hold, last_effect_tick, preserve_magazine_after_chest
     global aim_lock_until, aim_locked_pos, weapon_fire_until
     global teleport_anchor, teleport_anchor_expires_at
+    global training_dummy, damage_numbers, easter_egg_found, easter_egg_flash_until
 
     MousePos = pygame.mouse.get_pos()
     if my_player.Hp <= 0:
         ScreenState = "GameOver"
         return
     now = pygame.time.get_ticks()
+    if debug_mode and training_dummy is None:
+        respawn_training_dummy()
+    damage_numbers = [
+        number for number in damage_numbers
+        if now - number["started_at"] < number["lifetime"]
+    ]
     if teleport_anchor is not None and now >= teleport_anchor_expires_at:
         teleport_anchor = None
         teleport_anchor_expires_at = 0
@@ -1062,6 +1124,14 @@ def GameView():
         MagneticZoneState.draw(display, CameraPosX, CameraPosY, camera_zoom, zone_elapsed_ms)
 
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
+    if debug_mode and not easter_egg_found:
+        map_center_x = TileGene.map_width * TileGene.tile_size / 2
+        map_center_y = TileGene.map_height * TileGene.tile_size / 2
+        if math.hypot(player_world_x - map_center_x, player_world_y - map_center_y) <= EASTER_EGG_DISTANCE:
+            easter_egg_found = True
+            easter_egg_flash_until = now + 3500
+            system_message = "이스터에그 발견: 숨겨진 샌즈의 안식처"
+            particles.ring(map_center_x, map_center_y, (100, 220, 255), count=36, radius=80, lifetime=1200, size=5)
 
     for bullet in bullets:
         bullet.update()
@@ -1110,7 +1180,26 @@ def GameView():
                         count=12, speed=65, lifetime=350, size=4,
                     )
                     break
+            if bullet.is_active and debug_mode and training_dummy is not None:
+                hit_part = training_dummy.check_bullet_hit(bullet.rect, bullet.damage)
+                if hit_part:
+                    dealt_damage = bullet.damage * (HEADSHOT_DAMAGE_MULTIPLIER if hit_part == "head" else 1)
+                    damage_numbers.append({
+                        "x": training_dummy.rect.centerx,
+                        "y": training_dummy.rect.top,
+                        "damage": dealt_damage,
+                        "color": (255, 235, 100) if hit_part == "head" else (255, 255, 255),
+                        "started_at": now,
+                        "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+                    })
+                    particles.emit(bullet.x, bullet.y, (255, 210, 70), count=12, speed=65, lifetime=350, size=4)
+                    bullet.is_active = False
+                    if training_dummy.Hp <= 0:
+                        training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
+                    break
     bullets = [b for b in bullets if b.is_active]
+    if debug_mode and training_dummy is not None and training_dummy.Hp <= 0 and now >= training_dummy.respawn_at:
+        respawn_training_dummy()
 
     # 서버 스냅샷에는 같은 발사 이벤트가 모든 플레이어 항목에 포함될 수
     # 있으므로 event_id 기준으로 한 번만 생성합니다.
@@ -1218,6 +1307,18 @@ def GameView():
         other_gun_rect = other_rotated_gun.get_rect()
         other_gun_rect.center = (other_center_x, other_center_y)
         display.blit(other_rotated_gun, other_gun_rect)
+
+    if debug_mode and training_dummy is not None and training_dummy.Hp > 0:
+        dummy_screen_x, dummy_screen_y = world_to_screen(
+            training_dummy.X, training_dummy.Y, CameraPosX, CameraPosY, camera_zoom
+        )
+        dummy_image = training_dummy.image if camera_zoom == 1.0 else pygame.transform.scale(
+            training_dummy.image,
+            (round(training_dummy.image.get_width() * camera_zoom), round(training_dummy.image.get_height() * camera_zoom)),
+        )
+        display.blit(dummy_image, (dummy_screen_x, dummy_screen_y))
+        dummy_hp = GuiFont.render(f"더미 {training_dummy.Hp}/{training_dummy.MaxHp}", True, (255, 235, 120))
+        display.blit(dummy_hp, dummy_hp.get_rect(midbottom=(round(dummy_screen_x + dummy_image.get_width() / 2), round(dummy_screen_y - 8))))
 
     # 내 캐릭터 및 무기 그리기
     local_stun_offset_x = round(math.sin(now * 0.08) * 8) if now < local_stun_until else 0
@@ -1348,6 +1449,15 @@ def GameView():
                 CameraPosY,
                 camera_zoom,
             )
+        if debug_mode and training_dummy is not None and training_dummy.Hp > 0:
+            draw_player_hitboxes(
+                display,
+                training_dummy.head_hitbox,
+                training_dummy.body_hitbox,
+                CameraPosX,
+                CameraPosY,
+                camera_zoom,
+            )
 
     # 폭탄과 폭발 범위는 시야 효과 위에 표시합니다.
     supply_colors = {
@@ -1357,23 +1467,7 @@ def GameView():
         "skill": (210, 150, 255),
     }
     for supply in supply_drops:
-        supply_screen = world_to_screen(
-            supply["x"], supply["y"], CameraPosX, CameraPosY, camera_zoom
-        )
-        color = supply_colors[supply["type"]]
-        pygame.draw.circle(
-            display,
-            color,
-            (round(supply_screen[0]), round(supply_screen[1])),
-            max(8, round(SUPPLY_DROP_RADIUS * camera_zoom)),
-        )
-        pygame.draw.circle(
-            display,
-            (255, 255, 255),
-            (round(supply_screen[0]), round(supply_screen[1])),
-            max(10, round((SUPPLY_DROP_RADIUS + 5) * camera_zoom)),
-            2,
-        )
+        draw_supply_drop(display, supply, CameraPosX, CameraPosY, camera_zoom, supply_colors, now)
 
     for bomb in active_bombs:
         bomb_screen = world_to_screen(bomb["x"], bomb["y"], CameraPosX, CameraPosY, camera_zoom)
@@ -1400,6 +1494,11 @@ def GameView():
             )
 
     particles.draw(display, CameraPosX, CameraPosY, camera_zoom)
+    draw_damage_numbers(display, damage_numbers, CameraPosX, CameraPosY, camera_zoom, GuiFont, now)
+
+    if easter_egg_found and now < easter_egg_flash_until:
+        egg_text = GuiFont.render("THE SECRET IS WATCHING", True, (120, 230, 255))
+        display.blit(egg_text, egg_text.get_rect(center=(ScreenX // 2, 120)))
 
     if teleport_anchor is not None:
         draw_teleport_anchor(

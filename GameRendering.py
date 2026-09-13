@@ -174,3 +174,34 @@ def draw_quick_slot_cooldowns(surface, slots, cooldowns, font):
         surface.blit(overlay, slot.rect.topleft)
         text = font.render(f"{remain:.1f}s", True, (255, 255, 255))
         surface.blit(text, (slot.rect.centerx - text.get_width() / 2, slot.rect.centery - 8))
+
+
+def draw_damage_numbers(surface, damage_numbers, camera_x, camera_y, zoom, font, now):
+    for number in damage_numbers:
+        age = now - number["started_at"]
+        if age < 0 or age >= number["lifetime"]:
+            continue
+        progress = age / number["lifetime"]
+        screen_x = (number["x"] - camera_x) * zoom
+        screen_y = (number["y"] - camera_y - progress * 42) * zoom
+        text = font.render(str(number["damage"]), True, number["color"])
+        text.set_alpha(round(255 * (1.0 - progress)))
+        surface.blit(text, text.get_rect(center=(round(screen_x), round(screen_y))))
+
+
+def draw_supply_drop(surface, supply, camera_x, camera_y, zoom, colors, now):
+    x = round((supply["x"] - camera_x) * zoom)
+    y = round((supply["y"] - camera_y) * zoom)
+    color = colors[supply["type"]]
+    warning_until = supply.get("warning_until", 0)
+    if now < warning_until:
+        pulse = 22 + round(8 * math.sin(now * 0.012))
+        pygame.draw.circle(surface, (255, 230, 120), (x, y), max(18, round(pulse * zoom)), 3)
+        pygame.draw.line(surface, (255, 240, 150), (x, max(0, y - round(150 * zoom))), (x, y), 2)
+        label = pygame.font.Font(None, 26).render("보급품 낙하", True, (255, 240, 150))
+        surface.blit(label, label.get_rect(center=(x, max(18, y - round(165 * zoom)))))
+    box = pygame.Rect(0, 0, max(22, round(36 * zoom)), max(18, round(28 * zoom)))
+    box.center = (x, y)
+    pygame.draw.rect(surface, (35, 35, 45), box, border_radius=4)
+    pygame.draw.rect(surface, color, box, 3, border_radius=4)
+    pygame.draw.line(surface, color, (box.left, box.centery), (box.right, box.centery), 2)

@@ -41,7 +41,7 @@ WEAPONS = {
     "shotgun": WeaponConfig(
         "샷건", damage=5, magazine_size=5, reserve_ammo=15,
         fire_interval=0.85, reload_time=2.8, bullet_size=4, bullet_speed=18.0,
-        pellets=10, spread_degrees=32.0, recoil=6.0, bullet_lifetime=1.4,
+        pellets=10, spread_degrees=20.0, recoil=6.0, bullet_lifetime=1.4,
         vision_radius=300, vision_fov=120, vision_width=300,
     ),
     "sniper": WeaponConfig(

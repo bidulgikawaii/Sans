@@ -14,14 +14,20 @@ class MainScreenRenderer:
         image = self.titles[image_name]
         return image, image.get_rect(center=(self.screen_width // 2, center_y))
 
-    def draw_main(self, weapon_name=None):
+    def draw_main(self, weapon_name=None, weapon_image=None):
         title, title_rect = self._center_rect("TitleText", 210)
         profile, profile_rect = self._center_rect("MainProfile", 700)
         self.surface.blit(title, title_rect)
         self.surface.blit(profile, profile_rect)
         if weapon_name:
             weapon_text = self.font.render(f"무기: {weapon_name}  [1~6 선택]", True, (220, 235, 255))
-            self.surface.blit(weapon_text, weapon_text.get_rect(center=(self.screen_width // 2, 820)))
+            self.surface.blit(weapon_text, weapon_text.get_rect(center=(270, 820)))
+        if weapon_image is not None:
+            preview = pygame.transform.smoothscale(weapon_image, (240, 120))
+            preview_rect = preview.get_rect(center=(270, 680))
+            pygame.draw.rect(self.surface, (20, 28, 46), preview_rect.inflate(34, 24), border_radius=10)
+            pygame.draw.rect(self.surface, (255, 220, 120), preview_rect.inflate(34, 24), 2, border_radius=10)
+            self.surface.blit(preview, preview_rect)
         return {"profile": profile_rect}
 
     def draw_mode_select(self):

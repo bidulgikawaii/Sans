@@ -15,6 +15,7 @@ from SkillAndSlot import *
 from Weapon import WeaponState, WEAPONS, WEAPON_KEYS
 from Effects import ParticleSystem
 from MainScreen import MainScreenRenderer
+from MiniMap import MiniMap
 from GameRendering import (
     draw_ammo_status,
     draw_health_bar,
@@ -67,6 +68,7 @@ set_image_loader(IML)  # SkillAndSlot에 이미지 로더 전달
 TileGene = TileGenerator()
 # [커스텀 가능] 맵 가로/세로 타일 수입니다. 타일 크기와 곱해 전체 월드 크기가 결정됩니다.
 TileGene.generate_map(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, seed_value=init_data["seed"])
+MiniMapRenderer = MiniMap(TileGene, MINIMAP_SIZE, MINIMAP_MARGIN)
 MagneticZoneState = MagneticZone(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, TileGene.tile_size)
 
 # [커스텀 가능] HP 프레임의 화면 표시 크기입니다. 원본 비율을 유지해 한 번만 축소합니다.
@@ -489,7 +491,7 @@ def activate_quick_slot(key):
             lifetime=650,
             size=5,
         )
-        system_message = "1.5초 동안 은신합니다."
+        system_message = "1.5초 동안 적에게 완전히 보이지 않습니다."
     elif skill_name == "텔포":
         if teleport_anchor is None:
             target_x, target_y = get_player_world_center(
@@ -1096,6 +1098,11 @@ def GameView():
     # 무기의 시야 설정과 일시적인 스킬 오버라이드를 합칩니다.
     current_vision = weapon_state.config
     current_vision_shape = vision_shape_override or current_vision.vision_shape
+    current_vision_radius = (
+        VISION_SKILL_RADIUS
+        if vision_shape_override == VISION_CIRCLE
+        else current_vision.vision_radius
+    )
     # 같은 프레임에서 같은 대상은 한 번만 벽 가림을 계산합니다.
     visibility_cache = {}
 
@@ -1108,7 +1115,7 @@ def GameView():
                 player_world_y,
                 point_x,
                 point_y,
-                current_vision.vision_radius,
+                current_vision_radius,
                 vision_shape=current_vision_shape,
                 direction_angle=Weapon_Angle,
                 fov_angle=current_vision.vision_fov + fov_bonus,
@@ -1272,7 +1279,7 @@ def GameView():
             other_world_x - player_world_x,
             other_world_y - player_world_y,
         ) <= MAP_BUSH_VISIBLE_DISTANCE
-        if p_info.get("stealth", False) and not (p_info.get("in_bush", False) and close_to_bush):
+        if p_info.get("stealth", False):
             continue
 
         bush_fov_bonus = (
@@ -1376,7 +1383,7 @@ def GameView():
         round(player_world_y / 8),
         round(Weapon_Angle / 4),
         current_vision_shape,
-        current_vision.vision_radius,
+        current_vision_radius,
         current_vision.vision_fov,
         current_vision.vision_width,
     )
@@ -1385,7 +1392,7 @@ def GameView():
         visibility_polygon_cache[polygon_cache_key] = TileGene.get_visibility_polygon(
             player_world_x,
             player_world_y,
-            current_vision.vision_radius,
+            current_vision_radius,
             vision_shape=current_vision_shape,
             direction_angle=Weapon_Angle,
             fov_angle=current_vision.vision_fov,
@@ -1531,6 +1538,16 @@ def GameView():
     # =================================================================
     # 📊 고정 UI 그리기 영역 (시야 레이어보다 위에 그려야 선명하게 보입니다)
     # =================================================================
+    MiniMapRenderer.draw(
+        display,
+        (
+            my_player.X + my_player.rect.width / 2,
+            my_player.Y + my_player.rect.height / 2,
+        ),
+        server_players,
+        my_id,
+        training_dummy if debug_mode else None,
+    )
     ui_x = 30
     ui_y = 80  
     draw_health_bar(

@@ -48,12 +48,13 @@ class Bullet:
         self.life_time = 2.5
         self.spawn_time = 0.0
         self.flight_start_time = 0.0
+        self.reflect_until = 0
 
     @property
     def rect(self):
         return pygame.Rect(round(self.x), round(self.y), self.surface.get_width(), self.surface.get_height())
 
-    def launch(self, start_x, start_y, target_x, target_y, speed=15, hold_ms=45):
+    def launch(self, start_x, start_y, target_x, target_y, speed=15, hold_ms=0):
         # 발사 위치 설정 (보통 플레이어의 화면 중심 좌표)
         self.x = start_x
         self.y = start_y
@@ -85,6 +86,16 @@ class Bullet:
 
             if time.monotonic() - self.spawn_time > self.life_time:
                 self.is_active = False
+
+    def reflect(self, horizontal=False, vertical=False):
+        if horizontal:
+            self.speed_x *= -1
+        if vertical:
+            self.speed_y *= -1
+        self.angle = math.degrees(math.atan2(self.speed_y, self.speed_x))
+        self.x += self.speed_x * 2
+        self.y += self.speed_y * 2
+        self.reflect_until = pygame.time.get_ticks() + 80
 
     def draw(self, display, camera_x=0, camera_y=0, zoom=1.0, force_visible=False):
         # 활성화 상태일 때만 메인 화면(display)에 총알 그리기

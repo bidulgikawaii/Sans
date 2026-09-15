@@ -1,4 +1,5 @@
 import pygame
+import os
 
 
 class MainScreenRenderer:
@@ -28,6 +29,11 @@ class MainScreenRenderer:
             pygame.draw.rect(self.surface, (20, 28, 46), preview_rect.inflate(34, 24), border_radius=10)
             pygame.draw.rect(self.surface, (255, 220, 120), preview_rect.inflate(34, 24), 2, border_radius=10)
             self.surface.blit(preview, preview_rect)
+        credit_font =  pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__)
+        ),"Font","HeirofLightRegular.ttf"
+            ), 30)
+        credit = credit_font.render("By PGM.", True, (190, 200, 220))
+        self.surface.blit(credit, credit.get_rect(center=(self.screen_width // 2, self.screen_height - 24)))
         return {"profile": profile_rect}
 
     def draw_mode_select(self):

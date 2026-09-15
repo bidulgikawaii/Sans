@@ -128,6 +128,11 @@ send_data = {
     "magazine_ammo": WEAPONS[DEFAULT_WEAPON_ID].magazine_size,
     "reserve_ammo": WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo,
     "wards": [],
+    "destroyed_furniture": [],
+    "rune_ping": None,
+    "revive_token": 0,
+    "revive_request": False,
+    "revive_armed": False,
     
     # 발사한 총알 정보 (여러 개 가능)
     "bullets": [],      # [{"x": x, "y": y, "angle": angle}, ...]
@@ -156,6 +161,9 @@ haste_until = 0
 stealth_until = 0
 stealth_token = 0
 wards = []
+active_rune_tile = None
+rune_alerts = []
+revive_token = 0
 debug_mode = False
 active_bombs = []
 active_explosions = []
@@ -163,6 +171,7 @@ knife_attack_until = 0
 supply_drops = []
 next_supply_drop_at = pygame.time.get_ticks() + SUPPLY_DROP_INTERVAL_MS
 pending_treasure_destroys = []
+pending_furniture_destroys = []
 pending_hit_events = []
 screen_shake = 0
 server_players = {}
@@ -226,16 +235,9 @@ def apply_supply_reward(reward_type):
         message = "보급품 획득: 보호막"
         color = (100, 220, 255)
     else:
-        available = [name for name in SKILL_BOOK if name not in owned_skills]
-        if not available:
-            my_player.Hp = min(my_player.MaxHp, my_player.Hp + SUPPLY_HEAL_AMOUNT)
-            message = "보급품 획득: 체력 회복"
-            color = (100, 255, 130)
-        else:
-            skill_name = random.choice(available)
-            add_skill_to_inventory(skill_name)
-            message = f"보급품 획득: {skill_name}"
-            color = SKILL_BOOK[skill_name].color
+        my_player.Hp = min(my_player.MaxHp, my_player.Hp + SUPPLY_HEAL_AMOUNT)
+        message = "보급품 획득: 체력 회복"
+        color = (100, 255, 130)
     particles.emit(center_x, center_y, color, count=24, speed=80, lifetime=600, size=6)
     return message
 
@@ -256,6 +258,36 @@ def collect_treasure(tile_position):
         weapon_state.reloading = False
         preserve_magazine_after_chest = True
         system_message = "보물상자 획득: 탄창이 최대치로 회복되었습니다."
+    return True
+
+
+def use_revive_skill():
+    """퀵슬롯에 장착된 부활의 차 스킬을 사망 순간 한 번 소모합니다."""
+    global revive_token, system_message, send_data
+    revive_slot = next(
+        (slot for slot in quick_slots if slot.assigned_skill == "부활의 차"),
+        None,
+    )
+    if revive_slot is None or "부활의 차" not in owned_skills:
+        return False
+    owned_skills.remove("부활의 차")
+    for slot in quick_slots:
+        if slot.assigned_skill == "부활의 차":
+            slot.assigned_skill = None
+    refresh_skill_inventory()
+    revive_token += 1
+    send_data["revive_request"] = True
+    my_player.Hp = max(1, round(my_player.MaxHp * REVIVE_HP_RATIO))
+    particles.emit(
+        my_player.X + my_player.rect.width / 2,
+        my_player.Y + my_player.rect.height / 2,
+        (255, 220, 120),
+        count=36,
+        speed=110,
+        lifetime=900,
+        size=6,
+    )
+    system_message = "부활의 차 스킬이 발동했습니다."
     return True
 
 
@@ -423,6 +455,9 @@ def activate_quick_slot(key):
         return
 
     skill_name = slot.assigned_skill
+    if skill_name == "부활의 차":
+        system_message = "부활의 차는 장착 중 사망하면 자동 발동합니다."
+        return
     now = pygame.time.get_ticks()
     if skill_name == "텔포" and teleport_anchor is None and now < skill_cooldowns.get(skill_name, 0):
         remain = (skill_cooldowns[skill_name] - now) / 1000
@@ -568,6 +603,27 @@ def activate_skill_or_reload(key):
         reload_weapon()
 
 
+def remove_ward_at_cursor():
+    """마우스 주변의 자기 와드 하나를 제거합니다."""
+    global system_message
+    target_x, target_y = screen_to_world(
+        *pygame.mouse.get_pos(), CameraPosX, CameraPosY, camera_zoom
+    )
+    max_distance = TileGene.tile_size * 1.5
+    nearest_index = None
+    nearest_distance = max_distance
+    for index, (ward_x, ward_y) in enumerate(wards):
+        distance = math.hypot(target_x - ward_x, target_y - ward_y)
+        if distance <= nearest_distance:
+            nearest_index = index
+            nearest_distance = distance
+    if nearest_index is None:
+        system_message = "마우스 주변에 제거할 와드가 없습니다."
+        return
+    wards.pop(nearest_index)
+    system_message = "와드를 제거했습니다."
+
+
 def handle_key_event(event, _mouse_pos):
     global inventory_open, dragging_skill, debug_mode, system_message, show_hitboxes
     weapon_key_codes = (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6)
@@ -600,6 +656,7 @@ def handle_key_event(event, _mouse_pos):
         pygame.K_t: lambda _key: activate_quick_slot(_key),
         pygame.K_r: lambda _key: reload_weapon(),
         pygame.K_f: lambda _key: activate_skill_or_reload(_key),
+        pygame.K_x: lambda _key: remove_ward_at_cursor(),
     }
     key_actions.get(event.key, activate_quick_slot)(event.key)
 
@@ -702,7 +759,7 @@ def fire_stun_bullet():
         center_x + math.cos(angle) * BULLET_TARGET_DISTANCE,
         center_y + math.sin(angle) * BULLET_TARGET_DISTANCE,
         speed=weapon_state.config.bullet_speed,
-        hold_ms=45,
+        hold_ms=0,
     )
     bullet.just_fired = True
     bullets.append(bullet)
@@ -756,8 +813,6 @@ def fire_bullet():
     muzzle_x = center_x + math.cos(base_angle) * 40
     muzzle_y = center_y + math.sin(base_angle) * 40
     weapon_state.consume_round()
-    aim_locked_pos = current_mouse_pos
-    aim_lock_until = pygame.time.get_ticks() + 500
     animation_started_at = pygame.time.get_ticks()
     weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
     weapon_smoke_until = animation_started_at + WEAPON_SMOKE_ANIMATION_MS
@@ -784,7 +839,7 @@ def fire_bullet():
             muzzle_x + math.cos(shot_angle) * BULLET_TARGET_DISTANCE,
             muzzle_y + math.sin(shot_angle) * BULLET_TARGET_DISTANCE,
             speed=config.bullet_speed,
-            hold_ms=45,
+            hold_ms=0,
         )
         new_bullet.just_fired = True
         new_bullet.life_time = config.bullet_lifetime
@@ -857,17 +912,18 @@ def GameView():
     global running, ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, camera_fov, camera_zoom, match_result, local_stun_until, zone_elapsed_ms
     global screen_shake, server_players, bullets, remote_bullets, processed_bullet_events, MousePos, system_message
     global vision_shape_override, vision_skill_until, shield_until, haste_until
-    global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys, pending_hit_events, wards
+    global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys, pending_furniture_destroys, pending_hit_events, wards, active_rune_tile, rune_alerts
     global visibility_polygon_cache, mouse_fire_hold, last_effect_tick, preserve_magazine_after_chest
     global aim_lock_until, aim_locked_pos, weapon_fire_until
     global teleport_anchor, teleport_anchor_expires_at
     global training_dummy, damage_numbers, easter_egg_found, easter_egg_flash_until
 
     MousePos = pygame.mouse.get_pos()
-    if my_player.Hp <= 0:
+    if my_player.Hp <= 0 and not use_revive_skill():
         ScreenState = "GameOver"
         return
     now = pygame.time.get_ticks()
+    revived_after_server_update = False
     if debug_mode and training_dummy is None:
         respawn_training_dummy()
     damage_numbers = [
@@ -884,14 +940,36 @@ def GameView():
     if mouse_fire_hold and weapon_state.config.automatic and weapon_state.can_fire():
         fire_bullet()
 
-    if now < aim_lock_until and aim_locked_pos is not None:
-        Weapon_Pos = aim_locked_pos
-    else:
-        Weapon_Pos = pygame.mouse.get_pos()
+    Weapon_Pos = pygame.mouse.get_pos()
 
     if now >= local_stun_until:
         my_player.handle_input()
     weapon_state.update_reload()
+
+    current_tile = (
+        int((my_player.X + my_player.rect.width / 2) // TileGene.tile_size),
+        int((my_player.Y + my_player.rect.height / 2) // TileGene.tile_size),
+    )
+    rune_tile = next(
+        (
+            (current_tile[0] + offset_x, current_tile[1] + offset_y)
+            for offset_x, offset_y in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1))
+            if abs(offset_x) + abs(offset_y) <= RUNE_TRIGGER_TILE_RANGE
+            and TileGene.get_tile_at(current_tile[0] + offset_x, current_tile[1] + offset_y)
+            and TileGene.get_tile_at(current_tile[0] + offset_x, current_tile[1] + offset_y).tile_type == 5
+        ),
+        None,
+    )
+    send_data["rune_ping"] = None
+    if rune_tile is not None:
+        if active_rune_tile != rune_tile:
+            send_data["rune_ping"] = (
+                (rune_tile[0] + 0.5) * TileGene.tile_size,
+                (rune_tile[1] + 0.5) * TileGene.tile_size,
+            )
+            active_rune_tile = rune_tile
+    else:
+        active_rune_tile = None
 
     effect_delta = max(0, now - last_effect_tick)
     last_effect_tick = now
@@ -988,6 +1066,12 @@ def GameView():
     send_data["stealth_token"] = stealth_token
     send_data["wards"] = list(wards)
     send_data["destroyed_treasures"] = list(pending_treasure_destroys)
+    send_data["destroyed_furniture"] = list(pending_furniture_destroys)
+    send_data["revive_token"] = revive_token
+    send_data["revive_armed"] = any(
+        slot.assigned_skill == "부활의 차"
+        for slot in quick_slots
+    )
     send_data["hit_events"] = list(pending_hit_events)
     
     # ★ [정리] 총알 정보 - 이번 프레임에서 새로 발사된 총알만 전송
@@ -998,7 +1082,7 @@ def GameView():
             "angle": bullet.angle,
             "weapon_id": bullet.weapon_id,
             "stun_ms": bullet.stun_ms,
-            "hold_ms": 45,
+            "hold_ms": 0,
         }
         for bullet in bullets
         if hasattr(bullet, 'just_fired') and bullet.just_fired
@@ -1014,15 +1098,27 @@ def GameView():
         if server_raw:
             server_players = pickle.loads(server_raw)
             synchronized_treasures = set()
+            synchronized_furniture = set()
+            synchronized_rune_alerts = []
             for player_snapshot in server_players.values():
                 synchronized_treasures.update(
                     tuple(treasure) for treasure in player_snapshot.get("destroyed_treasures", [])
                 )
+                synchronized_furniture.update(
+                    tuple(furniture) for furniture in player_snapshot.get("destroyed_furniture", [])
+                )
+            own_snapshot = server_players.get(my_id)
+            if own_snapshot:
+                synchronized_rune_alerts = own_snapshot.get("rune_alerts", [])
             for tile_x, tile_y in synchronized_treasures:
                 TileGene.destroy_treasure(tile_x, tile_y)
+            for tile_x, tile_y in synchronized_furniture:
+                TileGene.destroy_furniture(tile_x, tile_y)
+            rune_alerts = synchronized_rune_alerts
             pending_treasure_destroys.clear()
+            pending_furniture_destroys.clear()
             pending_hit_events.clear()
-            own_snapshot = server_players.get(my_id)
+            send_data["revive_request"] = False
             zone_elapsed_ms = max(
                 zone_elapsed_ms,
                 max(0, int(server_players.get(my_id, {}).get("zone_elapsed_ms", 0))),
@@ -1042,13 +1138,11 @@ def GameView():
                 weapon_state.reserve_ammo = own_snapshot.get(
                     "reserve_ammo", weapon_state.reserve_ammo
                 )
-            winner_ids = {
-                snapshot.get("winner_id")
-                for snapshot in server_players.values()
-                if snapshot.get("winner_id") is not None
-            }
-            if winner_ids:
-                winner_id = next(iter(winner_ids))
+                if my_player.Hp <= 0:
+                    revived_after_server_update = use_revive_skill()
+            own_winner_id = own_snapshot.get("winner_id") if own_snapshot else None
+            if own_winner_id is not None and not revived_after_server_update:
+                winner_id = own_winner_id
                 match_result = "victory" if int(winner_id) == my_id else "defeat"
                 ScreenState = "Victory" if match_result == "victory" else "GameOver"
                 return
@@ -1174,6 +1268,26 @@ def GameView():
         bullet.draw(display, CameraPosX, CameraPosY, camera_zoom)
 
         if bullet.is_active:
+            destructible = TileGene.destructible_collision(bullet.rect)
+            if destructible:
+                tile_x, tile_y, tile_type = destructible
+                if tile_type == 9 and pygame.time.get_ticks() >= bullet.reflect_until:
+                    stone_center = pygame.Vector2(
+                        (tile_x + 0.5) * TileGene.tile_size,
+                        (tile_y + 0.5) * TileGene.tile_size,
+                    )
+                    bullet_center = pygame.Vector2(bullet.rect.center)
+                    bullet.reflect(
+                        horizontal=abs(bullet_center.x - stone_center.x) > abs(bullet_center.y - stone_center.y),
+                        vertical=abs(bullet_center.y - stone_center.y) >= abs(bullet_center.x - stone_center.x),
+                    )
+                    particles.emit(bullet.x, bullet.y, (190, 200, 215), count=10, speed=55, lifetime=280, size=3)
+                else:
+                    if TileGene.destroy_furniture(tile_x, tile_y):
+                        pending_furniture_destroys.append((tile_x, tile_y))
+                        particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
+                    bullet.is_active = False
+                    continue
             if TileGene.check_wall_collision(bullet.rect):
                 bullet.is_active = False
                 continue
@@ -1268,6 +1382,24 @@ def GameView():
 
     for bullet in remote_bullets:
         bullet.update()
+        if bullet.is_active:
+            destructible = TileGene.destructible_collision(bullet.rect)
+            if destructible:
+                tile_x, tile_y, tile_type = destructible
+                if tile_type == 9 and pygame.time.get_ticks() >= bullet.reflect_until:
+                    stone_center = pygame.Vector2(
+                        (tile_x + 0.5) * TileGene.tile_size,
+                        (tile_y + 0.5) * TileGene.tile_size,
+                    )
+                    bullet_center = pygame.Vector2(bullet.rect.center)
+                    bullet.reflect(
+                        horizontal=abs(bullet_center.x - stone_center.x) > abs(bullet_center.y - stone_center.y),
+                        vertical=abs(bullet_center.y - stone_center.y) >= abs(bullet_center.x - stone_center.x),
+                    )
+                elif TileGene.destroy_furniture(tile_x, tile_y):
+                    pending_furniture_destroys.append((tile_x, tile_y))
+                    particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
+                    bullet.is_active = False
         if bullet.is_active and TileGene.check_wall_collision(bullet.rect):
             bullet.is_active = False
         if bullet.is_active and shield_until <= pygame.time.get_ticks():
@@ -1288,7 +1420,7 @@ def GameView():
         bullet.draw(display, CameraPosX, CameraPosY, camera_zoom)
     remote_bullets = [b for b in remote_bullets if b.is_active]
 
-    if my_player.Hp <= 0:
+    if my_player.Hp <= 0 and not use_revive_skill():
         ScreenState = "GameOver"
         return
 
@@ -1460,6 +1592,33 @@ def GameView():
 
     display.blit(dark_overlay, (0, 0))
 
+    for alert_x, alert_y, remaining_ms in rune_alerts:
+        alert_screen_x, alert_screen_y = world_to_screen(
+            alert_x, alert_y, CameraPosX, CameraPosY, camera_zoom
+        )
+        pulse = 28 + round(8 * math.sin(now * 0.02))
+        pygame.draw.circle(
+            display,
+            (255, 225, 100),
+            (round(alert_screen_x), round(alert_screen_y)),
+            max(10, round(pulse * camera_zoom)),
+            3,
+        )
+        pygame.draw.line(
+            display,
+            (255, 235, 130),
+            (round(alert_screen_x), max(0, round(alert_screen_y - 150 * camera_zoom))),
+            (round(alert_screen_x), round(alert_screen_y)),
+            2,
+        )
+        alert_text = pygame.font.Font(None, 24).render("발광 룬", True, (255, 235, 130))
+        display.blit(
+            alert_text,
+            alert_text.get_rect(
+                center=(round(alert_screen_x), max(16, round(alert_screen_y - 165 * camera_zoom)))
+            ),
+        )
+
     # 조준선은 로컬 화면에만 그리므로 다른 플레이어에게 동기화되지 않습니다.
     draw_local_aim_ray(
         display,
@@ -1617,6 +1776,7 @@ def GameView():
         server_players,
         my_id,
         training_dummy if debug_mode else None,
+        rune_alerts,
     )
     ui_x = 30
     ui_y = 80  

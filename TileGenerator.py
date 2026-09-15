@@ -14,6 +14,8 @@ from Config import (
     MAP_BUSH_CLUSTER_RADIUS_MAX,
     MAP_TREASURE_CHANCE,
     MAP_RUNE_COUNT,
+    MAP_FURNITURE_CHANCE,
+    MAP_STONE_COUNT,
     MAP_WATER_RADIUS,
 )
 from shapely.geometry import Polygon
@@ -136,6 +138,26 @@ class TileGenerator:
         pygame.draw.circle(rune, (230, 255, 180, 220), (rune_center, rune_center), 3)
         self.tile_images[5] = rune
 
+        bed = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
+        pygame.draw.rect(bed, (135, 75, 55), (3, 7, self.tile_size - 6, self.tile_size - 10), border_radius=3)
+        pygame.draw.rect(bed, (235, 220, 190), (6, 10, self.tile_size - 12, self.tile_size // 2), border_radius=2)
+        pygame.draw.line(bed, (90, 45, 35), (4, self.tile_size - 5), (self.tile_size - 4, self.tile_size - 5), 2)
+        self.tile_images[7] = bed
+
+        chair = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
+        pygame.draw.rect(chair, (150, 90, 45), (8, 8, self.tile_size - 16, 10), border_radius=2)
+        pygame.draw.rect(chair, (120, 70, 35), (10, 17, self.tile_size - 20, 10), border_radius=2)
+        pygame.draw.line(chair, (100, 55, 30), (11, 27), (8, self.tile_size - 3), 3)
+        pygame.draw.line(chair, (100, 55, 30), (self.tile_size - 11, 27), (self.tile_size - 8, self.tile_size - 3), 3)
+        self.tile_images[8] = chair
+
+        stone = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
+        stone_points = [(5, 22), (9, 9), (20, 4), (29, 12), (26, 27), (14, 30)]
+        pygame.draw.polygon(stone, (105, 110, 120), stone_points)
+        pygame.draw.polygon(stone, (190, 195, 205), stone_points, 2)
+        pygame.draw.line(stone, (145, 150, 160), (10, 12), (22, 24), 2)
+        self.tile_images[9] = stone
+
         water = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
         water.fill((45, 145, 205, 210))
         pygame.draw.line(water, (150, 225, 255), (4, self.tile_size // 3), (self.tile_size - 4, self.tile_size // 3), 2)
@@ -231,6 +253,8 @@ class TileGenerator:
 
         self._place_bushes()
         self._place_runes()
+        self._place_furniture()
+        self._place_stones()
         self._place_central_water()
 
         self._build_world_surface()
@@ -277,6 +301,48 @@ class TileGenerator:
         random.shuffle(available)
         for tile_x, tile_y in available[:MAP_RUNE_COUNT]:
             self.map_data[(tile_x, tile_y)] = Tile(tile_type=5, is_walkable=True)
+
+    def _place_furniture(self):
+        """집 내부에 시야와 이동을 막는 파괴 가능한 가구를 배치합니다."""
+        for house in self.house_rects:
+            house_left = house.left + MAP_HOUSE_PADDING + 1
+            house_top = house.top + MAP_HOUSE_PADDING + 1
+            house_right = house.right - MAP_HOUSE_PADDING - 2
+            house_bottom = house.bottom - MAP_HOUSE_PADDING - 2
+            if house_right - house_left < 4 or house_bottom - house_top < 3:
+                continue
+            if random.random() > MAP_FURNITURE_CHANCE:
+                continue
+
+            bed_x = random.randint(house_left, house_right - 1)
+            bed_y = random.randint(house_top, house_bottom)
+            for tile_x in (bed_x, bed_x + 1):
+                self.map_data[(tile_x, bed_y)] = Tile(tile_type=7, is_walkable=False)
+
+            chair_x = random.randint(house_left, house_right)
+            chair_y = random.randint(house_top, house_bottom)
+            if self.map_data[(chair_x, chair_y)].tile_type == 0:
+                self.map_data[(chair_x, chair_y)] = Tile(tile_type=8, is_walkable=False)
+
+    def _place_stones(self):
+        """집과 중앙 안전 지대를 피해 총알을 튕겨내는 돌을 배치합니다."""
+        available = [
+            position
+            for position, tile in self.map_data.items()
+            if tile.tile_type == 0
+            and not any(house.collidepoint(*position) for house in self.house_rects)
+        ]
+        random.shuffle(available)
+        center_x = self.map_width // 2
+        center_y = self.map_height // 2
+        placed = 0
+        for tile_x, tile_y in available:
+            if placed >= MAP_STONE_COUNT:
+                break
+            if (tile_x - center_x) ** 2 + (tile_y - center_y) ** 2 <= (MAP_WATER_RADIUS + 3) ** 2:
+                continue
+            self.map_data[(tile_x, tile_y)] = Tile(tile_type=9, is_walkable=False)
+            placed += 1
 
     def _place_central_water(self):
         center_x = self.map_width // 2
@@ -387,7 +453,7 @@ class TileGenerator:
         while (tile_x, tile_y) != (end_tile_x, end_tile_y):
             if (tile_x, tile_y) != (start_tile_x, start_tile_y):
                 tile = self.map_data.get((tile_x, tile_y))
-                if tile and tile.tile_type == 1:
+                if tile and tile.tile_type in (1, 7, 8, 9):
                     return True
 
             double_error = error * 2
@@ -399,7 +465,7 @@ class TileGenerator:
                 tile_y += step_y
 
         target_tile = self.map_data.get((end_tile_x, end_tile_y))
-        return bool(target_tile and target_tile.tile_type == 1)
+        return bool(target_tile and target_tile.tile_type in (1, 7, 8, 9))
 
     def is_point_visible_from(
         self,
@@ -544,7 +610,7 @@ class TileGenerator:
         if self._vision_wall_rects is None:
             self._vision_wall_rects = [
                 (x * self.tile_size, y * self.tile_size, (x + 1) * self.tile_size, (y + 1) * self.tile_size)
-                for (x, y), tile in self.map_data.items() if tile.tile_type == 1
+                for (x, y), tile in self.map_data.items() if tile.tile_type in (1, 7, 8, 9)
             ]
 
         # [최적화] 저격총 같은 긴 시야는 시야각 폭만 체크 (좌우 side width)
@@ -590,7 +656,7 @@ class TileGenerator:
         for y in range(start_y, end_y):
             for x in range(start_x, end_x):
                 tile = self.map_data.get((x, y))
-                if tile and tile.tile_type == 1:
+                if tile and tile.tile_type in (1, 7, 8, 9):
                     world_x = x * self.tile_size
                     world_y = y * self.tile_size
                     rect = pygame.Rect(world_x, world_y, self.tile_size, self.tile_size)
@@ -614,9 +680,9 @@ class TileGenerator:
         # Rect의 4개 모서리와 중심을 체크
         points_to_check = [
             (rect.left, rect.top),      # 좌상단
-            (rect.right, rect.top),     # 우상단
-            (rect.left, rect.bottom),   # 좌하단
-            (rect.right, rect.bottom),  # 우하단
+            (rect.right - 1, rect.top),     # 우상단
+            (rect.left, rect.bottom - 1),   # 좌하단
+            (rect.right - 1, rect.bottom - 1),  # 우하단
             (rect.centerx, rect.centery) # 중심
         ]
         
@@ -643,6 +709,29 @@ class TileGenerator:
             if tile is None or tile.tile_type == 1:
                 return True
         return False
+
+    def destructible_collision(self, rect):
+        """총알과 파괴 가능한 가구 또는 돌의 충돌 타일을 반환합니다."""
+        start_x = max(0, int(rect.left // self.tile_size))
+        end_x = min(self.map_width - 1, int(rect.right // self.tile_size))
+        start_y = max(0, int(rect.top // self.tile_size))
+        end_y = min(self.map_height - 1, int(rect.bottom // self.tile_size))
+        for tile_y in range(start_y, end_y + 1):
+            for tile_x in range(start_x, end_x + 1):
+                tile = self.map_data.get((tile_x, tile_y))
+                if tile and tile.tile_type in (7, 8, 9):
+                    return tile_x, tile_y, tile.tile_type
+        return None
+
+    def destroy_furniture(self, tile_x, tile_y):
+        tile = self.map_data.get((tile_x, tile_y))
+        if not tile or tile.tile_type not in (7, 8):
+            return False
+        self.map_data[(tile_x, tile_y)] = Tile(tile_type=0, is_walkable=True)
+        self._build_world_surface()
+        self._visibility_cache.clear()
+        self._vision_wall_rects = None
+        return True
 
     def destroy_treasure_at(self, rect):
         """총알이 맞은 보물상자를 제거하고 맵을 다시 합성합니다."""

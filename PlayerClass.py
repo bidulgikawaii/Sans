@@ -121,34 +121,26 @@ class Player:
 
     def Move(self, dx, dy):
         """이동 시 벽 충돌 감지를 수행합니다."""
-        # 내부 좌표 임시 갱신
-        new_x = self.X + dx
-        new_y = self.Y + dy
-        
-        next_head_hitbox, next_body_hitbox = self.hitboxes_for_position(
-            new_x, new_y, self.rect.width, self.rect.height
-        )
-        
-        # 타일 제너레이터가 있으면 충돌 감지
-        if self.tile_generator:
-            # 머리와 몸통 둘 다 확인
-            if self.tile_generator.check_collision(next_head_hitbox) or \
-               self.tile_generator.check_collision(next_body_hitbox):
-                # 충돌 발생 - 이동 취소
-                return False
-        
-        # 충돌 없음 - 실제 좌표 갱신
-        self.X = new_x
-        self.Y = new_y
-        
-        # 이미지 rect 이동
-        self.rect.x = int(self.X)
-        self.rect.y = int(self.Y)
-        
-        # 히트박스 위치 갱신
-        self._update_hitboxes()
-        
-        return True
+        moved = False
+        for axis_dx, axis_dy in ((dx, 0), (0, dy)):
+            if axis_dx == 0 and axis_dy == 0:
+                continue
+            candidate_x = self.X + axis_dx
+            candidate_y = self.Y + axis_dy
+            next_head_hitbox, next_body_hitbox = self.hitboxes_for_position(
+                candidate_x, candidate_y, self.rect.width, self.rect.height
+            )
+            if self.tile_generator and (
+                self.tile_generator.check_collision(next_head_hitbox)
+                or self.tile_generator.check_collision(next_body_hitbox)
+            ):
+                continue
+            self.X = candidate_x
+            self.Y = candidate_y
+            self.rect.topleft = (round(self.X), round(self.Y))
+            self._update_hitboxes()
+            moved = True
+        return moved
 
     def draw(self, surface, camera_x=0, camera_y=0, zoom=1.0, offset_x=0, offset_y=0):
         # 카메라 위치를 차감하여 화면용 상대 좌표 계산

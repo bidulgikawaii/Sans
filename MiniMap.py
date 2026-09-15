@@ -12,6 +12,9 @@ class MiniMap:
         4: (48, 116, 88),
         5: (70, 150, 106),
         6: (92, 168, 118),
+        7: (128, 82, 62),
+        8: (155, 105, 55),
+        9: (115, 120, 135),
     }
 
     def __init__(self, tile_generator, size=(260, 260), margin=(30, 30)):
@@ -52,7 +55,15 @@ class MiniMap:
             round(world_y * self.size[1] / world_height),
         )
 
-    def draw(self, surface, local_position, players=None, local_player_id=None, training_dummy=None):
+    def draw(
+        self,
+        surface,
+        local_position,
+        players=None,
+        local_player_id=None,
+        training_dummy=None,
+        rune_alerts=None,
+    ):
         if self._map_surface is None or self._map_signature != self._get_map_signature():
             self._build_map_surface()
 
@@ -70,6 +81,10 @@ class MiniMap:
         panel.blit(title, (12, 7))
 
         marker_surface = pygame.Surface(self.size, pygame.SRCALPHA)
+        for alert_x, alert_y, _remaining_ms in rune_alerts or ():
+            alert_position = self._world_to_map(alert_x, alert_y)
+            pygame.draw.circle(marker_surface, (255, 225, 90), alert_position, 7, 2)
+            pygame.draw.circle(marker_surface, (255, 245, 150), alert_position, 3)
         if training_dummy is not None and training_dummy.Hp > 0:
             dummy_x, dummy_y = self._world_to_map(
                 training_dummy.X + training_dummy.rect.width / 2,

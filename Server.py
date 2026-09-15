@@ -13,6 +13,9 @@ from Config import (
     HEADSHOT_DAMAGE_MULTIPLIER,
     MAP_HEIGHT_TILES,
     MAP_WIDTH_TILES,
+    RUNE_ALERT_RADIUS,
+    RUNE_ALERT_DURATION_MS,
+    REVIVE_HP_RATIO,
 )
 from Weapon import WEAPONS
 from Lobby import LobbyState
@@ -29,6 +32,8 @@ player_lock = threading.Lock()
 bullet_events = []
 next_bullet_event_id = 1
 destroyed_treasures = set()
+destroyed_furniture = set()
+rune_alerts = []
 player_count = 0
 next_player_id = 1
 lobby = LobbyState()
@@ -72,6 +77,9 @@ def handle_client(conn, player_id):
         "stealth_token": 0,
         "stealth_until": 0.0,
         "wards": [],
+        "revive_token": 0,
+        "revive_armed": False,
+        "rune_alerts": [],
         "stunned_until": 0.0,
         "zone_outside_since": None,
         "zone_damage_credit": 0.0,
@@ -105,6 +113,9 @@ def handle_client(conn, player_id):
             for treasure in client_data.get("destroyed_treasures", []):
                 if len(treasure) == 2:
                     destroyed_treasures.add((int(treasure[0]), int(treasure[1])))
+            for furniture in client_data.get("destroyed_furniture", []):
+                if len(furniture) == 2:
+                    destroyed_furniture.add((int(furniture[0]), int(furniture[1])))
 
             # 3. 서버에 저장된 해당 유저 데이터 갱신
             players[player_id]["posX"] = client_data["posX"]
@@ -124,6 +135,22 @@ def handle_client(conn, player_id):
                 for ward in client_data.get("wards", [])
                 if isinstance(ward, (list, tuple)) and len(ward) == 2
             ]
+            players[player_id]["revive_armed"] = bool(
+                client_data.get("revive_armed", False)
+            )
+            revive_token = int(client_data.get("revive_token", 0))
+            if (
+                client_data.get("revive_request", False)
+                and revive_token != players[player_id]["revive_token"]
+            ):
+                players[player_id]["revive_token"] = revive_token
+                players[player_id]["hp"] = max(1, round(PLAYER_MAX_HP * REVIVE_HP_RATIO))
+                players[player_id]["revive_armed"] = False
+            rune_ping = client_data.get("rune_ping")
+            if isinstance(rune_ping, (list, tuple)) and len(rune_ping) == 2:
+                rune_alerts.append((float(rune_ping[0]), float(rune_ping[1]), time.monotonic() + RUNE_ALERT_DURATION_MS / 1000))
+            now_monotonic = time.monotonic()
+            rune_alerts[:] = [alert for alert in rune_alerts if alert[2] > now_monotonic]
             stealth_token = int(client_data.get("stealth_token", 0))
             if stealth_token != players[player_id]["stealth_token"]:
                 players[player_id]["stealth_token"] = stealth_token
@@ -201,10 +228,21 @@ def handle_client(conn, player_id):
                     active_id for active_id in active_ids
                     if active_id in players and players[active_id]["hp"] > 0
                 ]
+                revive_waiting_ids = [
+                    active_id for active_id in active_ids
+                    if active_id in players
+                    and players[active_id]["hp"] <= 0
+                    and players[active_id].get("revive_armed", False)
+                ]
                 lobby_mode = lobby.status()["mode"]
                 winner_id = (
                     alive_ids[0]
-                    if lobby.started and lobby_mode == "normal" and len(alive_ids) == 1
+                    if (
+                        lobby.started
+                        and lobby_mode == "normal"
+                        and len(alive_ids) == 1
+                        and not revive_waiting_ids
+                    )
                     else None
                 )
             snapshot = pickle.loads(pickle.dumps(active_players))
@@ -214,10 +252,20 @@ def handle_client(conn, player_id):
             ]
             if pending_bullets:
                 last_sent_bullet_event_id = pending_bullets[-1]["event_id"]
-            for player in snapshot.values():
+            for snapshot_player_id, player in snapshot.items():
                 player["bullets"] = list(pending_bullets)
                 player["destroyed_treasures"] = list(destroyed_treasures)
-                player["winner_id"] = winner_id
+                player["destroyed_furniture"] = list(destroyed_furniture)
+                player["rune_alerts"] = [
+                    (alert[0], alert[1], max(0, round((alert[2] - now_monotonic) * 1000)))
+                    for alert in rune_alerts
+                    if (alert[0] - player["posX"]) ** 2 + (alert[1] - player["posY"]) ** 2 <= RUNE_ALERT_RADIUS ** 2
+                ]
+                player["winner_id"] = (
+                    winner_id
+                    if winner_id is not None and int(snapshot_player_id) == int(winner_id)
+                    else None
+                )
                 player["zone_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
                 player["stun_ms_remaining"] = max(
                     0, round((player.get("stunned_until", 0.0) - time.monotonic()) * 1000)

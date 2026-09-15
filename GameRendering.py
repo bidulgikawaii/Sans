@@ -146,7 +146,7 @@ def draw_ammo_status(
     config = weapon_state.config
     name_text = font.render(config.name, True, (255, 220, 120))
     ammo_text = font.render(
-        "재장전 중..." if weapon_state.is_reloading_now() else f"{weapon_state.magazine_ammo} / {config.magazine_size}",
+        "재장전 중..." if weapon_state.is_reloading_now() else f"{weapon_state.magazine_ammo}   {config.magazine_size}",
         True,
         (255, 180, 120) if weapon_state.is_reloading_now() else (255, 255, 255),
     )
@@ -154,10 +154,19 @@ def draw_ammo_status(
     panel_x = screen_width - panel_size[0] - panel_margin[0]
     panel_y = screen_height - panel_size[1] - panel_margin[1]
     surface.blit(panel, (panel_x, panel_y))
-    name_rect = name_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 25))
-    ammo_rect = ammo_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 68))
+    name_rect = name_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 3))
+    ammo_rect = ammo_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 43))
     surface.blit(name_text, name_rect)
     surface.blit(ammo_text, ammo_rect)
+
+
+def draw_ward(surface, ward_x, ward_y, camera_x, camera_y, zoom):
+    screen_x = round((ward_x - camera_x) * zoom)
+    screen_y = round((ward_y - camera_y) * zoom)
+    radius = max(6, round(12 * zoom))
+    pygame.draw.circle(surface, (120, 240, 255), (screen_x, screen_y), radius, 2)
+    pygame.draw.line(surface, (120, 240, 255), (screen_x - radius, screen_y), (screen_x + radius, screen_y), 1)
+    pygame.draw.line(surface, (120, 240, 255), (screen_x, screen_y - radius), (screen_x, screen_y + radius), 1)
 
 
 def draw_quick_slot_cooldowns(surface, slots, cooldowns, font):

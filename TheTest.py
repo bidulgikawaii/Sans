@@ -26,6 +26,7 @@ from GameRendering import (
     draw_quick_slot_cooldowns,
     draw_teleport_anchor,
     draw_visibility_geometry,
+    draw_ward,
 )
 from GameAudio import load_effect_sound, play_effect_sound
 from Zone import MagneticZone
@@ -126,6 +127,7 @@ send_data = {
     "weapon_id": DEFAULT_WEAPON_ID,
     "magazine_ammo": WEAPONS[DEFAULT_WEAPON_ID].magazine_size,
     "reserve_ammo": WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo,
+    "wards": [],
     
     # 발사한 총알 정보 (여러 개 가능)
     "bullets": [],      # [{"x": x, "y": y, "angle": angle}, ...]
@@ -153,6 +155,7 @@ shield_until = 0
 haste_until = 0
 stealth_until = 0
 stealth_token = 0
+wards = []
 debug_mode = False
 active_bombs = []
 active_explosions = []
@@ -411,7 +414,7 @@ def handle_quit(_event, _mouse_pos):
 
 
 def activate_quick_slot(key):
-    global system_message, vision_shape_override, vision_skill_until, shield_until, haste_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
+    global system_message, vision_shape_override, vision_skill_until, shield_until, haste_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, wards
     global pending_hit_events
     key_name = pygame.key.name(key).upper()
     slot = next((slot for slot in quick_slots if slot.key_name == key_name), None)
@@ -492,6 +495,19 @@ def activate_quick_slot(key):
             size=5,
         )
         system_message = "1.5초 동안 적에게 완전히 보이지 않습니다."
+    elif skill_name == "와드":
+        target_x, target_y = screen_to_world(*pygame.mouse.get_pos(), CameraPosX, CameraPosY, camera_zoom)
+        target_rect = pygame.Rect(0, 0, 16, 16)
+        target_rect.center = (round(target_x), round(target_y))
+        if TileGene.check_collision(target_rect):
+            skill_cooldowns.pop(skill_name, None)
+            system_message = "벽 안에는 와드를 설치할 수 없습니다."
+            return
+        wards.append((target_x, target_y))
+        if len(wards) > WARD_MAX_COUNT:
+            wards.pop(0)
+        particles.ring(target_x, target_y, (120, 240, 255), count=18, radius=28, lifetime=650, size=4)
+        system_message = f"와드를 설치했습니다. 현재 {len(wards)}/{WARD_MAX_COUNT}개"
     elif skill_name == "텔포":
         if teleport_anchor is None:
             target_x, target_y = get_player_world_center(
@@ -841,7 +857,7 @@ def GameView():
     global running, ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, camera_fov, camera_zoom, match_result, local_stun_until, zone_elapsed_ms
     global screen_shake, server_players, bullets, remote_bullets, processed_bullet_events, MousePos, system_message
     global vision_shape_override, vision_skill_until, shield_until, haste_until
-    global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys, pending_hit_events
+    global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys, pending_hit_events, wards
     global visibility_polygon_cache, mouse_fire_hold, last_effect_tick, preserve_magazine_after_chest
     global aim_lock_until, aim_locked_pos, weapon_fire_until
     global teleport_anchor, teleport_anchor_expires_at
@@ -970,6 +986,7 @@ def GameView():
     send_data["stealth"] = now < stealth_until or in_bush
     send_data["in_bush"] = in_bush
     send_data["stealth_token"] = stealth_token
+    send_data["wards"] = list(wards)
     send_data["destroyed_treasures"] = list(pending_treasure_destroys)
     send_data["hit_events"] = list(pending_hit_events)
     
@@ -1110,7 +1127,7 @@ def GameView():
         """다른 플레이어가 현재 시야 안에 있는지 확인합니다."""
         point = (point_x, point_y, fov_bonus)
         if point not in visibility_cache:
-            visibility_cache[point] = TileGene.is_point_visible_from(
+            visible_from_player = TileGene.is_point_visible_from(
                 player_world_x,
                 player_world_y,
                 point_x,
@@ -1121,6 +1138,18 @@ def GameView():
                 fov_angle=current_vision.vision_fov + fov_bonus,
                 vision_width=current_vision.vision_width,
             )
+            visible_from_ward = any(
+                TileGene.is_point_visible_from(
+                    ward_x,
+                    ward_y,
+                    point_x,
+                    point_y,
+                    WARD_VISION_RADIUS,
+                    vision_shape=VISION_CIRCLE,
+                )
+                for ward_x, ward_y in wards
+            )
+            visibility_cache[point] = visible_from_player or visible_from_ward
         return visibility_cache[point]
 
     # ------------------ [게임 월드 그리기] ------------------
@@ -1407,6 +1436,28 @@ def GameView():
         # 월드 폴리곤을 현재 카메라 좌표로 변환해 어두운 레이어를 뚫습니다.
         draw_visibility_geometry(dark_overlay, visibility_polygon, CameraPosX, CameraPosY, camera_zoom)
 
+    for ward_x, ward_y in wards:
+        ward_key = (
+            "ward",
+            round(ward_x / 8),
+            round(ward_y / 8),
+            WARD_VISION_RADIUS,
+        )
+        if ward_key not in visibility_polygon_cache:
+            visibility_polygon_cache[ward_key] = TileGene.get_visibility_polygon(
+                ward_x,
+                ward_y,
+                WARD_VISION_RADIUS,
+                vision_shape=VISION_CIRCLE,
+            )
+        draw_visibility_geometry(
+            dark_overlay,
+            visibility_polygon_cache[ward_key],
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+        )
+
     display.blit(dark_overlay, (0, 0))
 
     # 조준선은 로컬 화면에만 그리므로 다른 플레이어에게 동기화되지 않습니다.
@@ -1517,6 +1568,25 @@ def GameView():
             IML.TpStatue,
         )
 
+    for ward_x, ward_y in wards:
+        draw_ward(display, ward_x, ward_y, CameraPosX, CameraPosY, camera_zoom)
+    for player_id, player_info in server_players.items():
+        if int(player_id) == my_id:
+            continue
+        for ward_x, ward_y in player_info.get("wards", []):
+            if TileGene.is_point_visible_from(
+                player_world_x,
+                player_world_y,
+                ward_x,
+                ward_y,
+                current_vision_radius,
+                vision_shape=current_vision_shape,
+                direction_angle=Weapon_Angle,
+                fov_angle=current_vision.vision_fov,
+                vision_width=current_vision.vision_width,
+            ):
+                draw_ward(display, ward_x, ward_y, CameraPosX, CameraPosY, camera_zoom)
+
     if shield_until > pygame.time.get_ticks():
         shield_center = get_player_screen_center(
             my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height(),
@@ -1563,7 +1633,7 @@ def GameView():
     
     # [커스텀 가능] HP 텍스트 표시 폰트 (GuiFont 사용)
     hp_text = GuiFont.render(f"HP: {my_player.Hp} / {my_player.MaxHp}", True, (255, 255, 255))
-    display.blit(hp_text, (ui_x + HP_FRAME_SIZE[0] + 15, ui_y + 42))
+    display.blit(hp_text, (ui_x + HP_FRAME_SIZE[0] + 15, ui_y + 30))
 
     # [커스텀 가능] 플레이어 ID 표시 폰트 (GuiFont 사용)
     id_text = GuiFont.render(f"ID: {my_id}", True, (255, 255, 255))
@@ -1600,32 +1670,32 @@ def GameView():
         message_text = GuiFont.render(system_message, True, (255, 255, 255))
         display.blit(message_text, (30, ScreenY - 40))
     
-    # 스킬 창 상태 표시 (우측 상단)
-    inventory_status = "🎒 인벤토리: [I]"
-    inventory_text = GuiFont.render(inventory_status, True, (170, 220, 180))
-    display.blit(inventory_text, (ScreenX - 300, 20))
-    vision_status = f"시야: {current_vision_shape} [V]"
-    # [커스텀 가능] 시야 정보 폰트 (GuiFont 사용)
-    vision_text = GuiFont.render(vision_status, True, (255, 220, 120))
-    display.blit(vision_text, (ScreenX - 300, 55))
-    # [커스텀 가능] 카메라 FOV 정보 폰트 (GuiFont 사용)
-    fov_text = GuiFont.render(f"카메라 FOV: {camera_fov:.2f} / 최대 {CAMERA_FOV_MAX:.2f}", True, (180, 230, 255))
-    display.blit(fov_text, (ScreenX - 420, 90))
-    if zone_enabled:
-        zone_center_x, zone_center_y = get_player_world_center(
-            my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
-        )
-        zone_status = MagneticZoneState.stage_text(zone_elapsed_ms)
-        if not MagneticZoneState.is_inside(zone_center_x, zone_center_y, zone_elapsed_ms):
-            zone_status = "자기장 밖: 3초 후 피해 증가"
-            zone_color = (255, 100, 100)
+    if debug_mode: # 스킬 창 상태 표시 (우측 상단)
+        inventory_status = "🎒 인벤토리: [I]"
+        inventory_text = GuiFont.render(inventory_status, True, (170, 220, 180))
+        display.blit(inventory_text, (ScreenX - 300, 20))
+        vision_status = f"시야: {current_vision_shape} [V]"
+        # [커스텀 가능] 시야 정보 폰트 (GuiFont 사용)
+        vision_text = GuiFont.render(vision_status, True, (255, 220, 120))
+        display.blit(vision_text, (ScreenX - 300, 55))
+        # [커스텀 가능] 카메라 FOV 정보 폰트 (GuiFont 사용)
+        fov_text = GuiFont.render(f"카메라 FOV: {camera_fov:.2f} / 최대 {CAMERA_FOV_MAX:.2f}", True, (180, 230, 255))
+        display.blit(fov_text, (ScreenX - 420, 90))
+        if zone_enabled:
+            zone_center_x, zone_center_y = get_player_world_center(
+                my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
+            )
+            zone_status = MagneticZoneState.stage_text(zone_elapsed_ms)
+            if not MagneticZoneState.is_inside(zone_center_x, zone_center_y, zone_elapsed_ms):
+                zone_status = "자기장 밖: 3초 후 피해 증가"
+                zone_color = (255, 100, 100)
+            else:
+                zone_color = (255, 180, 180)
         else:
-            zone_color = (255, 180, 180)
-    else:
-        zone_status = "훈련장: 자기장 비활성화"
-        zone_color = (180, 220, 255)
-    zone_text = GuiFont.render(zone_status, True, zone_color)
-    display.blit(zone_text, (ScreenX - 420, 125))
+            zone_status = "훈련장: 자기장 비활성화"
+            zone_color = (180, 220, 255)
+        zone_text = GuiFont.render(zone_status, True, zone_color)
+        display.blit(zone_text, (ScreenX - 420, 125))
     # ------------------ [그리기 끝] ------------------
 
 

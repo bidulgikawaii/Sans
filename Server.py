@@ -71,6 +71,7 @@ def handle_client(conn, player_id):
         "in_bush": False,
         "stealth_token": 0,
         "stealth_until": 0.0,
+        "wards": [],
         "stunned_until": 0.0,
         "zone_outside_since": None,
         "zone_damage_credit": 0.0,
@@ -118,6 +119,11 @@ def handle_client(conn, player_id):
                 0, client_data.get("reserve_ammo", players[player_id]["reserve_ammo"])
             )
             players[player_id]["in_bush"] = bool(client_data.get("in_bush", False))
+            players[player_id]["wards"] = [
+                (float(ward[0]), float(ward[1]))
+                for ward in client_data.get("wards", [])
+                if isinstance(ward, (list, tuple)) and len(ward) == 2
+            ]
             stealth_token = int(client_data.get("stealth_token", 0))
             if stealth_token != players[player_id]["stealth_token"]:
                 players[player_id]["stealth_token"] = stealth_token

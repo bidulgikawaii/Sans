@@ -2,7 +2,7 @@ import pygame
 
 
 class MiniMap:
-    """Draws a cached overview of the generated map and live player markers."""
+    """Draws a cached overview of the generated map."""
 
     TILE_COLORS = {
         0: (92, 125, 82),
@@ -70,18 +70,6 @@ class MiniMap:
         panel.blit(title, (12, 7))
 
         marker_surface = pygame.Surface(self.size, pygame.SRCALPHA)
-        local_x, local_y = self._world_to_map(*local_position)
-        pygame.draw.circle(marker_surface, (110, 235, 255), (local_x, local_y), 5)
-        pygame.draw.circle(marker_surface, (235, 255, 255), (local_x, local_y), 7, 1)
-
-        for player_id, player_info in (players or {}).items():
-            if local_player_id is not None and int(player_id) == int(local_player_id):
-                continue
-            if player_info.get("stealth", False):
-                continue
-            marker_x, marker_y = self._world_to_map(player_info.get("posX", 0), player_info.get("posY", 0))
-            pygame.draw.circle(marker_surface, (255, 100, 100), (marker_x, marker_y), 4)
-
         if training_dummy is not None and training_dummy.Hp > 0:
             dummy_x, dummy_y = self._world_to_map(
                 training_dummy.X + training_dummy.rect.width / 2,

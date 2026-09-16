@@ -2,7 +2,7 @@
 """게임에서 여러 모듈이 공유하는 변경 가능한 기본 설정."""
 
 # 네트워크
-SERVER_IP = "127.0.0.1"
+SERVER_IP = "10.16.20.103"
 SERVER_PORT = 5555
 NETWORK_BUFFER_SIZE = 4096
 SERVER_SEED = 12345

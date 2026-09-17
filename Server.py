@@ -259,7 +259,6 @@ def handle_client(conn, player_id):
                 player["rune_alerts"] = [
                     (alert[0], alert[1], max(0, round((alert[2] - now_monotonic) * 1000)))
                     for alert in rune_alerts
-                    if (alert[0] - player["posX"]) ** 2 + (alert[1] - player["posY"]) ** 2 <= RUNE_ALERT_RADIUS ** 2
                 ]
                 player["winner_id"] = (
                     winner_id

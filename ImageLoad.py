@@ -15,6 +15,7 @@ class Imageload():
             self.Pistol = pygame.transform.smoothscale(self.Pistol, PISTOL_IMAGE_SIZE)
         self.PistolFire = self._load_scaled_image("pistol_fire_transparent.png", PISTOL_IMAGE_SIZE)
         self.PistolSmoke = self._load_scaled_image("pistol_smoke_transparent.png", PISTOL_IMAGE_SIZE)
+        self.Gigwan = self._load_scaled_image("Gigwan.png", (128, 64))
         self.HBlade = self._load_animation("H_blade")
         self.Expo = self._load_animation("Expo", (128, 128))
         self.Sniper = self._load_scaled_image("Sniper.png", (192, 64))
@@ -144,6 +145,9 @@ class Imageload():
     def GetShotGun(self, index=0):
         # index 인자를 주면 ShotGun[0]뿐만 아니라 다른 프레임(1~7)도 가져올 수 있어 확장성에 좋습니다.
         return self.ShotGun[index]
+
+    def GetGigwan(self):
+        return self.Gigwan
 
     def GetPlayer(self):
         return self.Player  

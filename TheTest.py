@@ -80,7 +80,13 @@ p_w = IML.Player.get_width()
 p_h = IML.Player.get_height()
 
 # [커스텀 가능] 안전 스폰을 찾을 타일 좌표 범위입니다.
-safe_spawn = TileGene.find_safe_spawn(SPAWN_MIN_X, SPAWN_MAX_X, SPAWN_MIN_Y, SPAWN_MAX_Y)
+safe_spawn = TileGene.find_safe_spawn(
+    SPAWN_MIN_X,
+    SPAWN_MAX_X,
+    SPAWN_MIN_Y,
+    SPAWN_MAX_Y,
+    rng=random.SystemRandom(),
+)
 spawn_tile_x, spawn_tile_y = safe_spawn or (MAP_WIDTH_TILES // 2, MAP_HEIGHT_TILES // 2)
 spawn_world_x = spawn_tile_x * TileGene.tile_size
 spawn_world_y = spawn_tile_y * TileGene.tile_size
@@ -529,7 +535,7 @@ def activate_quick_slot(key):
             lifetime=650,
             size=5,
         )
-        system_message = "1.5초 동안 적에게 완전히 보이지 않습니다."
+        system_message = "4.5초 동안 적에게 완전히 보이지 않습니다."
     elif skill_name == "와드":
         target_x, target_y = screen_to_world(*pygame.mouse.get_pos(), CameraPosX, CameraPosY, camera_zoom)
         target_rect = pygame.Rect(0, 0, 16, 16)
@@ -764,7 +770,6 @@ def fire_stun_bullet():
     bullet.just_fired = True
     bullets.append(bullet)
     weapon_state.consume_round()
-    screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 2)
     system_message = "기절탄을 발사했습니다."
     return True
 
@@ -816,7 +821,6 @@ def fire_bullet():
     animation_started_at = pygame.time.get_ticks()
     weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
     weapon_smoke_until = animation_started_at + WEAPON_SMOKE_ANIMATION_MS
-    screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + int(config.recoil * 2))
     particles.emit(muzzle_x, muzzle_y, (255, 220, 100), count=10, speed=70, lifetime=220, size=4)
 
     for _ in range(config.pellets):
@@ -1195,6 +1199,8 @@ def GameView():
             weapon_image = IML.GetPistol()
         elif weapon_state.weapon_id == "sniper":
             weapon_image = IML.GetSniper()
+        elif weapon_state.weapon_id == "smg":
+            weapon_image = IML.GetGigwan()
         else:
             weapon_image = IML.GetShotGun()
     weapon_image = weapon_image or IML.GetShotGun()
@@ -1232,6 +1238,14 @@ def GameView():
                 fov_angle=current_vision.vision_fov + fov_bonus,
                 vision_width=current_vision.vision_width,
             )
+            visible_from_base_vision = TileGene.is_point_visible_from(
+                player_world_x,
+                player_world_y,
+                point_x,
+                point_y,
+                PLAYER_BASE_VISION_RADIUS,
+                vision_shape=VISION_CIRCLE,
+            )
             visible_from_ward = any(
                 TileGene.is_point_visible_from(
                     ward_x,
@@ -1243,7 +1257,9 @@ def GameView():
                 )
                 for ward_x, ward_y in wards
             )
-            visibility_cache[point] = visible_from_player or visible_from_ward
+            visibility_cache[point] = (
+                visible_from_player or visible_from_base_vision or visible_from_ward
+            )
         return visibility_cache[point]
 
     # ------------------ [게임 월드 그리기] ------------------
@@ -1265,7 +1281,6 @@ def GameView():
 
     for bullet in bullets:
         bullet.update()
-        bullet.draw(display, CameraPosX, CameraPosY, camera_zoom)
 
         if bullet.is_active:
             destructible = TileGene.destructible_collision(bullet.rect)
@@ -1417,7 +1432,6 @@ def GameView():
                     "stun_ms": bullet.stun_ms,
                 })
                 bullet.is_active = False
-        bullet.draw(display, CameraPosX, CameraPosY, camera_zoom)
     remote_bullets = [b for b in remote_bullets if b.is_active]
 
     if my_player.Hp <= 0 and not use_revive_skill():
@@ -1464,6 +1478,8 @@ def GameView():
             other_weapon_image = IML.GetPistol()
         elif p_info.get("weapon_id") == "sniper":
             other_weapon_image = IML.GetSniper()
+        elif p_info.get("weapon_id") == "smg":
+            other_weapon_image = IML.GetGigwan()
         else:
             other_weapon_image = IML.GetShotGun()
         if p_info.get("weapon_id") == "pistol":
@@ -1523,7 +1539,26 @@ def GameView():
 
 
     
-    # 화면 전체를 어둡게 한 뒤, 아래에서 시야 폴리곤만 투명하게 뚫습니다.
+    # 기본 시야는 무기 시야와 구분되는 어두운 청색 영역으로 표시합니다.
+    base_overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
+    base_overlay.fill((8, 24, 42, PLAYER_BASE_VISION_ALPHA))
+    base_vision_polygon = TileGene.get_visibility_polygon(
+        player_world_x,
+        player_world_y,
+        PLAYER_BASE_VISION_RADIUS,
+        vision_shape=VISION_CIRCLE,
+    )
+    if base_vision_polygon:
+        draw_visibility_geometry(
+            base_overlay,
+            base_vision_polygon,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+        )
+    display.blit(base_overlay, (0, 0))
+
+    # 화면 전체를 어둡게 한 뒤, 아래에서 무기 시야 폴리곤만 투명하게 뚫습니다.
     dark_overlay = vision_overlay
     # 완전한 검정이 아니라 뒤의 맵이 살짝 보이는 반투명 검정입니다.
     dark_overlay.fill((0, 0, 0, VISION_OVERLAY_ALPHA))
@@ -1537,6 +1572,16 @@ def GameView():
     pygame.draw.rect(dark_overlay, (0, 0, 0, 255), (0, min(ScreenY, map_screen_bottom), ScreenX, max(0, ScreenY - map_screen_bottom)))
     pygame.draw.rect(dark_overlay, (0, 0, 0, 255), (0, 0, max(0, map_screen_left), ScreenY))
     pygame.draw.rect(dark_overlay, (0, 0, 0, 255), (min(ScreenX, map_screen_right), 0, max(0, ScreenX - map_screen_right), ScreenY))
+
+    # 기본 시야는 무기 시야 밖에서도 밝은 원형 영역으로 유지합니다.
+    if base_vision_polygon:
+        draw_visibility_geometry(
+            dark_overlay,
+            base_vision_polygon,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+        )
 
     # 위치 8픽셀, 방향 4도 단위로 묶어 마우스 이동 중 재계산을 줄입니다.
     polygon_cache_key = (
@@ -1591,6 +1636,28 @@ def GameView():
         )
 
     display.blit(dark_overlay, (0, 0))
+
+    # 시야 오버레이 위에 로컬 플레이어를 다시 그려 기본 시야에서도 항상 보이게 합니다.
+    if now < stealth_until or in_bush:
+        visible_player_image = my_player.image.copy()
+        visible_player_image.set_alpha(75 if now < stealth_until else 145)
+        if camera_zoom != 1.0:
+            visible_player_image = pygame.transform.scale(
+                visible_player_image,
+                (
+                    max(1, round(visible_player_image.get_width() * camera_zoom)),
+                    max(1, round(visible_player_image.get_height() * camera_zoom)),
+                ),
+            )
+        display.blit(
+            visible_player_image,
+            (
+                round((my_player.rect.x - CameraPosX) * camera_zoom + local_stun_offset_x),
+                round((my_player.rect.y - CameraPosY) * camera_zoom),
+            ),
+        )
+    else:
+        my_player.draw(display, CameraPosX, CameraPosY, camera_zoom, local_stun_offset_x)
 
     for alert_x, alert_y, remaining_ms in rune_alerts:
         alert_screen_x, alert_screen_y = world_to_screen(

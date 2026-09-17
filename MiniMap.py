@@ -81,6 +81,28 @@ class MiniMap:
         panel.blit(title, (12, 7))
 
         marker_surface = pygame.Surface(self.size, pygame.SRCALPHA)
+        local_marker = self._world_to_map(*local_position)
+        pygame.draw.circle(marker_surface, (90, 210, 255), local_marker, 5)
+        pygame.draw.circle(marker_surface, (220, 250, 255), local_marker, 7, 2)
+
+        # 룬 경보 위치와 가까운 상대만 경보를 밟은 플레이어로 표시합니다.
+        alert_positions = [(alert_x, alert_y) for alert_x, alert_y, _remaining_ms in rune_alerts or ()]
+        for player_id, player_info in (players or {}).items():
+            if local_player_id is not None and int(player_id) == int(local_player_id):
+                continue
+            player_position = (
+                player_info.get("posX", 0) + self.tile_generator.tile_size / 2,
+                player_info.get("posY", 0) + self.tile_generator.tile_size / 2,
+            )
+            if any(
+                (player_position[0] - alert_x) ** 2 + (player_position[1] - alert_y) ** 2
+                <= (self.tile_generator.tile_size * 1.5) ** 2
+                for alert_x, alert_y in alert_positions
+            ):
+                player_marker = self._world_to_map(*player_position)
+                pygame.draw.circle(marker_surface, (255, 225, 90), player_marker, 5)
+                pygame.draw.circle(marker_surface, (255, 245, 150), player_marker, 7, 2)
+
         for alert_x, alert_y, _remaining_ms in rune_alerts or ():
             alert_position = self._world_to_map(alert_x, alert_y)
             pygame.draw.circle(marker_surface, (255, 225, 90), alert_position, 7, 2)

@@ -412,10 +412,11 @@ class TileGenerator:
     def get_tile_at(self, tile_x, tile_y):
         return self.map_data.get((tile_x, tile_y))
 
-    def find_safe_spawn(self, min_x=1, max_x=None, min_y=1, max_y=None):
+    def find_safe_spawn(self, min_x=1, max_x=None, min_y=1, max_y=None, rng=None):
         """플레이어 크기(2x2 타일)가 완전히 바닥인 스폰 위치를 찾습니다."""
         max_x = max_x or self.map_width - 2
         max_y = max_y or self.map_height - 2
+        rng = rng or random
 
         def is_safe(x, y):
             return all(
@@ -426,7 +427,7 @@ class TileGenerator:
             )
 
         for _ in range(200):
-            spawn = (random.randint(min_x, max_x), random.randint(min_y, max_y))
+            spawn = (rng.randint(min_x, max_x), rng.randint(min_y, max_y))
             if is_safe(*spawn):
                 return spawn
 

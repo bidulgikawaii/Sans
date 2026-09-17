@@ -44,8 +44,10 @@ class Particle:
 class ParticleSystem:
     def __init__(self):
         self.particles = []
+        self.size_scale = 1.15
 
     def emit(self, x, y, color, count=10, speed=80, lifetime=400, size=4, gravity=0.0):
+        effective_size = max(1.0, float(size) * self.size_scale)
         for _ in range(count):
             angle = random.uniform(0, math.tau)
             velocity = (
@@ -59,12 +61,13 @@ class ParticleSystem:
                     color,
                     velocity,
                     random.uniform(lifetime * 0.65, lifetime),
-                    random.uniform(size * 0.6, size),
+                    random.uniform(effective_size * 0.6, effective_size),
                     gravity,
                 )
             )
 
     def ring(self, x, y, color, count=16, radius=40, lifetime=350, size=4):
+        effective_size = max(1.0, float(size) * self.size_scale)
         for index in range(count):
             angle = math.tau * index / count
             self.particles.append(
@@ -74,7 +77,7 @@ class ParticleSystem:
                     color,
                     (math.cos(angle) * radius, math.sin(angle) * radius),
                     lifetime,
-                    size,
+                    effective_size,
                 )
             )
 

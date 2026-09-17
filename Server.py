@@ -23,8 +23,16 @@ from Zone import MagneticZone
 import random
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.bind((SERVER_IP, SERVER_PORT))
+bind_ip = SERVER_IP
+for candidate_ip in (SERVER_IP, "127.0.0.1"):
+    try:
+        server.bind((candidate_ip, SERVER_PORT))
+        bind_ip = candidate_ip
+        break
+    except OSError:
+        continue
 server.listen()
+print(f"서버 시작: {bind_ip}:{SERVER_PORT}")
 
 # 서버가 총괄하는 플레이어들의 실시간 딕셔너리
 players = {}
@@ -107,6 +115,17 @@ def handle_client(conn, player_id):
                     lobby_status["accepted"] = accepted
                     if not accepted:
                         lobby_status["message"] = "게임이 진행 중이라 참가할 수 없습니다."
+                conn.sendall(pickle.dumps(lobby_status))
+                continue
+
+            if client_data.get("type") == "lobby_ready":
+                with player_lock:
+                    ready = bool(client_data.get("ready", False))
+                    accepted = lobby.set_ready(player_id, ready)
+                    lobby_status = lobby.status()
+                    lobby_status["accepted"] = accepted
+                    if not accepted:
+                        lobby_status["message"] = "로비에 참여하지 않은 플레이어입니다."
                 conn.sendall(pickle.dumps(lobby_status))
                 continue
 

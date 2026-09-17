@@ -14,6 +14,7 @@ class LobbyState:
 
     def __init__(self):
         self.modes = {}
+        self.ready_players = set()
         self.started = False
         self.start_at = None
         self.started_at = None
@@ -32,20 +33,30 @@ class LobbyState:
         if mode not in (GAME_MODE_NORMAL, GAME_MODE_DEBUG):
             mode = GAME_MODE_NORMAL
         self.modes[player_id] = mode
+        self.ready_players.discard(player_id)
         if debug_enabled or mode == GAME_MODE_DEBUG:
             self.practice_players.add(player_id)
         else:
             self.practice_players.discard(player_id)
-        if self.start_at is None and (
-            mode == GAME_MODE_DEBUG
-            or len(self.modes) >= MAX_PLAYERS
-            or (mode == GAME_MODE_NORMAL and len(self.modes) >= NORMAL_MATCH_MIN_PLAYERS)
-        ):
+        return True
+
+    def set_ready(self, player_id, ready):
+        self._update_start_state()
+        if player_id not in self.modes:
+            return False
+        if ready:
+            self.ready_players.add(player_id)
+        else:
+            self.ready_players.discard(player_id)
+        if self.start_at is None and self.modes and len(self.ready_players) == len(self.modes):
             self.start_at = time.monotonic() + LOBBY_START_DELAY_MS / 1000
+        elif len(self.ready_players) != len(self.modes):
+            self.start_at = None
         return True
 
     def leave(self, player_id):
         self.modes.pop(player_id, None)
+        self.ready_players.discard(player_id)
         self.practice_players.discard(player_id)
         if not self.modes:
             self.started = False
@@ -66,6 +77,8 @@ class LobbyState:
             max(0, round((time.monotonic() - self.started_at) * 1000))
             if self.started_at else 0
         )
+        ready_count = len(self.ready_players)
+        all_ready = bool(self.modes) and ready_count == len(self.modes)
         return {
             "type": "lobby_status",
             "count": len(self.modes),
@@ -75,4 +88,6 @@ class LobbyState:
             "accepting_players": not self.started and self.start_at is None,
             "countdown_ms": countdown_ms,
             "elapsed_ms": elapsed_ms,
+            "ready_count": ready_count,
+            "all_ready": all_ready,
         }

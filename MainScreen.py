@@ -56,15 +56,24 @@ class MainScreenRenderer:
             (255, 255, 255),
         )
         self.surface.blit(count_text, count_text.get_rect(center=(self.screen_width // 2, 390)))
-        mode_name = "디버그 모드" if selected_game_mode == debug_mode else "일반 모드"
+        ready_count = lobby_status.get("ready_count", 0)
+        ready_text = self.font.render(
+            f"확인 인원: {ready_count} / {max(1, lobby_status.get('count', 0))}",
+            True,
+            (180, 235, 255),
+        )
+        self.surface.blit(ready_text, ready_text.get_rect(center=(self.screen_width // 2, 440)))
+        mode_name = "디버그 모드" if selected_game_mode == "debug" else "일반 모드"
         countdown_ms = lobby_status.get("countdown_ms", 0)
         if lobby_status.get("accepted") is False:
             status_name = lobby_status.get("message", "게임이 진행 중이라 참가할 수 없습니다.")
+        elif lobby_status.get("all_ready"):
+            status_name = "모든 인원이 확인했습니다. 3초 후 시작"
         elif countdown_ms > 0:
             status_name = f"게임 시작까지 {max(1, (countdown_ms + 999) // 1000)}초"
         else:
-            status_name = "게임 시작 중..." if lobby_status.get("started") else "다른 플레이어를 기다리는 중..."
+            status_name = "스페이스를 눌러 인원 확인" if not lobby_status.get("started") else "게임 시작 중..."
         mode_text = self.font.render(mode_name, True, (255, 220, 120))
         status_text = self.font.render(status_name, True, (220, 220, 220))
-        self.surface.blit(mode_text, mode_text.get_rect(center=(self.screen_width // 2, 470)))
-        self.surface.blit(status_text, status_text.get_rect(center=(self.screen_width // 2, 540)))
+        self.surface.blit(mode_text, mode_text.get_rect(center=(self.screen_width // 2, 500)))
+        self.surface.blit(status_text, status_text.get_rect(center=(self.screen_width // 2, 570)) )

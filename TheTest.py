@@ -53,8 +53,20 @@ GuiFont = pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__
 
 
 # --- [네트워크 초기화] ---
-client = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
-client.connect((ServerIp, ServerPort))
+def connect_to_server():
+    last_error = None
+    for host in (ServerIp, ServerIp2):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        try:
+            sock.connect((host, ServerPort))
+            return sock
+        except (OSError, socket.timeout) as exc:
+            last_error = exc
+            sock.close()
+    raise last_error or ConnectionError("서버 연결에 실패했습니다.")
+
+client = connect_to_server()
 
 init_data = pickle.loads(client.recv(1024))
 my_id = init_data["init_id"]
@@ -414,8 +426,15 @@ def LoadingView():
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
-        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            ScreenState = "ModeSelectView"
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                ScreenState = "ModeSelectView"
+            elif event.key == pygame.K_SPACE and not lobby_status.get("started"):
+                client.sendall(pickle.dumps({
+                    "type": "lobby_ready",
+                    "ready": True,
+                }))
+                lobby_status["player_ready"] = True
 
 
 def GameOverView():
@@ -683,32 +702,39 @@ def cycle_vision_shape():
 
 
 def fire_knife():
-    """칼 공격: 근거리 범위 내의 모든 적에게 데미지를 줍니다."""
+    """칼 공격: 근거리 범위 내의 모든 적에게 데미지를 주고, 보물상자도 파괴합니다."""
     global screen_shake, system_message, knife_attack_until
     global training_dummy, damage_numbers
     config = weapon_state.config
     knife_attack_until = pygame.time.get_ticks() + MELEE_ATTACK_DURATION_MS
-    
+
     center_x, center_y = get_player_world_center(
         my_player.X,
         my_player.Y,
         IML.Player.get_width(),
         IML.Player.get_height(),
     )
-    
-    # 칼 공격 범위 (데미지를 줄 최대 거리)
+
     knife_range = MELEE_RANGE
-    
-    # 근처 서버 플레이어 찾기
+
+    treasure_rect = pygame.Rect(
+        center_x - knife_range,
+        center_y - knife_range,
+        knife_range * 2,
+        knife_range * 2,
+    )
+    nearby_treasure = TileGene.treasure_at(treasure_rect)
+    if nearby_treasure:
+        collect_treasure(nearby_treasure)
+
     attacked_count = 0
     for p_id, p_info in server_players.items():
         if int(p_id) == my_id:
             continue
-        
+
         enemy_center_x = p_info["posX"] + IML.Player.get_width() / 2
         enemy_center_y = p_info["posY"] + IML.Player.get_height() / 2
-        
-        # 거리 계산
+
         distance = math.sqrt((center_x - enemy_center_x)**2 + (center_y - enemy_center_y)**2)
         if distance <= knife_range:
             attacked_count += 1
@@ -734,10 +760,10 @@ def fire_knife():
             if training_dummy.Hp <= 0:
                 training_dummy.respawn_at = pygame.time.get_ticks() + TRAINING_DUMMY_RESPAWN_MS
             attacked_count += 1
-    
+
     weapon_state.consume_round()
     screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + MELEE_SHAKE)
-    
+
     if attacked_count > 0:
         particles.emit(center_x, center_y, (255, 80, 80), count=18, speed=100, lifetime=400, size=5)
         system_message = f"칼 공격! {config.damage} 데미지 × {attacked_count}명"
@@ -988,14 +1014,18 @@ def GameView():
         vision_skill_until = 0
         vision_shape_override = None
     base_speed = PLAYER_HASTE_SPEED if now < haste_until else PLAYER_NORMAL_SPEED
+    knife_speed_bonus = 3 if weapon_state.weapon_id == "knife" else 0
     player_center_x, player_center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
+    effective_base_speed = base_speed + knife_speed_bonus
     my_player.normal_speed = (
-        base_speed * WATER_SPEED_MULTIPLIER
+        effective_base_speed * WATER_SPEED_MULTIPLIER
         if TileGene.is_in_water(player_center_x, player_center_y)
-        else base_speed
+        else effective_base_speed
     )
+    my_player.sprint_speed = PLAYER_SPRINT_SPEED + knife_speed_bonus
+    my_player.dash_speed = PLAYER_DASH_SPEED + knife_speed_bonus
 
     if now >= next_supply_drop_at:
         if len(supply_drops) < SUPPLY_DROP_MAX and random.random() < SUPPLY_DROP_CHANCE:

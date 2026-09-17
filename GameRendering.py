@@ -9,7 +9,7 @@ def draw_visibility_geometry(surface, geometry, camera_x, camera_y, zoom):
     polygons = geometry.geoms if geometry.geom_type == "MultiPolygon" else (geometry,)
     for polygon in polygons:
         points = [
-            ((world_x - camera_x) * zoom, (world_y - camera_y) * zoom)
+            (round((world_x - camera_x) * zoom), round((world_y - camera_y) * zoom))
             for world_x, world_y in polygon.exterior.coords
         ]
         if len(points) >= 3:

@@ -87,6 +87,8 @@ def handle_client(conn, player_id):
         "wards": [],
         "revive_token": 0,
         "revive_armed": False,
+        "heal_token": 0,
+        "shield_active": False,
         "rune_alerts": [],
         "stunned_until": 0.0,
         "zone_outside_since": None,
@@ -157,6 +159,15 @@ def handle_client(conn, player_id):
             players[player_id]["revive_armed"] = bool(
                 client_data.get("revive_armed", False)
             )
+            players[player_id]["shield_active"] = bool(client_data.get("shield_active", False))
+            heal_token = int(client_data.get("heal_token", 0))
+            if heal_token != players[player_id]["heal_token"]:
+                players[player_id]["heal_token"] = heal_token
+                heal_amount = max(0, int(client_data.get("heal_amount", 0)))
+                players[player_id]["hp"] = min(
+                    PLAYER_MAX_HP,
+                    players[player_id]["hp"] + heal_amount,
+                )
             revive_token = int(client_data.get("revive_token", 0))
             if (
                 client_data.get("revive_request", False)
@@ -214,6 +225,8 @@ def handle_client(conn, player_id):
                 target_id = int(hit_event.get("target_id", 0))
                 target = players.get(target_id)
                 if not target or target["hp"] <= 0:
+                    continue
+                if target.get("shield_active", False):
                     continue
                 damage = max(0, int(hit_event.get("damage", 0)))
                 if hit_event.get("hit_part") == "head":

@@ -9,7 +9,7 @@ class Imageload():
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.player_path = os.path.join(current_dir, "Image", "PlayerPng.png")
         self.backGround = os.path.join(current_dir, "Image", "Back")
-        self.ShotGun_Path = os.path.join(current_dir, "Image", "ShotGun")
+        self.ShotGun_Path = os.path.join(current_dir, "Image", "ShotGun_3.png")
         self.Pistol = self._load_image("pistol_idle_transparent.png")
         if self.Pistol:
             self.Pistol = pygame.transform.smoothscale(self.Pistol, PISTOL_IMAGE_SIZE)
@@ -21,11 +21,8 @@ class Imageload():
         self.Sniper = self._load_scaled_image("Sniper.png", (192, 64))
         
         # 1. 반복문 안에서 불러오기 -> 크기 조절 -> 최적화를 한 번에 처리
-        self.ShotGun = []
-        for a in range(1, 8):
-            img = pygame.image.load(self.ShotGun_Path + f"_{a}.png").convert_alpha()
-            img = pygame.transform.scale(img, (128, 64)) # ◀ 리스트에 넣기 전에 32x16으로 축소
-            self.ShotGun.append(img)
+        shotgun_image = pygame.image.load(self.ShotGun_Path).convert_alpha()
+        self.ShotGun = [pygame.transform.smoothscale(shotgun_image, (128, 64))]
 
         self.Tile = pygame.image.load(os.path.join(current_dir, "Image", "Tile.png")).convert_alpha()
         self.Tile = pygame.transform.scale(self.Tile, (64, 64))

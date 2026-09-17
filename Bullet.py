@@ -35,6 +35,8 @@ class Bullet:
         # 좌표 및 속도 초기화
         self.x = 0
         self.y = 0
+        self.previous_x = 0
+        self.previous_y = 0
         self.speed_x = 0
         self.speed_y = 0
 
@@ -54,10 +56,18 @@ class Bullet:
     def rect(self):
         return pygame.Rect(round(self.x), round(self.y), self.surface.get_width(), self.surface.get_height())
 
+    @property
+    def collision_rect(self):
+        rect = pygame.Rect(0, 0, 4, 4)
+        rect.center = self.rect.center
+        return rect
+
     def launch(self, start_x, start_y, target_x, target_y, speed=15, hold_ms=0):
         # 발사 위치 설정 (보통 플레이어의 화면 중심 좌표)
         self.x = start_x
         self.y = start_y
+        self.previous_x = start_x
+        self.previous_y = start_y
 
         # 🌟 3. 목표물과의 거리 차이(dx, dy) 계산
         dx = target_x - start_x
@@ -81,6 +91,8 @@ class Bullet:
         if self.is_active:
             if time.monotonic() < self.flight_start_time:
                 return
+            self.previous_x = self.x
+            self.previous_y = self.y
             self.x += self.speed_x
             self.y += self.speed_y
 

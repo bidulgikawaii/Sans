@@ -69,3 +69,9 @@ class MagneticZone:
         if elapsed_ms < self.stages[2][0]:
             return "자기장 2단계"
         return "자기장 중앙 고정"
+
+    def next_stage_remaining_ms(self, elapsed_ms):
+        for stage_time, _ratio in self.stages:
+            if elapsed_ms < stage_time:
+                return stage_time - max(0, elapsed_ms)
+        return 0

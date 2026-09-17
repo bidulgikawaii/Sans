@@ -17,10 +17,11 @@ class MiniMap:
         9: (115, 120, 135),
     }
 
-    def __init__(self, tile_generator, size=(260, 260), margin=(30, 30)):
+    def __init__(self, tile_generator, size=(260, 260), margin=(30, 30), font=None):
         self.tile_generator = tile_generator
         self.size = size
         self.margin = margin
+        self.font = font or pygame.font.Font(None, 20)
         self._map_surface = None
         self._map_signature = None
 
@@ -63,24 +64,49 @@ class MiniMap:
         local_player_id=None,
         training_dummy=None,
         rune_alerts=None,
+        magnetic_zone=None,
+        zone_elapsed_ms=0,
     ):
         if self._map_surface is None or self._map_signature != self._get_map_signature():
             self._build_map_surface()
 
         panel_width = self.size[0] + 16
         panel_height = self.size[1] + 42
-        panel_x = surface.get_width() - panel_width - self.margin[0]
         panel_y = self.margin[1]
-        panel = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
+        alert_width = 190 if magnetic_zone is not None else 0
+        total_panel_width = panel_width + alert_width
+        panel_x = surface.get_width() - total_panel_width - self.margin[0]
+        panel = pygame.Surface((total_panel_width, panel_height), pygame.SRCALPHA)
         pygame.draw.rect(panel, (12, 18, 22, 225), panel.get_rect(), border_radius=8)
         pygame.draw.rect(panel, (170, 205, 190, 220), panel.get_rect(), 2, border_radius=8)
-        panel.blit(self._map_surface, (8, 28))
+        map_x = alert_width + 8
+        panel.blit(self._map_surface, (map_x, 28))
 
-        title_font = pygame.font.Font(None, 20)
+        title_font = self.font
         title = title_font.render("MINIMAP", True, (235, 245, 230))
-        panel.blit(title, (12, 7))
+        panel.blit(title, (map_x + 4, 7))
+
+        if magnetic_zone is not None:
+            remaining_ms = magnetic_zone.next_stage_remaining_ms(zone_elapsed_ms)
+            alert_font = self.font
+            if remaining_ms:
+                seconds = max(1, (remaining_ms + 999) // 1000)
+                panel.blit(alert_font.render("자기장 접근", True, (255, 125, 135)), (12, 48))
+                panel.blit(alert_font.render(f"다음 축소까지 {seconds}초", True, (255, 230, 170)), (12, 76))
+            else:
+                panel.blit(alert_font.render("자기장 중앙 고정", True, (255, 170, 170)), (12, 48))
 
         marker_surface = pygame.Surface(self.size, pygame.SRCALPHA)
+        if magnetic_zone is not None:
+            zone_rect = magnetic_zone.bounds_at(zone_elapsed_ms)
+            zone_left, zone_top = self._world_to_map(zone_rect.left, zone_rect.top)
+            zone_right, zone_bottom = self._world_to_map(zone_rect.right, zone_rect.bottom)
+            pygame.draw.rect(
+                marker_surface,
+                (255, 90, 105),
+                (zone_left, zone_top, max(1, zone_right - zone_left), max(1, zone_bottom - zone_top)),
+                2,
+            )
         local_marker = self._world_to_map(*local_position)
         pygame.draw.circle(marker_surface, (90, 210, 255), local_marker, 5)
         pygame.draw.circle(marker_surface, (220, 250, 255), local_marker, 7, 2)
@@ -114,5 +140,5 @@ class MiniMap:
             )
             pygame.draw.circle(marker_surface, (255, 225, 100), (dummy_x, dummy_y), 4)
 
-        panel.blit(marker_surface, (8, 28))
+        panel.blit(marker_surface, (map_x, 28))
         surface.blit(panel, (panel_x, panel_y))

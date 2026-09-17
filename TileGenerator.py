@@ -711,6 +711,21 @@ class TileGenerator:
                 return True
         return False
 
+    def segment_wall_collision(self, start_x, start_y, end_x, end_y, radius=2):
+        """빠른 총알이 벽을 통과하지 않도록 이동 구간을 작은 점으로 검사합니다."""
+        distance = math.hypot(end_x - start_x, end_y - start_y)
+        steps = max(1, math.ceil(distance / max(1, self.tile_size / 4)))
+        for step in range(steps + 1):
+            progress = step / steps
+            point_rect = pygame.Rect(0, 0, radius * 2, radius * 2)
+            point_rect.center = (
+                round(start_x + (end_x - start_x) * progress),
+                round(start_y + (end_y - start_y) * progress),
+            )
+            if self.check_wall_collision(point_rect):
+                return True
+        return False
+
     def destructible_collision(self, rect):
         """총알과 파괴 가능한 가구 또는 돌의 충돌 타일을 반환합니다."""
         start_x = max(0, int(rect.left // self.tile_size))

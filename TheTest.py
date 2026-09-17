@@ -81,7 +81,11 @@ set_image_loader(IML)  # SkillAndSlot에 이미지 로더 전달
 TileGene = TileGenerator()
 # [커스텀 가능] 맵 가로/세로 타일 수입니다. 타일 크기와 곱해 전체 월드 크기가 결정됩니다.
 TileGene.generate_map(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, seed_value=init_data["seed"])
-MiniMapRenderer = MiniMap(TileGene, MINIMAP_SIZE, MINIMAP_MARGIN)
+MiniMapFont = pygame.font.Font(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"),
+    18,
+)
+MiniMapRenderer = MiniMap(TileGene, MINIMAP_SIZE, MINIMAP_MARGIN, MiniMapFont)
 MagneticZoneState = MagneticZone(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, TileGene.tile_size)
 
 # [커스텀 가능] HP 프레임의 화면 표시 크기입니다. 원본 비율을 유지해 한 번만 축소합니다.
@@ -182,6 +186,8 @@ wards = []
 active_rune_tile = None
 rune_alerts = []
 revive_token = 0
+heal_token = 0
+pending_heal_amount = 0
 debug_mode = False
 active_bombs = []
 active_explosions = []
@@ -194,6 +200,7 @@ pending_hit_events = []
 screen_shake = 0
 server_players = {}
 match_result = None
+result_started_at = 0
 show_hitboxes = True
 local_stun_until = 0
 zone_elapsed_ms = 0
@@ -234,12 +241,15 @@ def apply_supply_reward(reward_type):
     """보급품 종류별 회복·버프 효과를 적용합니다."""
     # 보급품은 서버에 아이템 자체를 동기화하지 않고,
     # 획득한 클라이언트의 플레이어 상태에만 효과를 적용합니다.
+    global send_data, heal_token, pending_heal_amount
     now = pygame.time.get_ticks()
     center_x, center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
     if reward_type == "heal":
         my_player.Hp = min(my_player.MaxHp, my_player.Hp + SUPPLY_HEAL_AMOUNT)
+        heal_token += 1
+        pending_heal_amount += SUPPLY_HEAL_AMOUNT
         message = f"보급품 획득: 체력 +{SUPPLY_HEAL_AMOUNT}"
         color = (100, 255, 130)
     elif reward_type == "haste":
@@ -254,6 +264,8 @@ def apply_supply_reward(reward_type):
         color = (100, 220, 255)
     else:
         my_player.Hp = min(my_player.MaxHp, my_player.Hp + SUPPLY_HEAL_AMOUNT)
+        heal_token += 1
+        pending_heal_amount += SUPPLY_HEAL_AMOUNT
         message = "보급품 획득: 체력 회복"
         color = (100, 255, 130)
     particles.emit(center_x, center_y, color, count=24, speed=80, lifetime=600, size=6)
@@ -332,6 +344,8 @@ def MainView():
         preview_image = IML.GetPistol()
     elif weapon_state.weapon_id == "sniper":
         preview_image = IML.GetSniper()
+    elif weapon_state.weapon_id == "smg":
+        preview_image = IML.GetGigwan()
     elif weapon_state.weapon_id == "knife":
         blade_frames = IML.GetBladeFrames()
         preview_image = blade_frames[0] if blade_frames else IML.GetShotGun()
@@ -434,15 +448,16 @@ def LoadingView():
                     "type": "lobby_ready",
                     "ready": True,
                 }))
-                lobby_status["player_ready"] = True
+                response = pickle.loads(client.recv(NETWORK_BUFFER_SIZE))
+                if response.get("type") == "lobby_status":
+                    lobby_status = response
 
 
 def GameOverView():
-    global running
-    title = GuiFont.render("게임 오버", True, (220, 50, 50))
-    guide = GuiFont.render("ESC를 눌러 종료하세요", True, (255, 255, 255))
-    display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
-    display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 70)))
+    global running, result_started_at
+    if not result_started_at:
+        result_started_at = pygame.time.get_ticks()
+    _draw_result_screen("패배", (220, 50, 50), pygame.time.get_ticks() - result_started_at)
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -452,17 +467,39 @@ def GameOverView():
 
 
 def VictoryView():
-    global running
-    title = GuiFont.render("승리", True, (255, 220, 80))
-    guide = GuiFont.render("ESC를 눌러 종료하세요", True, (255, 255, 255))
-    display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
-    display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 70)))
+    global running, result_started_at
+    if not result_started_at:
+        result_started_at = pygame.time.get_ticks()
+    _draw_result_screen("승리", (255, 220, 80), pygame.time.get_ticks() - result_started_at)
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             running = False
+
+
+def _draw_result_screen(title_text, color, elapsed):
+    pulse = 1.0 + 0.06 * math.sin(elapsed * 0.006)
+    fade = min(210, 80 + elapsed // 8)
+    overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
+    overlay.fill((*color, fade))
+    display.blit(overlay, (0, 0))
+    pygame.draw.circle(
+        display,
+        (*color, 80),
+        (ScreenX // 2, ScreenY // 2 - 50),
+        max(40, round(150 * pulse)),
+        5,
+    )
+    title = GuiFont.render(title_text, True, (255, 255, 255))
+    title = pygame.transform.smoothscale(
+        title,
+        (max(1, round(title.get_width() * pulse)), max(1, round(title.get_height() * pulse))),
+    )
+    display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
+    guide = GuiFont.render("ESC를 눌러 종료하세요", True, (255, 255, 255))
+    display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 70)))
 
 
 def handle_quit(_event, _mouse_pos):
@@ -596,6 +633,9 @@ def activate_quick_slot(key):
 
 def select_weapon(weapon_id):
     global system_message, vision_shape_override
+    if ScreenState == "GameView" and not debug_mode:
+        system_message = "일반전에서는 게임 중 무기를 변경할 수 없습니다."
+        return
     if weapon_state.select(weapon_id):
         vision_shape_override = None
         system_message = f"무기 변경: {weapon_state.config.name}"
@@ -695,6 +735,9 @@ def toggle_inventory():
 def cycle_vision_shape():
     """V 키로 현재 시야 모양을 순서대로 변경합니다."""
     global vision_shape_index, vision_shape_override, system_message
+    if ScreenState == "GameView" and not debug_mode:
+        system_message = "시야 변경은 디버그 모드에서만 사용할 수 있습니다."
+        return
     vision_shape_index = (vision_shape_index + 1) % len(vision_shapes)
     vision_shape_override = vision_shapes[vision_shape_index]
     shape_name = vision_shape_override
@@ -744,6 +787,23 @@ def fire_knife():
                 "hit_part": "body",
             })
 
+    start_x = max(0, int((center_x - knife_range) // TileGene.tile_size))
+    end_x = min(TileGene.map_width - 1, int((center_x + knife_range) // TileGene.tile_size))
+    start_y = max(0, int((center_y - knife_range) // TileGene.tile_size))
+    end_y = min(TileGene.map_height - 1, int((center_y + knife_range) // TileGene.tile_size))
+    destroyed_furniture_count = 0
+    for tile_y in range(start_y, end_y + 1):
+        for tile_x in range(start_x, end_x + 1):
+            tile_center = (
+                (tile_x + 0.5) * TileGene.tile_size,
+                (tile_y + 0.5) * TileGene.tile_size,
+            )
+            if math.hypot(center_x - tile_center[0], center_y - tile_center[1]) > knife_range:
+                continue
+            if TileGene.destroy_furniture(tile_x, tile_y):
+                pending_furniture_destroys.append((tile_x, tile_y))
+                destroyed_furniture_count += 1
+
     if debug_mode and training_dummy is not None and training_dummy.Hp > 0:
         dummy_center_x = training_dummy.rect.centerx
         dummy_center_y = training_dummy.rect.centery
@@ -767,8 +827,12 @@ def fire_knife():
     if attacked_count > 0:
         particles.emit(center_x, center_y, (255, 80, 80), count=18, speed=100, lifetime=400, size=5)
         system_message = f"칼 공격! {config.damage} 데미지 × {attacked_count}명"
+        if destroyed_furniture_count:
+            system_message += f", 가구 {destroyed_furniture_count}개 파괴"
     else:
         system_message = f"칼 휘둘렀습니다. (데미지: {config.damage})"
+        if destroyed_furniture_count:
+            system_message += f" 가구 {destroyed_furniture_count}개 파괴"
 
 
 def fire_stun_bullet():
@@ -780,11 +844,14 @@ def fire_stun_bullet():
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
     mouse_x, mouse_y = pygame.mouse.get_pos()
+    target_world_x, target_world_y = screen_to_world(
+        mouse_x, mouse_y, AimCameraPosX, AimCameraPosY, camera_zoom
+    )
     player_screen = get_player_screen_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height(),
         CameraPosX, CameraPosY, camera_zoom,
     )
-    angle = math.radians(Tool.GetAtn2Angle_Degrees(player_screen, (mouse_x, mouse_y)))
+    angle = math.atan2(target_world_y - center_y, target_world_x - center_x)
     bullet = Bullet(4, damage=DEFAULT_BULLET_DAMAGE, owner_id=my_id, weapon_id=weapon_state.weapon_id, stun_ms=STUN_DURATION_MS)
     bullet.launch(
         center_x, center_y,
@@ -838,9 +905,10 @@ def fire_bullet():
         AimCameraPosY,
         camera_zoom,
     )
-    base_angle = math.radians(
-        Tool.GetAtn2Angle_Degrees(player_screen_center, current_mouse_pos)
+    target_world_x, target_world_y = screen_to_world(
+        current_mouse_pos[0], current_mouse_pos[1], AimCameraPosX, AimCameraPosY, camera_zoom
     )
+    base_angle = math.atan2(target_world_y - center_y, target_world_x - center_x)
     muzzle_x = center_x + math.cos(base_angle) * 40
     muzzle_y = center_y + math.sin(base_angle) * 40
     weapon_state.consume_round()
@@ -942,7 +1010,7 @@ def GameView():
     global running, ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, camera_fov, camera_zoom, match_result, local_stun_until, zone_elapsed_ms
     global screen_shake, server_players, bullets, remote_bullets, processed_bullet_events, MousePos, system_message
     global vision_shape_override, vision_skill_until, shield_until, haste_until
-    global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys, pending_furniture_destroys, pending_hit_events, wards, active_rune_tile, rune_alerts
+    global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys, pending_furniture_destroys, pending_hit_events, pending_heal_amount, wards, active_rune_tile, rune_alerts
     global visibility_polygon_cache, mouse_fire_hold, last_effect_tick, preserve_magazine_after_chest
     global aim_lock_until, aim_locked_pos, weapon_fire_until
     global teleport_anchor, teleport_anchor_expires_at
@@ -1019,11 +1087,7 @@ def GameView():
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
     effective_base_speed = base_speed + knife_speed_bonus
-    my_player.normal_speed = (
-        effective_base_speed * WATER_SPEED_MULTIPLIER
-        if TileGene.is_in_water(player_center_x, player_center_y)
-        else effective_base_speed
-    )
+    my_player.normal_speed = effective_base_speed
     my_player.sprint_speed = PLAYER_SPRINT_SPEED + knife_speed_bonus
     my_player.dash_speed = PLAYER_DASH_SPEED + knife_speed_bonus
 
@@ -1102,6 +1166,9 @@ def GameView():
     send_data["destroyed_treasures"] = list(pending_treasure_destroys)
     send_data["destroyed_furniture"] = list(pending_furniture_destroys)
     send_data["revive_token"] = revive_token
+    send_data["heal_token"] = heal_token
+    send_data["heal_amount"] = pending_heal_amount
+    send_data["shield_active"] = shield_until > now
     send_data["revive_armed"] = any(
         slot.assigned_skill == "부활의 차"
         for slot in quick_slots
@@ -1152,6 +1219,7 @@ def GameView():
             pending_treasure_destroys.clear()
             pending_furniture_destroys.clear()
             pending_hit_events.clear()
+            pending_heal_amount = 0
             send_data["revive_request"] = False
             zone_elapsed_ms = max(
                 zone_elapsed_ms,
@@ -1313,7 +1381,7 @@ def GameView():
         bullet.update()
 
         if bullet.is_active:
-            destructible = TileGene.destructible_collision(bullet.rect)
+            destructible = TileGene.destructible_collision(bullet.collision_rect)
             if destructible:
                 tile_x, tile_y, tile_type = destructible
                 if tile_type == 9 and pygame.time.get_ticks() >= bullet.reflect_until:
@@ -1333,7 +1401,9 @@ def GameView():
                         particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
                     bullet.is_active = False
                     continue
-            if TileGene.check_wall_collision(bullet.rect):
+            if TileGene.segment_wall_collision(
+                bullet.previous_x, bullet.previous_y, bullet.x, bullet.y
+            ):
                 bullet.is_active = False
                 continue
             destroyed_treasure = TileGene.destroy_treasure_at(bullet.rect)
@@ -1428,7 +1498,7 @@ def GameView():
     for bullet in remote_bullets:
         bullet.update()
         if bullet.is_active:
-            destructible = TileGene.destructible_collision(bullet.rect)
+            destructible = TileGene.destructible_collision(bullet.collision_rect)
             if destructible:
                 tile_x, tile_y, tile_type = destructible
                 if tile_type == 9 and pygame.time.get_ticks() >= bullet.reflect_until:
@@ -1445,7 +1515,9 @@ def GameView():
                     pending_furniture_destroys.append((tile_x, tile_y))
                     particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
                     bullet.is_active = False
-        if bullet.is_active and TileGene.check_wall_collision(bullet.rect):
+        if bullet.is_active and TileGene.segment_wall_collision(
+            bullet.previous_x, bullet.previous_y, bullet.x, bullet.y
+        ):
             bullet.is_active = False
         if bullet.is_active and shield_until <= pygame.time.get_ticks():
             if my_player.head_hitbox.colliderect(bullet.rect):
@@ -1874,6 +1946,8 @@ def GameView():
         my_id,
         training_dummy if debug_mode else None,
         rune_alerts,
+        MagneticZoneState if zone_enabled else None,
+        zone_elapsed_ms,
     )
     ui_x = 30
     ui_y = 80  

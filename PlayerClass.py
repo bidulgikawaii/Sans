@@ -112,6 +112,12 @@ class Player:
             sprinting = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
             speed = self.sprint_speed if sprinting else self.normal_speed
 
+        if self.tile_generator:
+            center_x = self.X + self.rect.width / 2
+            center_y = self.Y + self.rect.height / 2
+            if self.tile_generator.is_in_water(center_x, center_y):
+                speed *= WATER_SPEED_MULTIPLIER
+
         # 4. [수정 포인트] 계산된 최종 이동량(방향 * 속도)을 Move 함수로 전달!
         final_dx = dx * speed
         final_dy = dy * speed

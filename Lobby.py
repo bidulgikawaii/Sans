@@ -32,8 +32,10 @@ class LobbyState:
             return False
         if mode not in (GAME_MODE_NORMAL, GAME_MODE_DEBUG):
             mode = GAME_MODE_NORMAL
+        same_mode = self.modes.get(player_id) == mode
         self.modes[player_id] = mode
-        self.ready_players.discard(player_id)
+        if not same_mode:
+            self.ready_players.discard(player_id)
         if debug_enabled or mode == GAME_MODE_DEBUG:
             self.practice_players.add(player_id)
         else:
@@ -48,9 +50,15 @@ class LobbyState:
             self.ready_players.add(player_id)
         else:
             self.ready_players.discard(player_id)
-        if self.start_at is None and self.modes and len(self.ready_players) == len(self.modes):
+
+        mode = self.modes.get(player_id, GAME_MODE_NORMAL)
+        min_required = 1 if mode == GAME_MODE_DEBUG else NORMAL_MATCH_MIN_PLAYERS
+        all_ready = bool(self.modes) and len(self.ready_players) == len(self.modes)
+        enough_players = len(self.modes) >= min_required
+
+        if self.start_at is None and all_ready and enough_players:
             self.start_at = time.monotonic() + LOBBY_START_DELAY_MS / 1000
-        elif len(self.ready_players) != len(self.modes):
+        elif not all_ready or not enough_players:
             self.start_at = None
         return True
 
@@ -78,10 +86,12 @@ class LobbyState:
             if self.started_at else 0
         )
         ready_count = len(self.ready_players)
-        all_ready = bool(self.modes) and ready_count == len(self.modes)
+        total_players = len(self.modes)
+        min_required = 1 if mode == GAME_MODE_DEBUG else NORMAL_MATCH_MIN_PLAYERS
+        all_ready = bool(total_players) and ready_count == total_players and total_players >= min_required
         return {
             "type": "lobby_status",
-            "count": len(self.modes),
+            "count": total_players,
             "max_players": MAX_PLAYERS,
             "mode": mode,
             "started": self.started,

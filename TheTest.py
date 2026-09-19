@@ -37,6 +37,9 @@ display = pygame.display.set_mode((ScreenX, ScreenY), 0, 32)
 clock = pygame.time.Clock()
 ScreenState = "MainView"
 selected_game_mode = GAME_MODE_NORMAL
+local_match = False
+main_weapon_id = DEFAULT_WEAPON_ID
+player_name = ""
 lobby_status = {
     "count": 0,
     "max_players": MAX_PLAYERS,
@@ -48,6 +51,26 @@ last_lobby_request_at = 0
 GuiFont = pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__)
         ),"Font","HeirofLightRegular.ttf"
             ), 30)
+
+
+class OfflineClient:
+    def __init__(self):
+        self.initialized = False
+
+    def send(self, _data):
+        return None
+
+    def sendall(self, _data):
+        return None
+
+    def recv(self, _size):
+        if not self.initialized:
+            self.initialized = True
+            return pickle.dumps({"init_id": 1, "seed": SERVER_SEED})
+        return pickle.dumps({})
+
+    def close(self):
+        return None
 
 
 
@@ -64,7 +87,8 @@ def connect_to_server():
         except (OSError, socket.timeout) as exc:
             last_error = exc
             sock.close()
-    raise last_error or ConnectionError("서버 연결에 실패했습니다.")
+    print(f"서버 연결 실패, 로컬 모드로 실행합니다: {last_error}")
+    return OfflineClient()
 
 client = connect_to_server()
 
@@ -176,6 +200,7 @@ running = True
 bullets = []
 remote_bullets = []
 processed_bullet_events = set()
+processed_damage_event_ids = set()
 skill_cooldowns = {}
 vision_skill_until = 0
 shield_until = 0
@@ -199,8 +224,13 @@ pending_furniture_destroys = []
 pending_hit_events = []
 screen_shake = 0
 server_players = {}
+kill_feed = []
+spectator_players = {}
+spectator_camera_x = 0
+spectator_camera_y = 0
 match_result = None
 result_started_at = 0
+game_start_banner_until = 0
 show_hitboxes = True
 local_stun_until = 0
 zone_elapsed_ms = 0
@@ -339,7 +369,7 @@ weapon_state = WeaponState()
 vision_shape_override = None
 
 def MainView():
-    global running, ScreenState, selected_game_mode, debug_mode
+    global running, ScreenState, selected_game_mode, debug_mode, local_match, game_start_banner_until
     if weapon_state.weapon_id == "pistol":
         preview_image = IML.GetPistol()
     elif weapon_state.weapon_id == "sniper":
@@ -361,11 +391,17 @@ def MainView():
                 running = False
             elif event.key == pygame.K_F10:
                 debug_mode = True
-                selected_game_mode = GAME_MODE_NORMAL
-                ScreenState = "LoadingView"
+                local_match = False
+                selected_game_mode = GAME_MODE_DEBUG
+                local_match = True
+                game_start_banner_until = pygame.time.get_ticks() + 2000
+                ScreenState = "GameView"
             elif event.key == pygame.K_SPACE:
-                ScreenState = "ModeSelectView"
-            elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6):
+                ScreenState = "NameInputView"
+            elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7):
+                if event.key == pygame.K_7:
+                    select_weapon(random.choice(WEAPON_KEYS[:-1]))
+                    continue
                 select_weapon(dict(zip(
                     (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6),
                     WEAPON_KEYS,
@@ -376,7 +412,7 @@ def MainView():
 
 
 def ModeSelectView():
-    global running, ScreenState, selected_game_mode, debug_mode
+    global running, ScreenState, selected_game_mode, debug_mode, local_match, game_start_banner_until
     button_rects = main_screen.draw_mode_select()
 
     for event in pygame.event.get():
@@ -384,34 +420,82 @@ def ModeSelectView():
             running = False
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
+                pygame.key.stop_text_input()
                 ScreenState = "MainView"
             elif event.key == pygame.K_F10:
                 debug_mode = True
+                local_match = False
                 selected_game_mode = GAME_MODE_NORMAL
                 ScreenState = "LoadingView"
             elif event.key == pygame.K_1:
                 debug_mode = False
                 selected_game_mode = GAME_MODE_NORMAL
+                local_match = False
                 ScreenState = "LoadingView"
             elif event.key == pygame.K_2:
                 debug_mode = True
+                local_match = False
                 selected_game_mode = GAME_MODE_DEBUG
                 ScreenState = "LoadingView"
+            elif event.key == pygame.K_3:
+                ScreenState = "SpectatorPromptView"
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if button_rects["normal"].collidepoint(event.pos):
                 debug_mode = False
                 selected_game_mode = GAME_MODE_NORMAL
+                local_match = False
                 ScreenState = "LoadingView"
             elif button_rects["debug"].collidepoint(event.pos):
                 debug_mode = True
+                local_match = True
                 selected_game_mode = GAME_MODE_DEBUG
-                ScreenState = "LoadingView"
-            elif button_rects["back"].collidepoint(event.pos):
+                game_start_banner_until = pygame.time.get_ticks() + 2000
+                ScreenState = "GameView"
+
+
+def NameInputView():
+    global running, ScreenState, player_name
+    pygame.key.start_text_input()
+    main_screen.draw_name_input(player_name)
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.TEXTINPUT:
+            player_name = (player_name + event.text)[:16]
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                pygame.key.stop_text_input()
                 ScreenState = "MainView"
+            elif event.key == pygame.K_BACKSPACE:
+                player_name = player_name[:-1]
+            elif event.key == pygame.K_RETURN:
+                player_name = player_name.strip() or "플레이어"
+                pygame.key.stop_text_input()
+                ScreenState = "ModeSelectView"
+
+
+def SpectatorPromptView():
+    global running, ScreenState, spectator_players
+    display.fill((10, 15, 24))
+    title = GuiFont.render("게임이 진행 중입니다", True, (255, 225, 140))
+    prompt = GuiFont.render("관전으로 참여하시겠습니까?", True, (240, 245, 255))
+    guide = GuiFont.render("Space: 관전 시작   Esc: 돌아가기", True, (180, 205, 230))
+    display.blit(title, title.get_rect(center=(ScreenX // 2, 360)))
+    display.blit(prompt, prompt.get_rect(center=(ScreenX // 2, 440)))
+    display.blit(guide, guide.get_rect(center=(ScreenX // 2, 530)))
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                ScreenState = "ModeSelectView"
+            elif event.key == pygame.K_SPACE:
+                spectator_players = {}
+                ScreenState = "SpectatorView"
 
 
 def LoadingView():
-    global running, ScreenState, lobby_status, last_lobby_request_at
+    global running, ScreenState, lobby_status, last_lobby_request_at, local_match, game_start_banner_until
     if debug_mode:
         owned_skills.update(SKILL_BOOK)
         refresh_skill_inventory()
@@ -421,6 +505,7 @@ def LoadingView():
             "type": "lobby_join",
             "mode": selected_game_mode,
             "debug_enabled": debug_mode,
+            "name": player_name,
         }))
         response = pickle.loads(client.recv(4096))
         if response.get("type") == "lobby_status":
@@ -435,7 +520,10 @@ def LoadingView():
     )
 
     if lobby_status.get("started") and lobby_status.get("accepted", True):
+        game_start_banner_until = pygame.time.get_ticks() + 2000
         ScreenState = "GameView"
+    elif lobby_status.get("accepted") is False and not debug_mode:
+        ScreenState = "SpectatorPromptView"
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -454,7 +542,7 @@ def LoadingView():
 
 
 def GameOverView():
-    global running, result_started_at
+    global running, ScreenState, result_started_at
     if not result_started_at:
         result_started_at = pygame.time.get_ticks()
     _draw_result_screen("패배", (220, 50, 50), pygame.time.get_ticks() - result_started_at)
@@ -464,10 +552,12 @@ def GameOverView():
             running = False
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             running = False
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+            ScreenState = "MainView"
 
 
 def VictoryView():
-    global running, result_started_at
+    global running, ScreenState, result_started_at
     if not result_started_at:
         result_started_at = pygame.time.get_ticks()
     _draw_result_screen("승리", (255, 220, 80), pygame.time.get_ticks() - result_started_at)
@@ -477,6 +567,8 @@ def VictoryView():
             running = False
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             running = False
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+            ScreenState = "MainView"
 
 
 def _draw_result_screen(title_text, color, elapsed):
@@ -500,6 +592,56 @@ def _draw_result_screen(title_text, color, elapsed):
     display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
     guide = GuiFont.render("ESC를 눌러 종료하세요", True, (255, 255, 255))
     display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 70)))
+
+
+def SpectatorView():
+    global running, ScreenState, spectator_players, spectator_camera_x, spectator_camera_y
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            ScreenState = "ModeSelectView"
+            return
+
+    client.sendall(pickle.dumps({"type": "spectator_join"}))
+    response = client.recv(NETWORK_BUFFER_SIZE)
+    if response:
+        spectator_players = pickle.loads(response)
+    if not spectator_players:
+        display.fill((10, 15, 24))
+        waiting = GuiFont.render("진행 중인 게임이 없습니다", True, (230, 235, 245))
+        display.blit(waiting, waiting.get_rect(center=(ScreenX // 2, ScreenY // 2)))
+        guide = GuiFont.render("ESC: 나가기", True, (180, 200, 220))
+        display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 55)))
+        return
+
+    tracked_id = next(iter(spectator_players))
+    tracked = spectator_players[tracked_id]
+    target_x = tracked.get("posX", 0) + 36
+    target_y = tracked.get("posY", 0) + 36
+    spectator_camera_x, spectator_camera_y = get_camera_target(
+        target_x, target_y, ScreenX, ScreenY, camera_zoom
+    )
+    spectator_camera_x, spectator_camera_y = TileGene.clamp_camera(
+        spectator_camera_x, spectator_camera_y, ScreenX, ScreenY, camera_zoom
+    )
+    display.fill((0, 0, 0))
+    TileGene.draw(display, spectator_camera_x, spectator_camera_y, camera_zoom)
+    title = GuiFont.render("관전모드  |  ESC: 나가기", True, (255, 235, 150))
+    display.blit(title, (30, 25))
+    for player_id, player_info in spectator_players.items():
+        image = IML.Player
+        screen_x, screen_y = world_to_screen(
+            player_info.get("posX", 0), player_info.get("posY", 0),
+            spectator_camera_x, spectator_camera_y, camera_zoom,
+        )
+        display.blit(image, (round(screen_x), round(screen_y)))
+        label = GuiFont.render(
+            str(player_info.get("name", f"P{player_id}")),
+            True,
+            (255, 230, 160),
+        )
+        display.blit(label, label.get_rect(midbottom=(round(screen_x + 36), round(screen_y - 5))))
 
 
 def handle_quit(_event, _mouse_pos):
@@ -544,7 +686,7 @@ def activate_quick_slot(key):
             my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
         )
         vision = weapon_state.config
-        if not TileGene.is_point_visible_from(
+        weapon_visible = TileGene.is_point_visible_from(
             player_x,
             player_y,
             target_x,
@@ -554,7 +696,20 @@ def activate_quick_slot(key):
             direction_angle=Weapon_Angle,
             fov_angle=vision.vision_fov,
             vision_width=vision.vision_width,
-        ):
+        )
+        base_visible = TileGene.is_point_visible_from(
+            player_x, player_y, target_x, target_y,
+            PLAYER_BASE_VISION_RADIUS,
+            vision_shape=VISION_CIRCLE,
+        )
+        ward_visible = any(
+            TileGene.is_point_visible_from(
+                ward_x, ward_y, target_x, target_y, WARD_VISION_RADIUS,
+                vision_shape=VISION_CIRCLE,
+            )
+            for ward_x, ward_y in wards
+        )
+        if not (weapon_visible or base_visible or ward_visible):
             skill_cooldowns.pop(skill_name, None)
             system_message = "밝은 시야 안에만 폭탄을 던질 수 있습니다."
             return
@@ -632,9 +787,11 @@ def activate_quick_slot(key):
             system_message = "텔레포트로 이동했습니다. 5초 후 석상이 사라집니다."
 
 def select_weapon(weapon_id):
-    global system_message, vision_shape_override
-    if ScreenState == "GameView" and not debug_mode:
-        system_message = "일반전에서는 게임 중 무기를 변경할 수 없습니다."
+    global system_message, vision_shape_override, main_weapon_id
+    if ScreenState != "GameView":
+        main_weapon_id = weapon_id
+    elif not debug_mode and weapon_id not in (main_weapon_id, "knife"):
+        system_message = "게임 중에는 선택한 총과 칼만 사용할 수 있습니다."
         return
     if weapon_state.select(weapon_id):
         vision_shape_override = None
@@ -691,8 +848,16 @@ def remove_ward_at_cursor():
 
 def handle_key_event(event, _mouse_pos):
     global inventory_open, dragging_skill, debug_mode, system_message, show_hitboxes
-    weapon_key_codes = (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6)
-    weapon_id = dict(zip(weapon_key_codes, WEAPON_KEYS)).get(event.key)
+    weapon_id = None
+    if event.key == pygame.K_1:
+        weapon_id = main_weapon_id
+    elif event.key == pygame.K_2:
+        weapon_id = "knife"
+    elif ScreenState != "GameView":
+        weapon_id = dict(zip(
+            (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6),
+            WEAPON_KEYS,
+        )).get(event.key)
     if weapon_id:
         select_weapon(weapon_id)
         return
@@ -819,6 +984,12 @@ def fire_knife():
             })
             if training_dummy.Hp <= 0:
                 training_dummy.respawn_at = pygame.time.get_ticks() + TRAINING_DUMMY_RESPAWN_MS
+                kill_feed.append({
+                    "killer_id": my_id,
+                    "target_id": "더미",
+                    "weapon_id": weapon_state.weapon_id,
+                    "started_at": pygame.time.get_ticks(),
+                })
             attacked_count += 1
 
     weapon_state.consume_round()
@@ -1007,8 +1178,8 @@ def handle_game_events():
 
 
 def GameView():
-    global running, ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, camera_fov, camera_zoom, match_result, local_stun_until, zone_elapsed_ms
-    global screen_shake, server_players, bullets, remote_bullets, processed_bullet_events, MousePos, system_message
+    global running, ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, camera_fov, camera_zoom, match_result, local_stun_until, zone_elapsed_ms, game_start_banner_until
+    global screen_shake, server_players, bullets, remote_bullets, processed_bullet_events, processed_damage_event_ids, MousePos, system_message, kill_feed, main_weapon_id
     global vision_shape_override, vision_skill_until, shield_until, haste_until
     global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys, pending_furniture_destroys, pending_hit_events, pending_heal_amount, wards, active_rune_tile, rune_alerts
     global visibility_polygon_cache, mouse_fire_hold, last_effect_tick, preserve_magazine_after_chest
@@ -1041,7 +1212,11 @@ def GameView():
     Weapon_Pos = pygame.mouse.get_pos()
 
     if now >= local_stun_until:
-        my_player.handle_input()
+        dash_requested = (
+            weapon_state.weapon_id == "knife"
+            and pygame.mouse.get_pressed(3)[2]
+        )
+        my_player.handle_input(dash_requested)
     weapon_state.update_reload()
 
     current_tile = (
@@ -1198,6 +1373,38 @@ def GameView():
         server_raw = client.recv(NETWORK_BUFFER_SIZE)
         if server_raw:
             server_players = pickle.loads(server_raw)
+            seen_kills = {
+                (item.get("killer_id"), item.get("target_id"), item.get("weapon_id"))
+                for item in kill_feed
+            }
+            for player_snapshot in server_players.values():
+                for kill_event in player_snapshot.get("kill_events", []):
+                    key = (kill_event.get("killer_id"), kill_event.get("target_id"), kill_event.get("weapon_id"))
+                    if key not in seen_kills:
+                        kill_feed.append({**kill_event, "started_at": now})
+            kill_feed = [event for event in kill_feed if now - event["started_at"] < 5000][-5:]
+            for player_snapshot in server_players.values():
+                for damage_event in player_snapshot.get("damage_events", []):
+                    event_id = damage_event.get("event_id")
+                    if event_id in processed_damage_event_ids:
+                        continue
+                    processed_damage_event_ids.add(event_id)
+                    target_id = damage_event.get("target_id")
+                    target = server_players.get(target_id)
+                    if target is None and str(target_id) == str(my_id):
+                        target = {
+                            "posX": my_player.X,
+                            "posY": my_player.Y,
+                        }
+                    if target is not None:
+                        damage_numbers.append({
+                            "x": target.get("posX", my_player.X) + my_player.rect.width / 2,
+                            "y": target.get("posY", my_player.Y),
+                            "damage": damage_event.get("damage", 0),
+                            "color": (255, 235, 100) if damage_event.get("hit_part") == "head" else (255, 255, 255),
+                            "started_at": now,
+                            "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+                        })
             synchronized_treasures = set()
             synchronized_furniture = set()
             synchronized_rune_alerts = []
@@ -1293,14 +1500,7 @@ def GameView():
     elif weapon_state.weapon_id == "pistol" and now < weapon_smoke_until and IML.GetPistolSmoke():
         weapon_image = IML.GetPistolSmoke()
     else:
-        if weapon_state.weapon_id == "pistol":
-            weapon_image = IML.GetPistol()
-        elif weapon_state.weapon_id == "sniper":
-            weapon_image = IML.GetSniper()
-        elif weapon_state.weapon_id == "smg":
-            weapon_image = IML.GetGigwan()
-        else:
-            weapon_image = IML.GetShotGun()
+        weapon_image = IML.GetWeaponImage(weapon_state.weapon_id)
     weapon_image = weapon_image or IML.GetShotGun()
     if weapon_state.weapon_id == "pistol":
         weapon_image = pygame.transform.flip(weapon_image, True, False)
@@ -1318,6 +1518,10 @@ def GameView():
         if vision_shape_override == VISION_CIRCLE
         else current_vision.vision_radius
     )
+    current_vision_width = current_vision.vision_width
+    if current_vision_shape == VISION_RECTANGLE:
+        current_vision_radius = max(current_vision_radius, 900)
+        current_vision_width = max(current_vision_width, 420)
     # 같은 프레임에서 같은 대상은 한 번만 벽 가림을 계산합니다.
     visibility_cache = {}
 
@@ -1334,7 +1538,7 @@ def GameView():
                 vision_shape=current_vision_shape,
                 direction_angle=Weapon_Angle,
                 fov_angle=current_vision.vision_fov + fov_bonus,
-                vision_width=current_vision.vision_width,
+                vision_width=current_vision_width,
             )
             visible_from_base_vision = TileGene.is_point_visible_from(
                 player_world_x,
@@ -1576,14 +1780,7 @@ def GameView():
         display.blit(other_image, (other_screen_x + stun_offset_x, other_screen_y))
 
         other_center_x, other_center_y = get_player_screen_center(p_info["posX"], p_info["posY"], IML.Player.get_width(), IML.Player.get_height(), CameraPosX, CameraPosY, camera_zoom)
-        if p_info.get("weapon_id") == "pistol":
-            other_weapon_image = IML.GetPistol()
-        elif p_info.get("weapon_id") == "sniper":
-            other_weapon_image = IML.GetSniper()
-        elif p_info.get("weapon_id") == "smg":
-            other_weapon_image = IML.GetGigwan()
-        else:
-            other_weapon_image = IML.GetShotGun()
+        other_weapon_image = IML.GetWeaponImage(p_info.get("weapon_id", DEFAULT_WEAPON_ID))
         if p_info.get("weapon_id") == "pistol":
             other_weapon_image = pygame.transform.flip(other_weapon_image, True, False)
         other_gun = other_weapon_image if camera_zoom == 1.0 else pygame.transform.scale(
@@ -1693,7 +1890,7 @@ def GameView():
         current_vision_shape,
         current_vision_radius,
         current_vision.vision_fov,
-        current_vision.vision_width,
+        current_vision_width,
     )
     if polygon_cache_key not in visibility_polygon_cache:
         # 캐시가 없을 때만 벽과 광선이 포함된 폴리곤을 계산합니다.
@@ -1704,7 +1901,7 @@ def GameView():
             vision_shape=current_vision_shape,
             direction_angle=Weapon_Angle,
             fov_angle=current_vision.vision_fov,
-            vision_width=current_vision.vision_width,
+            vision_width=current_vision_width,
             ray_samples=None,  # 자동 최적화 (저격총 직선은 8, 기타는 12)
         )
         # [최적화] 캐시 크기를 128로 증대 (저격총 직선은 각도 변화가 많음)
@@ -1911,7 +2108,7 @@ def GameView():
                 vision_shape=current_vision_shape,
                 direction_angle=Weapon_Angle,
                 fov_angle=current_vision.vision_fov,
-                vision_width=current_vision.vision_width,
+                vision_width=current_vision_width,
             ):
                 draw_ward(display, ward_x, ward_y, CameraPosX, CameraPosY, camera_zoom)
 
@@ -1949,6 +2146,28 @@ def GameView():
         MagneticZoneState if zone_enabled else None,
         zone_elapsed_ms,
     )
+    kill_feed = [
+        event for event in kill_feed
+        if now - event.get("started_at", now) < 5000
+    ][-5:]
+    kill_font = pygame.font.Font(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"),
+        20,
+    )
+    for index, event in enumerate(reversed(kill_feed)):
+        killer = "나" if event.get("killer_id") == my_id else event.get("killer_name", f"플레이어 {event.get('killer_id')}")
+        target = "나" if event.get("target_id") == my_id else event.get("target_name", str(event.get("target_id")))
+        kill_text = kill_font.render(f"{killer}  >  {target}", True, (255, 225, 150))
+        display.blit(kill_text, (ScreenX - 330, 330 + index * 26))
+    if game_start_banner_until > now:
+        remaining = game_start_banner_until - now
+        banner_font = pygame.font.Font(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"),
+            54,
+        )
+        banner = banner_font.render("게임 시작!", True, (255, 225, 120))
+        banner.set_alpha(min(255, max(0, remaining * 2)))
+        display.blit(banner, banner.get_rect(center=(ScreenX // 2, 150)))
     ui_x = 30
     ui_y = 80  
     draw_health_bar(
@@ -2036,6 +2255,12 @@ while running:
         MainView()
     elif ScreenState == "ModeSelectView":
         ModeSelectView()
+    elif ScreenState == "NameInputView":
+        NameInputView()
+    elif ScreenState == "SpectatorPromptView":
+        SpectatorPromptView()
+    elif ScreenState == "SpectatorView":
+        SpectatorView()
     elif ScreenState == "LoadingView":
         LoadingView()
     elif ScreenState == "GameView":

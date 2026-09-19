@@ -68,7 +68,7 @@ def draw_local_aim_ray(
     )
     pygame.draw.line(
         surface,
-        (255, 0, 0),
+        (255, 235, 80),
         (round(start_x), round(start_y)),
         (round(end_screen[0]), round(end_screen[1])),
         max(1, round(2 * zoom)),

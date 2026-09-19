@@ -28,7 +28,7 @@ class Imageload():
         self.Tile = pygame.transform.scale(self.Tile, (64, 64))
         
         self.Player = pygame.image.load(self.player_path).convert_alpha()
-        self.Player = pygame.transform.scale(self.Player, (64, 64))
+        self.Player = pygame.transform.scale(self.Player, (72, 72))
 
         # HP 게이지 바깥 프레임 이미지
         self.HpBar = pygame.image.load(
@@ -160,6 +160,15 @@ class Imageload():
 
     def GetSniper(self):
         return self.Sniper
+
+    def GetWeaponImage(self, weapon_id):
+        return {
+            "pistol": self.GetPistol(),
+            "rifle": self.GetGigwan(),
+            "smg": self.GetGigwan(),
+            "sniper": self.GetSniper(),
+            "shotgun": self.GetShotGun(),
+        }.get(weapon_id, self.GetShotGun())
 
     def GetBladeFrames(self):
         return self.HBlade

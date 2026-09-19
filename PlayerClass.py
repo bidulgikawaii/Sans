@@ -72,7 +72,7 @@ class Player:
     
 
 
-    def handle_input(self):
+    def handle_input(self, dash_requested=False):
         keys = pygame.key.get_pressed()
         current_time = pygame.time.get_ticks()
 
@@ -85,7 +85,7 @@ class Player:
         if keys[pygame.K_s]:  dy = 1
 
         # 2. 달리기/대쉬 키(G) 입력 확인 및 대쉬 시작 조건
-        if keys[pygame.K_g] and not self.is_dashing:
+        if dash_requested and not self.is_dashing:
             # 쿨타임이 지났고, 멈춰있지 않고 움직이는 중일 때만 대쉬 발동
             if current_time - self.last_dash_time >= self.dash_cooldown and (dx != 0 or dy != 0):
                 self.is_dashing = True

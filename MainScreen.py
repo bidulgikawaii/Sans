@@ -45,6 +45,18 @@ class MainScreenRenderer:
         self.surface.blit(back, back_rect)
         return {"normal": normal_rect, "debug": debug_rect, "back": back_rect}
 
+    def draw_name_input(self, nickname):
+        title = self.font.render("닉네임을 입력하세요", True, (255, 235, 150))
+        value = self.font.render(nickname or "플레이어", True, (240, 245, 255) if nickname else (140, 155, 180))
+        guide = self.font.render("Enter: 확인   Esc: 뒤로", True, (190, 205, 225))
+        self.surface.blit(title, title.get_rect(center=(self.screen_width // 2, 330)))
+        box = pygame.Rect(0, 0, 520, 70)
+        box.center = (self.screen_width // 2, 450)
+        pygame.draw.rect(self.surface, (20, 30, 48), box, border_radius=8)
+        pygame.draw.rect(self.surface, (255, 220, 120), box, 2, border_radius=8)
+        self.surface.blit(value, value.get_rect(center=box.center))
+        self.surface.blit(guide, guide.get_rect(center=(self.screen_width // 2, 540)))
+
     def draw_loading(self, lobby_status, selected_game_mode, max_players, debug_mode):
         profile, profile_rect = self._center_rect("GameStart", 150)
         self.surface.blit(profile, profile_rect)
@@ -67,10 +79,10 @@ class MainScreenRenderer:
         countdown_ms = lobby_status.get("countdown_ms", 0)
         if lobby_status.get("accepted") is False:
             status_name = lobby_status.get("message", "게임이 진행 중이라 참가할 수 없습니다.")
+        elif countdown_ms > 0:
+            status_name = f"게임 시작까지 {max(1, (countdown_ms + 999) // 1000)}"
         elif lobby_status.get("all_ready"):
             status_name = "모든 인원이 확인했습니다. 3초 후 시작"
-        elif countdown_ms > 0:
-            status_name = f"게임 시작까지 {max(1, (countdown_ms + 999) // 1000)}초"
         else:
             status_name = "스페이스를 눌러 인원 확인" if not lobby_status.get("started") else "게임 시작 중..."
         mode_text = self.font.render(mode_name, True, (255, 220, 120))

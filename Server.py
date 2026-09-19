@@ -42,6 +42,10 @@ next_bullet_event_id = 1
 destroyed_treasures = set()
 destroyed_furniture = set()
 rune_alerts = []
+kill_events = []
+damage_events = []
+spectator_ids = set()
+next_damage_event_id = 1
 player_count = 0
 next_player_id = 1
 lobby = LobbyState()
@@ -63,7 +67,7 @@ def get_next_player_id():
 
 
 def handle_client(conn, player_id):
-    global next_bullet_event_id
+    global next_bullet_event_id, next_damage_event_id
     with player_lock:
         # 접속 전에 발생한 총알은 새 플레이어에게 전달하지 않습니다.
         last_sent_bullet_event_id = next_bullet_event_id - 1
@@ -77,6 +81,7 @@ def handle_client(conn, player_id):
         "posY": 0,
         "angle": 0.0,
         "hp": PLAYER_MAX_HP,
+        "name": "플레이어",
         "weapon_id": DEFAULT_WEAPON_ID,
         "magazine_ammo": WEAPONS[DEFAULT_WEAPON_ID].magazine_size,
         "reserve_ammo": WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo,
@@ -106,6 +111,22 @@ def handle_client(conn, player_id):
 
             client_data = pickle.loads(data)
 
+            if client_data.get("type") == "spectator_join":
+                with player_lock:
+                    if not lobby.started:
+                        conn.sendall(pickle.dumps({}))
+                        continue
+                    spectator_ids.add(player_id)
+                    lobby.leave(player_id)
+                    active_ids = lobby.active_player_ids()
+                    spectator_snapshot = {
+                        active_id: players[active_id]
+                        for active_id in active_ids
+                        if active_id in players
+                    }
+                conn.sendall(pickle.dumps(spectator_snapshot))
+                continue
+
             if client_data.get("type") == "lobby_join":
                 with player_lock:
                     accepted = lobby.join(
@@ -113,6 +134,9 @@ def handle_client(conn, player_id):
                         client_data.get("mode"),
                         debug_enabled=bool(client_data.get("debug_enabled", False)),
                     )
+                    if accepted:
+                        spectator_ids.discard(player_id)
+                        players[player_id]["name"] = str(client_data.get("name", "플레이어"))[:16]
                     lobby_status = lobby.status()
                     lobby_status["accepted"] = accepted
                     if not accepted:
@@ -200,8 +224,8 @@ def handle_client(conn, player_id):
                 else 0
             )
             zone_now = time.monotonic()
-            player_center_x = players[player_id]["posX"] + 32
-            player_center_y = players[player_id]["posY"] + 32
+            player_center_x = players[player_id]["posX"] + 36
+            player_center_y = players[player_id]["posY"] + 36
             if zone_elapsed_ms and not magnetic_zone.is_inside(
                 player_center_x, player_center_y, zone_elapsed_ms
             ):
@@ -231,7 +255,24 @@ def handle_client(conn, player_id):
                 damage = max(0, int(hit_event.get("damage", 0)))
                 if hit_event.get("hit_part") == "head":
                     damage *= HEADSHOT_DAMAGE_MULTIPLIER
+                previous_hp = target["hp"]
                 target["hp"] = max(0, target["hp"] - damage)
+                damage_events.append({
+                    "event_id": next_damage_event_id,
+                    "attacker_id": player_id,
+                    "target_id": target_id,
+                    "damage": damage,
+                    "hit_part": hit_event.get("hit_part", "body"),
+                })
+                next_damage_event_id += 1
+                if previous_hp > 0 and target["hp"] <= 0:
+                    kill_events.append({
+                        "killer_id": player_id,
+                        "target_id": target_id,
+                        "killer_name": players[player_id].get("name", "플레이어"),
+                        "target_name": target.get("name", "플레이어"),
+                        "weapon_id": client_data.get("weapon_id", DEFAULT_WEAPON_ID),
+                    })
                 stun_ms = max(0, int(hit_event.get("stun_ms", 0)))
                 if stun_ms:
                     target["stunned_until"] = max(
@@ -250,7 +291,7 @@ def handle_client(conn, player_id):
 
             # 4. 현재 접속한 모든 유저들의 데이터를 통째로 패킹해서 응답
             with player_lock:
-                active_ids = lobby.active_player_ids()
+                active_ids = lobby.active_player_ids() - spectator_ids
                 active_players = {
                     active_id: players[active_id]
                     for active_id in active_ids
@@ -298,6 +339,8 @@ def handle_client(conn, player_id):
                     else None
                 )
                 player["zone_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
+                player["kill_events"] = list(kill_events[-12:])
+                player["damage_events"] = list(damage_events[-32:])
                 player["stun_ms_remaining"] = max(
                     0, round((player.get("stunned_until", 0.0) - time.monotonic()) * 1000)
                 )
@@ -309,6 +352,7 @@ def handle_client(conn, player_id):
 
         with player_lock:
             players.pop(player_id, None)
+            spectator_ids.discard(player_id)
             lobby.leave(player_id)
 
         current_count = update_player_count(-1)

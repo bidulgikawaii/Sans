@@ -30,6 +30,7 @@ from GameRendering import (
 )
 from GameAudio import load_effect_sound, play_effect_sound
 from Zone import MagneticZone
+from SpectatorMode import draw_waiting, draw_world, poll_players
 
 pygame.init()
 pygame.display.set_caption("전설적인 게임")
@@ -228,6 +229,7 @@ kill_feed = []
 spectator_players = {}
 spectator_camera_x = 0
 spectator_camera_y = 0
+last_spectator_poll_at = 0
 match_result = None
 result_started_at = 0
 game_start_banner_until = 0
@@ -309,7 +311,7 @@ def collect_treasure(tile_position):
     pending_treasure_destroys.append(tile_position)
     play_effect_sound(chest_sound, "chest_open.wav")
     available = [name for name in SKILL_BOOK if name not in owned_skills]
-    if random.choice(CHEST_REWARD_TYPES) == "skill" and available:
+    if random.random() < CHEST_SKILL_REWARD_CHANCE and available:
         obtained_skill = random.choice(available)
         add_skill_to_inventory(obtained_skill)
         system_message = f"보물상자 획득: [{obtained_skill}] 스킬을 얻었습니다."
@@ -352,7 +354,7 @@ def use_revive_skill():
 
 
 skill_sounds = {
-    "달팽이 세개": load_effect_sound("skill_bomb.wav"),
+    "폭탄받아라!": load_effect_sound("skill_bomb.wav"),
     "매의 눈": load_effect_sound("skill_vision.wav"),
     "보호막": load_effect_sound("skill_shield.wav"),
     "은신": load_effect_sound("skill_stealth.wav"),
@@ -367,6 +369,52 @@ vision_shape_index = 0
 inventory_open = False
 weapon_state = WeaponState()
 vision_shape_override = None
+
+
+def reset_match_state():
+    """새 경기에 들어갈 때 이전 경기의 클라이언트 상태를 초기화합니다."""
+    global match_result, result_started_at, system_message, revive_token, heal_token
+    global pending_heal_amount, vision_skill_until, shield_until, haste_until
+    global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
+    global training_dummy, server_players, preserve_magazine_after_chest
+    global local_stun_until, zone_elapsed_ms, next_supply_drop_at
+    for collection in (
+        bullets, remote_bullets, kill_feed, active_bombs, active_explosions,
+        supply_drops, pending_treasure_destroys, pending_furniture_destroys,
+        pending_hit_events, wards, rune_alerts, damage_numbers,
+    ):
+        collection.clear()
+    processed_bullet_events.clear()
+    processed_damage_event_ids.clear()
+    server_players.clear()
+    skill_cooldowns.clear()
+    owned_skills.clear()
+    for slot in quick_slots:
+        slot.assigned_skill = None
+    refresh_skill_inventory()
+    revive_token = heal_token = pending_heal_amount = 0
+    vision_skill_until = shield_until = haste_until = stealth_until = 0
+    stealth_token = 0
+    teleport_anchor = None
+    teleport_anchor_expires_at = 0
+    training_dummy = None
+    preserve_magazine_after_chest = False
+    local_stun_until = 0
+    zone_elapsed_ms = 0
+    next_supply_drop_at = pygame.time.get_ticks() + SUPPLY_DROP_INTERVAL_MS
+    match_result = None
+    result_started_at = 0
+    system_message = ""
+    weapon_state.reset(main_weapon_id)
+    my_player.Hp = my_player.MaxHp
+    spawn = TileGene.find_safe_spawn(
+        SPAWN_MIN_X, SPAWN_MAX_X, SPAWN_MIN_Y, SPAWN_MAX_Y, rng=random.SystemRandom()
+    )
+    if spawn:
+        my_player.X = spawn[0] * TileGene.tile_size
+        my_player.Y = spawn[1] * TileGene.tile_size
+        my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
+        my_player._update_hitboxes()
 
 def MainView():
     global running, ScreenState, selected_game_mode, debug_mode, local_match, game_start_banner_until
@@ -390,7 +438,10 @@ def MainView():
             if event.key == pygame.K_ESCAPE:
                 running = False
             elif event.key == pygame.K_F10:
+                reset_match_state()
                 debug_mode = True
+                owned_skills.update(SKILL_BOOK)
+                refresh_skill_inventory()
                 local_match = False
                 selected_game_mode = GAME_MODE_DEBUG
                 local_match = True
@@ -407,6 +458,9 @@ def MainView():
                     WEAPON_KEYS,
                 ))[event.key])
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if button_rects["name"].collidepoint(event.pos):
+                ScreenState = "NameInputView"
+                continue
             if button_rects["profile"].collidepoint(event.pos):
                 ScreenState = "ModeSelectView"
 
@@ -471,7 +525,7 @@ def NameInputView():
             elif event.key == pygame.K_RETURN:
                 player_name = player_name.strip() or "플레이어"
                 pygame.key.stop_text_input()
-                ScreenState = "ModeSelectView"
+                ScreenState = "MainView"
 
 
 def SpectatorPromptView():
@@ -520,6 +574,10 @@ def LoadingView():
     )
 
     if lobby_status.get("started") and lobby_status.get("accepted", True):
+        reset_match_state()
+        if debug_mode:
+            owned_skills.update(SKILL_BOOK)
+            refresh_skill_inventory()
         game_start_banner_until = pygame.time.get_ticks() + 2000
         ScreenState = "GameView"
     elif lobby_status.get("accepted") is False and not debug_mode:
@@ -553,6 +611,8 @@ def GameOverView():
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             running = False
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+            client.sendall(pickle.dumps({"type": "lobby_leave"}))
+            client.recv(NETWORK_BUFFER_SIZE)
             ScreenState = "MainView"
 
 
@@ -568,6 +628,8 @@ def VictoryView():
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             running = False
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+            client.sendall(pickle.dumps({"type": "lobby_leave"}))
+            client.recv(NETWORK_BUFFER_SIZE)
             ScreenState = "MainView"
 
 
@@ -590,12 +652,12 @@ def _draw_result_screen(title_text, color, elapsed):
         (max(1, round(title.get_width() * pulse)), max(1, round(title.get_height() * pulse))),
     )
     display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
-    guide = GuiFont.render("ESC를 눌러 종료하세요", True, (255, 255, 255))
+    guide = GuiFont.render("ESC를 눌러 종료,스페이스키를 눌러 로비로 이동하세요", True, (255, 255, 255))
     display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 70)))
 
 
 def SpectatorView():
-    global running, ScreenState, spectator_players, spectator_camera_x, spectator_camera_y
+    global running, ScreenState, spectator_players, spectator_camera_x, spectator_camera_y, last_spectator_poll_at
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
@@ -603,16 +665,12 @@ def SpectatorView():
             ScreenState = "ModeSelectView"
             return
 
-    client.sendall(pickle.dumps({"type": "spectator_join"}))
-    response = client.recv(NETWORK_BUFFER_SIZE)
-    if response:
-        spectator_players = pickle.loads(response)
+    now = pygame.time.get_ticks()
+    if now - last_spectator_poll_at >= 100:
+        spectator_players = poll_players(client, NETWORK_BUFFER_SIZE)
+        last_spectator_poll_at = now
     if not spectator_players:
-        display.fill((10, 15, 24))
-        waiting = GuiFont.render("진행 중인 게임이 없습니다", True, (230, 235, 245))
-        display.blit(waiting, waiting.get_rect(center=(ScreenX // 2, ScreenY // 2)))
-        guide = GuiFont.render("ESC: 나가기", True, (180, 200, 220))
-        display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 55)))
+        draw_waiting(display, GuiFont, ScreenX, ScreenY)
         return
 
     tracked_id = next(iter(spectator_players))
@@ -626,22 +684,16 @@ def SpectatorView():
         spectator_camera_x, spectator_camera_y, ScreenX, ScreenY, camera_zoom
     )
     display.fill((0, 0, 0))
-    TileGene.draw(display, spectator_camera_x, spectator_camera_y, camera_zoom)
-    title = GuiFont.render("관전모드  |  ESC: 나가기", True, (255, 235, 150))
-    display.blit(title, (30, 25))
-    for player_id, player_info in spectator_players.items():
-        image = IML.Player
-        screen_x, screen_y = world_to_screen(
-            player_info.get("posX", 0), player_info.get("posY", 0),
-            spectator_camera_x, spectator_camera_y, camera_zoom,
-        )
-        display.blit(image, (round(screen_x), round(screen_y)))
-        label = GuiFont.render(
-            str(player_info.get("name", f"P{player_id}")),
-            True,
-            (255, 230, 160),
-        )
-        display.blit(label, label.get_rect(midbottom=(round(screen_x + 36), round(screen_y - 5))))
+    draw_world(
+        display,
+        TileGene,
+        spectator_players,
+        IML.Player,
+        GuiFont,
+        (spectator_camera_x, spectator_camera_y),
+        camera_zoom,
+        ScreenX,
+    )
 
 
 def handle_quit(_event, _mouse_pos):
@@ -680,7 +732,7 @@ def activate_quick_slot(key):
         if not fire_stun_bullet():
             skill_cooldowns.pop(skill_name, None)
         return
-    if skill_name == "달팽이 세개":
+    if skill_name == "폭탄받아라!":
         target_x, target_y = screen_to_world(*pygame.mouse.get_pos(), CameraPosX, CameraPosY, camera_zoom)
         player_x, player_y = get_player_world_center(
             my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
@@ -848,6 +900,7 @@ def remove_ward_at_cursor():
 
 def handle_key_event(event, _mouse_pos):
     global inventory_open, dragging_skill, debug_mode, system_message, show_hitboxes
+    global ScreenState, local_match
     weapon_id = None
     if event.key == pygame.K_1:
         weapon_id = main_weapon_id
@@ -878,7 +931,7 @@ def handle_key_event(event, _mouse_pos):
         return
 
     key_actions = {
-        pygame.K_ESCAPE: lambda _key: handle_quit(None, None),
+        pygame.K_ESCAPE: lambda _key: leave_game_to_main(),
         pygame.K_i: lambda _key: toggle_inventory(),
         pygame.K_v: lambda _key: cycle_vision_shape(),
         pygame.K_q: lambda _key: activate_quick_slot(_key),
@@ -889,6 +942,18 @@ def handle_key_event(event, _mouse_pos):
         pygame.K_x: lambda _key: remove_ward_at_cursor(),
     }
     key_actions.get(event.key, activate_quick_slot)(event.key)
+
+
+def leave_game_to_main():
+    """훈련장이나 로컬 게임을 정리하고 메인 화면으로 돌아갑니다."""
+    global ScreenState, local_match, debug_mode
+    if local_match or debug_mode:
+        reset_match_state()
+        local_match = False
+        debug_mode = False
+        ScreenState = "MainView"
+        return
+    ScreenState = "MainView"
 
 
 def toggle_inventory():
@@ -984,12 +1049,6 @@ def fire_knife():
             })
             if training_dummy.Hp <= 0:
                 training_dummy.respawn_at = pygame.time.get_ticks() + TRAINING_DUMMY_RESPAWN_MS
-                kill_feed.append({
-                    "killer_id": my_id,
-                    "target_id": "더미",
-                    "weapon_id": weapon_state.weapon_id,
-                    "started_at": pygame.time.get_ticks(),
-                })
             attacked_count += 1
 
     weapon_state.consume_round()
@@ -1617,7 +1676,7 @@ def GameView():
                 pending_treasure_destroys.append(destroyed_treasure)
                 play_effect_sound(chest_sound, "chest_open.wav")
                 available = [name for name in SKILL_BOOK if name not in owned_skills]
-                chest_reward = random.choice(CHEST_REWARD_TYPES)
+                chest_reward = "skill" if random.random() < CHEST_SKILL_REWARD_CHANCE else "magazine"
                 if chest_reward == "skill" and available:
                     obtained_skill = random.choice(available)
                     add_skill_to_inventory(obtained_skill)
@@ -1790,6 +1849,8 @@ def GameView():
         other_gun_rect = other_rotated_gun.get_rect()
         other_gun_rect.center = (other_center_x, other_center_y)
         display.blit(other_rotated_gun, other_gun_rect)
+        other_name = GuiFont.render(str(p_info.get("name", f"P{p_id}")), True, (255, 230, 160))
+        display.blit(other_name, other_name.get_rect(midbottom=(round(other_center_x), round(other_screen_y - 6))))
 
     if debug_mode and training_dummy is not None and training_dummy.Hp > 0:
         dummy_screen_x, dummy_screen_y = world_to_screen(
@@ -1957,6 +2018,11 @@ def GameView():
         )
     else:
         my_player.draw(display, CameraPosX, CameraPosY, camera_zoom, local_stun_offset_x)
+
+    if weapon_state.weapon_id != "knife":
+        display.blit(rotated_shotgun, Shotgun_rect)
+    local_name = GuiFont.render(player_name or "플레이어", True, (255, 230, 160))
+    display.blit(local_name, local_name.get_rect(midbottom=(round(player_center_screen_x), round(player_screen_y - 6))))
 
     for alert_x, alert_y, remaining_ms in rune_alerts:
         alert_screen_x, alert_screen_y = world_to_screen(
@@ -2155,8 +2221,8 @@ def GameView():
         20,
     )
     for index, event in enumerate(reversed(kill_feed)):
-        killer = "나" if event.get("killer_id") == my_id else event.get("killer_name", f"플레이어 {event.get('killer_id')}")
-        target = "나" if event.get("target_id") == my_id else event.get("target_name", str(event.get("target_id")))
+        killer = player_name or "플레이어" if event.get("killer_id") == my_id else event.get("killer_name", f"플레이어 {event.get('killer_id')}")
+        target = player_name or "플레이어" if event.get("target_id") == my_id else event.get("target_name", str(event.get("target_id")))
         kill_text = kill_font.render(f"{killer}  >  {target}", True, (255, 225, 150))
         display.blit(kill_text, (ScreenX - 330, 330 + index * 26))
     if game_start_banner_until > now:
@@ -2214,11 +2280,14 @@ def GameView():
     if hovered_skill and dragging_skill is None:
         draw_skill_tooltip(display, MousePos, hovered_skill)
 
+    player_name_text = GuiFont.render(player_name or "플레이어", True, (255, 230, 160))
+    display.blit(player_name_text, (30, ScreenY - 78))
+
     # 시스템 메시지
     if system_message:
         # [커스텀 가능] 시스템 메시지 텍스트 폰트 (GuiFont 사용)
         message_text = GuiFont.render(system_message, True, (255, 255, 255))
-        display.blit(message_text, (30, ScreenY - 40))
+        display.blit(message_text, (30, ScreenY - 42))
     
     if debug_mode: # 스킬 창 상태 표시 (우측 상단)
         inventory_status = "🎒 인벤토리: [I]"

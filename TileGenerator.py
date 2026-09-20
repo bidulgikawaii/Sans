@@ -46,6 +46,7 @@ class TileGenerator:
         self.map_width = 0
         self.map_height = 0
         self.house_rects = []
+        self.stone_objects = []
         self.world_surface = None
         self._scaled_world_surface = None
         self._scaled_world_zoom = None
@@ -170,6 +171,7 @@ class TileGenerator:
             random.seed(seed_value) # 👈 이 구문이 돌면서 모든 유저 컴퓨터의 난수 발생 순서가 고정됩니다.
 
         self.map_data.clear() # 기존 데이터 초기화
+        self.stone_objects.clear()
         self.map_width = width_tiles
         self.map_height = height_tiles
 
@@ -341,7 +343,13 @@ class TileGenerator:
                 break
             if (tile_x - center_x) ** 2 + (tile_y - center_y) ** 2 <= (MAP_WATER_RADIUS + 3) ** 2:
                 continue
-            self.map_data[(tile_x, tile_y)] = Tile(tile_type=9, is_walkable=False)
+            stone_rect = pygame.Rect(
+                tile_x * self.tile_size - self.tile_size // 3,
+                tile_y * self.tile_size - self.tile_size // 3,
+                round(self.tile_size * 1.65),
+                round(self.tile_size * 1.45),
+            )
+            self.stone_objects.append({"rect": stone_rect, "tile": (tile_x, tile_y)})
             placed += 1
 
     def _place_central_water(self):
@@ -379,8 +387,8 @@ class TileGenerator:
                 self.tile_images[tile.tile_type],
                 (tile_x * self.tile_size, tile_y * self.tile_size),
             )
-            self._scaled_world_surface = None
-            self._scaled_world_zoom = None
+        self._scaled_world_surface = None
+        self._scaled_world_zoom = None
 
     def draw(self, surface, camera_x, camera_y, zoom=1.0):
         """미리 합성한 월드 Surface를 카메라 위치에 맞춰 그립니다."""
@@ -395,6 +403,35 @@ class TileGenerator:
                     )
                     self._scaled_world_zoom = zoom
                 surface.blit(self._scaled_world_surface, (-round(camera_x * zoom), -round(camera_y * zoom)))
+        self.draw_stones(surface, camera_x, camera_y, zoom)
+
+    def draw_stones(self, surface, camera_x, camera_y, zoom=1.0):
+        """타일과 분리된 큰 돌 오브젝트를 그립니다."""
+        for stone in self.stone_objects:
+            rect = stone["rect"]
+            screen_rect = pygame.Rect(
+                round((rect.x - camera_x) * zoom),
+                round((rect.y - camera_y) * zoom),
+                max(1, round(rect.width * zoom)),
+                max(1, round(rect.height * zoom)),
+            )
+            points = [
+                (screen_rect.left + screen_rect.width // 4, screen_rect.top),
+                (screen_rect.right - screen_rect.width // 5, screen_rect.top + screen_rect.height // 8),
+                (screen_rect.right, screen_rect.centery),
+                (screen_rect.right - screen_rect.width // 5, screen_rect.bottom),
+                (screen_rect.left + screen_rect.width // 5, screen_rect.bottom - screen_rect.height // 8),
+                (screen_rect.left, screen_rect.centery),
+            ]
+            pygame.draw.polygon(surface, (80, 85, 95), points)
+            pygame.draw.polygon(surface, (185, 190, 200), points, max(1, round(2 * zoom)))
+            pygame.draw.line(
+                surface,
+                (135, 140, 150),
+                (screen_rect.left + screen_rect.width // 4, screen_rect.top + screen_rect.height // 4),
+                (screen_rect.centerx, screen_rect.centery),
+                max(1, round(2 * zoom)),
+            )
 
     def clamp_camera(self, camera_x, camera_y, screen_width, screen_height, zoom=1.0):
         """카메라가 맵 바깥을 향하지 않도록 월드 좌표에서 제한합니다."""
@@ -613,6 +650,10 @@ class TileGenerator:
                 (x * self.tile_size, y * self.tile_size, (x + 1) * self.tile_size, (y + 1) * self.tile_size)
                 for (x, y), tile in self.map_data.items() if tile.tile_type in (1, 7, 8, 9)
             ]
+            self._vision_wall_rects.extend(
+                (stone["rect"].left, stone["rect"].top, stone["rect"].right, stone["rect"].bottom)
+                for stone in self.stone_objects
+            )
 
         # [최적화] 저격총 같은 긴 시야는 시야각 폭만 체크 (좌우 side width)
         # 직선 시야는 width가 좁으므로, 중앙 방향 근처만 체크하면 됨
@@ -662,6 +703,13 @@ class TileGenerator:
                     world_y = y * self.tile_size
                     rect = pygame.Rect(world_x, world_y, self.tile_size, self.tile_size)
                     wall_rects.append(rect)
+
+        wall_rects.extend(
+            stone["rect"] for stone in self.stone_objects
+            if stone["rect"].colliderect(
+                pygame.Rect(camera_x, camera_y, screen_width, screen_height)
+            )
+        )
                     
         return wall_rects
 
@@ -690,6 +738,8 @@ class TileGenerator:
         for x, y in points_to_check:
             if not self.is_walkable(x, y):
                 return True  # 충돌 감지
+        if any(stone["rect"].colliderect(rect) for stone in self.stone_objects):
+            return True
         
         return False  # 충돌 없음
 
@@ -709,6 +759,8 @@ class TileGenerator:
             tile = self.map_data.get((tile_x, tile_y))
             if tile is None or tile.tile_type == 1:
                 return True
+        if any(stone["rect"].colliderect(rect) for stone in self.stone_objects):
+            return True
         return False
 
     def segment_wall_collision(self, start_x, start_y, end_x, end_y, radius=2):
@@ -728,6 +780,9 @@ class TileGenerator:
 
     def destructible_collision(self, rect):
         """총알과 파괴 가능한 가구 또는 돌의 충돌 타일을 반환합니다."""
+        for stone in self.stone_objects:
+            if stone["rect"].colliderect(rect):
+                return stone["tile"][0], stone["tile"][1], 9
         start_x = max(0, int(rect.left // self.tile_size))
         end_x = min(self.map_width - 1, int(rect.right // self.tile_size))
         start_y = max(0, int(rect.top // self.tile_size))

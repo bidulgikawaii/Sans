@@ -69,9 +69,6 @@ class Player:
             self.Hp = max(0,self.Hp - max(0,int(damage)))
         return hit_part
 
-    
-
-
     def handle_input(self, dash_requested=False):
         keys = pygame.key.get_pressed()
         current_time = pygame.time.get_ticks()
@@ -136,6 +133,9 @@ class Player:
             next_head_hitbox, next_body_hitbox = self.hitboxes_for_position(
                 candidate_x, candidate_y, self.rect.width, self.rect.height
             )
+            collision_margin = PLAYER_COLLISION_MARGIN
+            next_head_hitbox = next_head_hitbox.inflate(-collision_margin * 2, -collision_margin * 2)
+            next_body_hitbox = next_body_hitbox.inflate(-collision_margin * 2, -collision_margin * 2)
             if self.tile_generator and (
                 self.tile_generator.check_collision(next_head_hitbox)
                 or self.tile_generator.check_collision(next_body_hitbox)

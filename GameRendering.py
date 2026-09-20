@@ -1,5 +1,5 @@
 import math
-
+import os
 import pygame
 
 
@@ -146,18 +146,21 @@ def draw_ammo_status(
     config = weapon_state.config
     name_text = font.render(config.name, True, (255, 220, 120))
     ammo_text = font.render(
-        "재장전 중..." if weapon_state.is_reloading_now() else f"{weapon_state.magazine_ammo}   {config.magazine_size}",
+        "재장전 중..." if weapon_state.is_reloading_now() else f"탄창 {weapon_state.magazine_ammo}/{config.magazine_size}",
         True,
         (255, 180, 120) if weapon_state.is_reloading_now() else (255, 255, 255),
     )
+    reserve_text = font.render(f"예비 탄약 {weapon_state.reserve_ammo}", True, (190, 220, 255))
     panel = pygame.transform.smoothscale(panel_image, panel_size)
     panel_x = screen_width - panel_size[0] - panel_margin[0]
     panel_y = screen_height - panel_size[1] - panel_margin[1]
     surface.blit(panel, (panel_x, panel_y))
     name_rect = name_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 3))
-    ammo_rect = ammo_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 43))
+    reserve_rect = reserve_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 34))
+    ammo_rect = ammo_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 66))
     surface.blit(name_text, name_rect)
     surface.blit(ammo_text, ammo_rect)
+    surface.blit(reserve_text, reserve_rect)
 
 
 def draw_ward(surface, ward_x, ward_y, camera_x, camera_y, zoom):
@@ -207,7 +210,8 @@ def draw_supply_drop(surface, supply, camera_x, camera_y, zoom, colors, now):
         pulse = 22 + round(8 * math.sin(now * 0.012))
         pygame.draw.circle(surface, (255, 230, 120), (x, y), max(18, round(pulse * zoom)), 3)
         pygame.draw.line(surface, (255, 240, 150), (x, max(0, y - round(150 * zoom))), (x, y), 2)
-        label = pygame.font.Font(None, 26).render("보급품 낙하", True, (255, 240, 150))
+        label = pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__)
+        ),"Font","HeirofLightRegular.ttf"), 26).render("보급품 낙하", True, (255, 240, 150))
         surface.blit(label, label.get_rect(center=(x, max(18, y - round(165 * zoom)))))
     box = pygame.Rect(0, 0, max(22, round(36 * zoom)), max(18, round(28 * zoom)))
     box.center = (x, y)

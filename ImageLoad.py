@@ -72,7 +72,7 @@ class Imageload():
         
         # ===== 스킬 아이콘 이미지 로드 =====
         self.skill_icons = {}
-        skill_names = ["달팽이 세개", "매의 눈", "보호막", "은신", "텔포", "기절탄", "부활의 차", "와드"]
+        skill_names = ["폭탄받아라!", "매의 눈", "보호막", "은신", "텔포", "기절탄", "부활의 차", "와드"]
         skill_files = [
             "Bomb.png", "egle_Eyes.png", "ProtectShield.png", "Invis.png", "Tp.png", "Stun_Icon.png", "Retry.png", "Ward.png",
         ]

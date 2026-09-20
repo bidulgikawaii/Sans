@@ -70,6 +70,7 @@ class WeaponState:
         self.weapon_id = weapon_id
         self.magazine_ammo = WEAPONS[weapon_id].magazine_size
         self.reserve_ammo = WEAPONS[weapon_id].reserve_ammo
+        self._reserve_by_weapon = {weapon_id: self.reserve_ammo}
         self.last_fired_at = 0.0
         self.reloading = False
         self.reload_started_at = 0.0
@@ -82,15 +83,28 @@ class WeaponState:
     def select(self, weapon_id):
         if weapon_id not in WEAPONS or weapon_id == self.weapon_id:
             return False
+        self._reserve_by_weapon[self.weapon_id] = self.reserve_ammo
         self.weapon_id = weapon_id
         config = self.config
         self.magazine_ammo = config.magazine_size
-        self.reserve_ammo = config.reserve_ammo
+        self.reserve_ammo = self._reserve_by_weapon.setdefault(weapon_id, config.reserve_ammo)
         self.last_fired_at = 0.0
         self.reloading = False
         self.reload_started_at = 0.0
         self.reload_finished_at = 0.0
         return True
+
+    def reset(self, weapon_id=None):
+        if weapon_id in WEAPONS:
+            self.weapon_id = weapon_id
+        config = self.config
+        self.magazine_ammo = config.magazine_size
+        self.reserve_ammo = config.reserve_ammo
+        self._reserve_by_weapon = {self.weapon_id: self.reserve_ammo}
+        self.last_fired_at = 0.0
+        self.reloading = False
+        self.reload_started_at = 0.0
+        self.reload_finished_at = 0.0
 
     def can_fire(self):
         now = time.monotonic()

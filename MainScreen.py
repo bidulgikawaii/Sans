@@ -34,7 +34,12 @@ class MainScreenRenderer:
             ), 30)
         credit = credit_font.render("By PGM.", True, (190, 200, 220))
         self.surface.blit(credit, credit.get_rect(center=(self.screen_width // 2, self.screen_height - 24)))
-        return {"profile": profile_rect}
+        name_button = pygame.Rect(self.screen_width - 300, 35, 250, 64)
+        pygame.draw.rect(self.surface, (20, 30, 48), name_button, border_radius=8)
+        pygame.draw.rect(self.surface, (255, 220, 120), name_button, 2, border_radius=8)
+        name_text = self.font.render("이름 바꾸기", True, (255, 235, 160))
+        self.surface.blit(name_text, name_text.get_rect(center=name_button.center))
+        return {"profile": profile_rect, "name": name_button}
 
     def draw_mode_select(self):
         normal, normal_rect = self._center_rect("GameStart", 330)

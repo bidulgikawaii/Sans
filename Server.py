@@ -137,11 +137,27 @@ def handle_client(conn, player_id):
                     if accepted:
                         spectator_ids.discard(player_id)
                         players[player_id]["name"] = str(client_data.get("name", "플레이어"))[:16]
+                        players[player_id]["hp"] = PLAYER_MAX_HP
+                        players[player_id]["weapon_id"] = DEFAULT_WEAPON_ID
+                        players[player_id]["magazine_ammo"] = WEAPONS[DEFAULT_WEAPON_ID].magazine_size
+                        players[player_id]["reserve_ammo"] = WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo
                     lobby_status = lobby.status()
                     lobby_status["accepted"] = accepted
                     if not accepted:
                         lobby_status["message"] = "게임이 진행 중이라 참가할 수 없습니다."
                 conn.sendall(pickle.dumps(lobby_status))
+                continue
+
+            if client_data.get("type") == "lobby_leave":
+                with player_lock:
+                    lobby.leave(player_id)
+                    if not lobby.modes:
+                        kill_events.clear()
+                        damage_events.clear()
+                        destroyed_treasures.clear()
+                        destroyed_furniture.clear()
+                        bullet_events.clear()
+                conn.sendall(pickle.dumps(lobby.status()))
                 continue
 
             if client_data.get("type") == "lobby_ready":
@@ -265,7 +281,11 @@ def handle_client(conn, player_id):
                     "hit_part": hit_event.get("hit_part", "body"),
                 })
                 next_damage_event_id += 1
-                if previous_hp > 0 and target["hp"] <= 0:
+                if (
+                    previous_hp > 0
+                    and target["hp"] <= 0
+                    and not target.get("revive_armed", False)
+                ):
                     kill_events.append({
                         "killer_id": player_id,
                         "target_id": target_id,

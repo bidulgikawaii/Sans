@@ -611,11 +611,8 @@ def GameOverView():
     _draw_result_screen("패배", (220, 50, 50), pygame.time.get_ticks() - result_started_at)
 
     for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            running = False
-        elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+    
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
             client.sendall(pickle.dumps({"type": "lobby_leave"}))
             client.recv(NETWORK_BUFFER_SIZE)
             ScreenState = "MainView"
@@ -628,11 +625,8 @@ def VictoryView():
     _draw_result_screen("승리", (255, 220, 80), pygame.time.get_ticks() - result_started_at)
 
     for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            running = False
-        elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+        
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
             client.sendall(pickle.dumps({"type": "lobby_leave"}))
             client.recv(NETWORK_BUFFER_SIZE)
             ScreenState = "MainView"

@@ -251,6 +251,11 @@ preserve_magazine_after_chest = False
 teleport_anchor = None
 teleport_anchor_expires_at = 0
 
+
+def is_hidden_player(player_info):
+    """사망 또는 서버가 숨김 처리한 플레이어를 판별합니다."""
+    return player_info.get("hidden", False) or player_info.get("hp", 1) <= 0
+
 def spawn_supply_drop(now):
     """안전한 바닥 타일에 보급품을 하나 생성합니다."""
     # 벽이나 집 안에 생성되면 플레이어가 접근할 수 없으므로
@@ -1002,7 +1007,7 @@ def fire_knife():
 
     attacked_count = 0
     for p_id, p_info in server_players.items():
-        if int(p_id) == my_id:
+        if int(p_id) == my_id or is_hidden_player(p_info):
             continue
 
         enemy_center_x = p_info["posX"] + IML.Player.get_width() / 2
@@ -1368,6 +1373,8 @@ def GameView():
         )
         screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 8)
         for p_id, p_info in server_players.items():
+            if is_hidden_player(p_info):
+                continue
             distance = math.hypot(p_info["posX"] - bomb["x"], p_info["posY"] - bomb["y"])
             if distance <= BOMB_RADIUS:
                 pending_hit_events.append({
@@ -1432,49 +1439,45 @@ def GameView():
         server_raw = client.recv(NETWORK_BUFFER_SIZE)
         if server_raw:
             server_players = pickle.loads(server_raw)
+            own_snapshot = server_players.get(my_id)
+            event_snapshot = own_snapshot or {}
             seen_kills = {
-                (item.get("killer_id"), item.get("target_id"), item.get("weapon_id"))
+                item.get("event_id")
                 for item in kill_feed
             }
-            for player_snapshot in server_players.values():
-                for kill_event in player_snapshot.get("kill_events", []):
-                    key = (kill_event.get("killer_id"), kill_event.get("target_id"), kill_event.get("weapon_id"))
-                    if key not in seen_kills:
-                        kill_feed.append({**kill_event, "started_at": now})
+            for kill_event in event_snapshot.get("kill_events", []):
+                event_id = kill_event.get("event_id")
+                if event_id not in seen_kills:
+                    kill_feed.append({**kill_event, "started_at": now})
             kill_feed = [event for event in kill_feed if now - event["started_at"] < 5000][-5:]
-            for player_snapshot in server_players.values():
-                for damage_event in player_snapshot.get("damage_events", []):
-                    event_id = damage_event.get("event_id")
-                    if event_id in processed_damage_event_ids:
-                        continue
-                    processed_damage_event_ids.add(event_id)
-                    target_id = damage_event.get("target_id")
-                    target = server_players.get(target_id)
-                    if target is None and str(target_id) == str(my_id):
-                        target = {
-                            "posX": my_player.X,
-                            "posY": my_player.Y,
-                        }
-                    if target is not None:
-                        damage_numbers.append({
-                            "x": target.get("posX", my_player.X) + my_player.rect.width / 2,
-                            "y": target.get("posY", my_player.Y),
-                            "damage": damage_event.get("damage", 0),
-                            "color": (255, 235, 100) if damage_event.get("hit_part") == "head" else (255, 255, 255),
-                            "started_at": now,
-                            "lifetime": DAMAGE_TEXT_LIFETIME_MS,
-                        })
-            synchronized_treasures = set()
-            synchronized_furniture = set()
+            for damage_event in event_snapshot.get("damage_events", []):
+                event_id = damage_event.get("event_id")
+                if event_id in processed_damage_event_ids:
+                    continue
+                processed_damage_event_ids.add(event_id)
+                target_id = damage_event.get("target_id")
+                target = server_players.get(target_id)
+                if target is None and str(target_id) == str(my_id):
+                    target = {
+                        "posX": my_player.X,
+                        "posY": my_player.Y,
+                    }
+                if target is not None:
+                    damage_numbers.append({
+                        "x": target.get("posX", my_player.X) + my_player.rect.width / 2,
+                        "y": target.get("posY", my_player.Y),
+                        "damage": damage_event.get("damage", 0),
+                        "color": (255, 235, 100) if damage_event.get("hit_part") == "head" else (255, 255, 255),
+                        "started_at": now,
+                        "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+                    })
+            synchronized_treasures = {
+                tuple(treasure) for treasure in event_snapshot.get("destroyed_treasures", [])
+            }
+            synchronized_furniture = {
+                tuple(furniture) for furniture in event_snapshot.get("destroyed_furniture", [])
+            }
             synchronized_rune_alerts = []
-            for player_snapshot in server_players.values():
-                synchronized_treasures.update(
-                    tuple(treasure) for treasure in player_snapshot.get("destroyed_treasures", [])
-                )
-                synchronized_furniture.update(
-                    tuple(furniture) for furniture in player_snapshot.get("destroyed_furniture", [])
-                )
-            own_snapshot = server_players.get(my_id)
             if own_snapshot:
                 synchronized_rune_alerts = own_snapshot.get("rune_alerts", [])
             for tile_x, tile_y in synchronized_treasures:
@@ -1689,7 +1692,7 @@ def GameView():
                 bullet.is_active = False
                 continue
             for p_id, p_info in server_players.items():
-                if int(p_id) == my_id:
+                if int(p_id) == my_id or is_hidden_player(p_info):
                     continue
                 head, body = Player.hitboxes_for_position(
                     p_info["posX"], p_info["posY"], IML.Player.get_width(), IML.Player.get_height()
@@ -1732,6 +1735,8 @@ def GameView():
     # 서버 스냅샷에는 같은 발사 이벤트가 모든 플레이어 항목에 포함될 수
     # 있으므로 event_id 기준으로 한 번만 생성합니다.
     for p_info in server_players.values():
+        if is_hidden_player(p_info):
+            continue
         for bullet_info in p_info.get("bullets", []):
             event_id = bullet_info.get("event_id")
             if event_id in processed_bullet_events:
@@ -1806,7 +1811,7 @@ def GameView():
     visible_player_ids = set()
     # 다른 플레이어 그리기
     for p_id, p_info in server_players.items():
-        if int(p_id) == my_id:
+        if int(p_id) == my_id or is_hidden_player(p_info):
             continue
 
         other_world_x, other_world_y = get_player_world_center(
@@ -2162,7 +2167,7 @@ def GameView():
     for ward_x, ward_y in wards:
         draw_ward(display, ward_x, ward_y, CameraPosX, CameraPosY, camera_zoom)
     for player_id, player_info in server_players.items():
-        if int(player_id) == my_id:
+        if int(player_id) == my_id or is_hidden_player(player_info):
             continue
         for ward_x, ward_y in player_info.get("wards", []):
             if TileGene.is_point_visible_from(

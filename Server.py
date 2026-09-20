@@ -43,6 +43,7 @@ destroyed_treasures = set()
 destroyed_furniture = set()
 rune_alerts = []
 kill_events = []
+next_kill_event_id = 1
 damage_events = []
 spectator_ids = set()
 next_damage_event_id = 1
@@ -67,7 +68,7 @@ def get_next_player_id():
 
 
 def handle_client(conn, player_id):
-    global next_bullet_event_id, next_damage_event_id
+    global next_bullet_event_id, next_damage_event_id, next_kill_event_id
     with player_lock:
         # 접속 전에 발생한 총알은 새 플레이어에게 전달하지 않습니다.
         last_sent_bullet_event_id = next_bullet_event_id - 1
@@ -287,12 +288,14 @@ def handle_client(conn, player_id):
                     and not target.get("revive_armed", False)
                 ):
                     kill_events.append({
+                        "event_id": next_kill_event_id,
                         "killer_id": player_id,
                         "target_id": target_id,
                         "killer_name": players[player_id].get("name", "플레이어"),
                         "target_name": target.get("name", "플레이어"),
                         "weapon_id": client_data.get("weapon_id", DEFAULT_WEAPON_ID),
                     })
+                    next_kill_event_id += 1
                 stun_ms = max(0, int(hit_event.get("stun_ms", 0)))
                 if stun_ms:
                     target["stunned_until"] = max(
@@ -301,7 +304,11 @@ def handle_client(conn, player_id):
                     )
 
             with player_lock:
-                for bullet in client_data.get("bullets", []):
+                for bullet in (
+                    client_data.get("bullets", [])
+                    if players[player_id]["hp"] > 0
+                    else ()
+                ):
                     bullet_event = dict(bullet)
                     bullet_event["owner_id"] = player_id
                     bullet_event["event_id"] = next_bullet_event_id
@@ -364,6 +371,7 @@ def handle_client(conn, player_id):
                 player["stun_ms_remaining"] = max(
                     0, round((player.get("stunned_until", 0.0) - time.monotonic()) * 1000)
                 )
+                player["hidden"] = player.get("hp", 0) <= 0
             conn.sendall(pickle.dumps(snapshot))
     except Exception as e:
         print(f"[네트워크 오류] 플레이어 {player_id}번: {e}")

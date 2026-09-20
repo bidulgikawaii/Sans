@@ -116,6 +116,8 @@ class MiniMap:
         for player_id, player_info in (players or {}).items():
             if local_player_id is not None and int(player_id) == int(local_player_id):
                 continue
+            if player_info.get("hidden", False) or player_info.get("hp", 1) <= 0:
+                continue
             player_position = (
                 player_info.get("posX", 0) + self.tile_generator.tile_size / 2,
                 player_info.get("posY", 0) + self.tile_generator.tile_size / 2,

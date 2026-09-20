@@ -1375,13 +1375,30 @@ def GameView():
         for p_id, p_info in server_players.items():
             if is_hidden_player(p_info):
                 continue
-            distance = math.hypot(p_info["posX"] - bomb["x"], p_info["posY"] - bomb["y"])
+            player_center_x = p_info["posX"] + IML.Player.get_width() / 2
+            player_center_y = p_info["posY"] + IML.Player.get_height() / 2
+            distance = math.hypot(player_center_x - bomb["x"], player_center_y - bomb["y"])
             if distance <= BOMB_RADIUS:
                 pending_hit_events.append({
                     "target_id": int(p_id),
                     "damage": BOMB_DAMAGE,
                     "hit_part": "body",
                 })
+        if debug_mode and training_dummy is not None and training_dummy.Hp > 0:
+            dummy_center_x = training_dummy.rect.centerx
+            dummy_center_y = training_dummy.rect.centery
+            if math.hypot(dummy_center_x - bomb["x"], dummy_center_y - bomb["y"]) <= BOMB_RADIUS:
+                training_dummy.Hp = max(0, training_dummy.Hp - BOMB_DAMAGE)
+                damage_numbers.append({
+                    "x": dummy_center_x,
+                    "y": training_dummy.rect.top,
+                    "damage": BOMB_DAMAGE,
+                    "color": (255, 255, 255),
+                    "started_at": now,
+                    "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+                })
+                if training_dummy.Hp <= 0:
+                    training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
     active_bombs = pending_bombs
     active_explosions = [explosion for explosion in active_explosions if now < explosion["until"]]
 

@@ -82,8 +82,9 @@ def handle_client(conn, player_id):
         "posY": 0,
         "angle": 0.0,
         "hp": PLAYER_MAX_HP,
-        "name": "플레이어",
+        "name": f"유저_{player_id}",
         "weapon_id": DEFAULT_WEAPON_ID,
+        "weapon_name": WEAPONS[DEFAULT_WEAPON_ID].name,
         "magazine_ammo": WEAPONS[DEFAULT_WEAPON_ID].magazine_size,
         "reserve_ammo": WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo,
         "stealth": False,
@@ -119,13 +120,22 @@ def handle_client(conn, player_id):
                         continue
                     spectator_ids.add(player_id)
                     lobby.leave(player_id)
-                    active_ids = lobby.active_player_ids()
+                    active_ids = lobby.visible_player_ids(player_id)
                     spectator_snapshot = {
                         active_id: players[active_id]
                         for active_id in active_ids
                         if active_id in players
                     }
+                    for player in spectator_snapshot.values():
+                        player["kill_events"] = list(kill_events[-12:])
                 conn.sendall(pickle.dumps(spectator_snapshot))
+                continue
+
+            if client_data.get("type") == "spectator_leave":
+                with player_lock:
+                    spectator_ids.discard(player_id)
+                    lobby.leave(player_id)
+                conn.sendall(pickle.dumps({}))
                 continue
 
             if client_data.get("type") == "lobby_join":
@@ -137,12 +147,14 @@ def handle_client(conn, player_id):
                     )
                     if accepted:
                         spectator_ids.discard(player_id)
-                        players[player_id]["name"] = str(client_data.get("name", "플레이어"))[:16]
+                        requested_name = str(client_data.get("name", "")).strip()
+                        players[player_id]["name"] = (requested_name or f"유저_{player_id}")[:16]
                         players[player_id]["hp"] = PLAYER_MAX_HP
                         players[player_id]["weapon_id"] = DEFAULT_WEAPON_ID
+                        players[player_id]["weapon_name"] = WEAPONS[DEFAULT_WEAPON_ID].name
                         players[player_id]["magazine_ammo"] = WEAPONS[DEFAULT_WEAPON_ID].magazine_size
                         players[player_id]["reserve_ammo"] = WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo
-                    lobby_status = lobby.status()
+                    lobby_status = lobby.status(player_id)
                     lobby_status["accepted"] = accepted
                     if not accepted:
                         lobby_status["message"] = "게임이 진행 중이라 참가할 수 없습니다."
@@ -158,14 +170,14 @@ def handle_client(conn, player_id):
                         destroyed_treasures.clear()
                         destroyed_furniture.clear()
                         bullet_events.clear()
-                conn.sendall(pickle.dumps(lobby.status()))
+                conn.sendall(pickle.dumps(lobby.status(player_id)))
                 continue
 
             if client_data.get("type") == "lobby_ready":
                 with player_lock:
                     ready = bool(client_data.get("ready", False))
                     accepted = lobby.set_ready(player_id, ready)
-                    lobby_status = lobby.status()
+                    lobby_status = lobby.status(player_id)
                     lobby_status["accepted"] = accepted
                     if not accepted:
                         lobby_status["message"] = "로비에 참여하지 않은 플레이어입니다."
@@ -184,7 +196,10 @@ def handle_client(conn, player_id):
             players[player_id]["posY"] = client_data["posY"]
             players[player_id]["angle"] = client_data["angle"]
             weapon_id = client_data.get("weapon_id", DEFAULT_WEAPON_ID)
-            players[player_id]["weapon_id"] = weapon_id if weapon_id in WEAPONS else DEFAULT_WEAPON_ID
+            if weapon_id not in WEAPONS:
+                weapon_id = DEFAULT_WEAPON_ID
+            players[player_id]["weapon_id"] = weapon_id
+            players[player_id]["weapon_name"] = WEAPONS[weapon_id].name
             players[player_id]["magazine_ammo"] = max(
                 0, client_data.get("magazine_ammo", players[player_id]["magazine_ammo"])
             )
@@ -318,7 +333,7 @@ def handle_client(conn, player_id):
 
             # 4. 현재 접속한 모든 유저들의 데이터를 통째로 패킹해서 응답
             with player_lock:
-                active_ids = lobby.active_player_ids() - spectator_ids
+                active_ids = lobby.visible_player_ids(player_id) - spectator_ids
                 active_players = {
                     active_id: players[active_id]
                     for active_id in active_ids

@@ -155,9 +155,10 @@ def draw_ammo_status(
     panel_x = screen_width - panel_size[0] - panel_margin[0]
     panel_y = screen_height - panel_size[1] - panel_margin[1]
     surface.blit(panel, (panel_x, panel_y))
-    name_rect = name_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 3))
-    reserve_rect = reserve_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 34))
-    ammo_rect = ammo_text.get_rect(center=(panel_x + panel_size[0] // 2, panel_y + 66))
+    panel_center_x = panel_x + panel_size[0] // 2
+    name_rect = name_text.get_rect(center=(panel_center_x, panel_y + 20))
+    reserve_rect = reserve_text.get_rect(center=(panel_center_x, panel_y + 60))
+    ammo_rect = ammo_text.get_rect(center=(panel_center_x, panel_y + 100))
     surface.blit(name_text, name_rect)
     surface.blit(ammo_text, ammo_rect)
     surface.blit(reserve_text, reserve_rect)

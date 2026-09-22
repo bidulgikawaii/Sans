@@ -70,8 +70,6 @@ class TileGenerator:
         # -------------------------------------
         floor = pygame.Surface((self.tile_size, self.tile_size))
         floor.fill((140, 180, 130)) # [커스텀 가능] 바닥 기본 색상
-        # 도트 느낌의 잔디 디테일 선 추가
-        pygame.draw.rect(floor, (130, 170, 120), (0, 0, self.tile_size, self.tile_size), 1) # [커스텀 가능]
         self.tile_images[0] = floor
 
         # -------------------------------------
@@ -387,6 +385,22 @@ class TileGenerator:
                 self.tile_images[tile.tile_type],
                 (tile_x * self.tile_size, tile_y * self.tile_size),
             )
+            if tile.tile_type == 0:
+                # 타일 경계선 대신 좌표 기반 잔디 결을 넣어 반복 무늬를 줄입니다.
+                tile_rng = random.Random(tile_x * 73856093 ^ tile_y * 19349663)
+                tile_left = tile_x * self.tile_size
+                tile_top = tile_y * self.tile_size
+                for _ in range(3):
+                    detail_x = tile_left + tile_rng.randrange(4, self.tile_size - 4)
+                    detail_y = tile_top + tile_rng.randrange(4, self.tile_size - 4)
+                    detail_color = tile_rng.choice(((116, 161, 105), (157, 192, 138), (126, 171, 112)))
+                    pygame.draw.line(
+                        self.world_surface,
+                        detail_color,
+                        (detail_x, detail_y),
+                        (detail_x + tile_rng.choice((-2, -1, 1, 2)), detail_y - 3),
+                        1,
+                    )
         self._scaled_world_surface = None
         self._scaled_world_zoom = None
 

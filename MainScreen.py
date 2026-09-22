@@ -1,5 +1,6 @@
 import pygame
 import os
+from Config import MAIN_SCREEN_BACKGROUND_COLOR
 
 
 class MainScreenRenderer:
@@ -10,12 +11,22 @@ class MainScreenRenderer:
         self.titles = titles
         self.font = font
         self.screen_width, self.screen_height = screen_size
+        self.background = titles.get("BackG")
+
+    def _draw_background(self, image=False):
+        self.surface.fill(MAIN_SCREEN_BACKGROUND_COLOR)
+        if image and self.background is not None:
+            background = pygame.transform.smoothscale(
+                self.background, (self.screen_width, self.screen_height)
+            )
+            self.surface.blit(background, (0, 0))
 
     def _center_rect(self, image_name, center_y):
         image = self.titles[image_name]
         return image, image.get_rect(center=(self.screen_width // 2, center_y))
 
     def draw_main(self, weapon_name=None, weapon_image=None):
+        self._draw_background(image=True)
         title, title_rect = self._center_rect("TitleText", 210)
         profile, profile_rect = self._center_rect("MainProfile", 700)
         self.surface.blit(title, title_rect)
@@ -42,6 +53,7 @@ class MainScreenRenderer:
         return {"profile": profile_rect, "name": name_button}
 
     def draw_mode_select(self):
+        self._draw_background()
         normal, normal_rect = self._center_rect("GameStart", 330)
         debug, debug_rect = self._center_rect("Practice", 520)
         back, back_rect = self._center_rect("Exit", 710)
@@ -50,9 +62,10 @@ class MainScreenRenderer:
         self.surface.blit(back, back_rect)
         return {"normal": normal_rect, "debug": debug_rect, "back": back_rect}
 
-    def draw_name_input(self, nickname):
+    def draw_name_input(self, nickname, default_name="플레이어"):
+        self._draw_background()
         title = self.font.render("닉네임을 입력하세요", True, (255, 235, 150))
-        value = self.font.render(nickname or "플레이어", True, (240, 245, 255) if nickname else (140, 155, 180))
+        value = self.font.render(nickname or default_name, True, (240, 245, 255) if nickname else (140, 155, 180))
         guide = self.font.render("Enter: 확인   Esc: 뒤로", True, (190, 205, 225))
         self.surface.blit(title, title.get_rect(center=(self.screen_width // 2, 330)))
         box = pygame.Rect(0, 0, 520, 70)
@@ -63,6 +76,7 @@ class MainScreenRenderer:
         self.surface.blit(guide, guide.get_rect(center=(self.screen_width // 2, 540)))
 
     def draw_loading(self, lobby_status, selected_game_mode, max_players, debug_mode):
+        self._draw_background()
         profile, profile_rect = self._center_rect("GameStart", 150)
         self.surface.blit(profile, profile_rect)
         title = self.font.render("게임 로딩", True, (255, 255, 255))
@@ -80,6 +94,12 @@ class MainScreenRenderer:
             (180, 235, 255),
         )
         self.surface.blit(ready_text, ready_text.get_rect(center=(self.screen_width // 2, 440)))
+        confirm_text = self.font.render(
+            "확인됨" if lobby_status.get("confirmed", False) else "Space를 눌러 확인",
+            True,
+            (120, 255, 160) if lobby_status.get("confirmed", False) else (220, 220, 220),
+        )
+        self.surface.blit(confirm_text, confirm_text.get_rect(center=(self.screen_width // 2, 480)))
         mode_name = "디버그 모드" if selected_game_mode == "debug" else "일반 모드"
         countdown_ms = lobby_status.get("countdown_ms", 0)
         if lobby_status.get("accepted") is False:
@@ -92,5 +112,5 @@ class MainScreenRenderer:
             status_name = "스페이스를 눌러 인원 확인" if not lobby_status.get("started") else "게임 시작 중..."
         mode_text = self.font.render(mode_name, True, (255, 220, 120))
         status_text = self.font.render(status_name, True, (220, 220, 220))
-        self.surface.blit(mode_text, mode_text.get_rect(center=(self.screen_width // 2, 500)))
+        self.surface.blit(mode_text, mode_text.get_rect(center=(self.screen_width // 2, 530)))
         self.surface.blit(status_text, status_text.get_rect(center=(self.screen_width // 2, 570)) )

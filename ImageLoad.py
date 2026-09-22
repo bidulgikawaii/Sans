@@ -9,6 +9,7 @@ class Imageload():
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.player_path = os.path.join(current_dir, "Image", "PlayerPng.png")
         self.backGround = os.path.join(current_dir, "Image", "Back")
+        self.BackG = self._load_image_file(os.path.join(current_dir, "Image", "BackG.png"))
         self.ShotGun_Path = os.path.join(current_dir, "Image", "ShotGun_3.png")
         self.Pistol = self._load_image("pistol_idle_transparent.png")
         if self.Pistol:
@@ -68,6 +69,8 @@ class Imageload():
                 if image_size:
                     image = pygame.transform.smoothscale(image, image_size)
                 self.TitleImages[file_path.stem] = image
+        if self.BackG is not None:
+            self.TitleImages["BackG"] = self.BackG
         # [확인용] 로드된 이미지 목록 출
         
         # ===== 스킬 아이콘 이미지 로드 =====
@@ -105,6 +108,11 @@ class Imageload():
         if not os.path.exists(path):
             return None
         return pygame.transform.smoothscale(pygame.image.load(path).convert_alpha(), (64, 64))
+
+    def _load_image_file(self, path):
+        if not os.path.exists(path):
+            return None
+        return pygame.image.load(path).convert_alpha()
 
     def _load_scaled_image(self, filename, size):
         path = os.path.join(os.path.dirname(self.player_path), filename)

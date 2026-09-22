@@ -74,10 +74,17 @@ class LobbyState:
     def active_player_ids(self):
         return set(self.modes)
 
+    def visible_player_ids(self, player_id):
+        """훈련장 플레이어는 일반전 스냅샷과 서로 섞이지 않게 합니다."""
+        active_ids = self.active_player_ids()
+        if player_id in self.practice_players:
+            return active_ids & self.practice_players
+        return active_ids - self.practice_players
+
     def zone_enabled_for(self, player_id):
         return player_id not in self.practice_players
 
-    def status(self):
+    def status(self, player_id=None):
         self._update_start_state()
         mode = GAME_MODE_DEBUG if GAME_MODE_DEBUG in self.modes.values() else GAME_MODE_NORMAL
         countdown_ms = max(0, round((self.start_at - time.monotonic()) * 1000)) if self.start_at else 0
@@ -100,4 +107,5 @@ class LobbyState:
             "elapsed_ms": elapsed_ms,
             "ready_count": ready_count,
             "all_ready": all_ready,
+            "confirmed": player_id in self.ready_players if player_id is not None else False,
         }

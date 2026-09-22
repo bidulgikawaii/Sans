@@ -30,7 +30,7 @@ from GameRendering import (
 )
 from GameAudio import load_effect_sound, play_effect_sound
 from Zone import MagneticZone
-from SpectatorMode import draw_waiting, draw_world, poll_players
+from SpectatorMode import draw_waiting, draw_world, leave_spectator, poll_players
 
 pygame.init()
 pygame.display.set_caption("전설적인 게임")
@@ -46,6 +46,7 @@ lobby_status = {
     "max_players": MAX_PLAYERS,
     "mode": GAME_MODE_NORMAL,
     "started": False,
+    "confirmed": False,
 }
 last_lobby_request_at = 0
 # [커스텀 가능] 게임 전체에서 사용할 기본 폰트입니다. 서체와 크기를 여기서 조정합니다.
@@ -96,6 +97,52 @@ client = connect_to_server()
 init_data = pickle.loads(client.recv(1024))
 my_id = init_data["init_id"]
 print(f"내 아이디:{my_id}번 입니다.")
+
+
+def default_player_name(player_id=None):
+    """닉네임을 입력하지 않았을 때 사용할 안정적인 기본 이름입니다."""
+    return f"유저_{my_id if player_id is None else player_id}"
+
+
+def reconnect_to_server():
+    """서버가 재시작되어도 새 연결과 플레이어 ID를 다시 확보합니다."""
+    global client, my_id, init_data, lobby_status, last_lobby_request_at
+    try:
+        client.close()
+    except OSError:
+        pass
+    try:
+        client = connect_to_server()
+        init_data = pickle.loads(client.recv(NETWORK_BUFFER_SIZE))
+        my_id = init_data["init_id"]
+        lobby_status = {
+            "count": 0,
+            "max_players": MAX_PLAYERS,
+            "mode": GAME_MODE_NORMAL,
+            "started": False,
+            "confirmed": False,
+        }
+        last_lobby_request_at = 0
+        return True
+    except (OSError, EOFError, pickle.PickleError, KeyError):
+        return False
+
+
+def leave_lobby():
+    """로비에서 나간 뒤 다음 경기에 사용할 클라이언트 상태를 정리합니다."""
+    global lobby_status
+    try:
+        client.sendall(pickle.dumps({"type": "lobby_leave"}))
+        client.recv(NETWORK_BUFFER_SIZE)
+    except (OSError, EOFError, pickle.PickleError):
+        reconnect_to_server()
+    reset_match_state()
+    lobby_status = {
+        "count": 0,
+        "max_players": MAX_PLAYERS,
+        "mode": GAME_MODE_NORMAL,
+        "started": False,
+    }
 
 
 random.seed(init_data["seed"])
@@ -230,6 +277,7 @@ spectator_players = {}
 spectator_camera_x = 0
 spectator_camera_y = 0
 last_spectator_poll_at = 0
+spectator_target_id = None
 match_result = None
 result_started_at = 0
 game_start_banner_until = 0
@@ -383,6 +431,10 @@ def reset_match_state():
     global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
     global training_dummy, server_players, preserve_magazine_after_chest
     global local_stun_until, zone_elapsed_ms, next_supply_drop_at
+    global CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY
+    global Weapon_Angle, Weapon_Pos, screen_shake, knife_attack_until
+    global weapon_fire_until, weapon_smoke_until
+    global vision_shape_override, vision_shape_index, inventory_open, mouse_fire_hold
     for collection in (
         bullets, remote_bullets, kill_feed, active_bombs, active_explosions,
         supply_drops, pending_treasure_destroys, pending_furniture_destroys,
@@ -411,6 +463,18 @@ def reset_match_state():
     result_started_at = 0
     system_message = ""
     weapon_state.reset(main_weapon_id)
+    CameraPosX = CameraPosY = AimCameraPosX = AimCameraPosY = 0
+    Weapon_Angle = 0
+    Weapon_Pos = (0, 0)
+    screen_shake = 0
+    knife_attack_until = 0
+    weapon_fire_until = 0
+    weapon_smoke_until = 0
+    vision_shape_index = 0
+    vision_shape_override = None
+    inventory_open = False
+    mouse_fire_hold = False
+    visibility_polygon_cache.clear()
     my_player.Hp = my_player.MaxHp
     spawn = TileGene.find_safe_spawn(
         SPAWN_MIN_X, SPAWN_MAX_X, SPAWN_MIN_Y, SPAWN_MAX_Y, rng=random.SystemRandom()
@@ -429,9 +493,6 @@ def MainView():
         preview_image = IML.GetSniper()
     elif weapon_state.weapon_id == "smg":
         preview_image = IML.GetGigwan()
-    elif weapon_state.weapon_id == "knife":
-        blade_frames = IML.GetBladeFrames()
-        preview_image = blade_frames[0] if blade_frames else IML.GetShotGun()
     else:
         preview_image = IML.GetShotGun()
     button_rects = main_screen.draw_main(weapon_state.config.name, preview_image)
@@ -515,7 +576,7 @@ def ModeSelectView():
 def NameInputView():
     global running, ScreenState, player_name
     pygame.key.start_text_input()
-    main_screen.draw_name_input(player_name)
+    main_screen.draw_name_input(player_name, default_player_name())
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
@@ -528,7 +589,7 @@ def NameInputView():
             elif event.key == pygame.K_BACKSPACE:
                 player_name = player_name[:-1]
             elif event.key == pygame.K_RETURN:
-                player_name = player_name.strip() or "플레이어"
+                player_name = player_name.strip() or default_player_name()
                 pygame.key.stop_text_input()
                 ScreenState = "MainView"
 
@@ -560,15 +621,19 @@ def LoadingView():
         refresh_skill_inventory()
     now = pygame.time.get_ticks()
     if now - last_lobby_request_at >= 100:
-        client.sendall(pickle.dumps({
-            "type": "lobby_join",
-            "mode": selected_game_mode,
-            "debug_enabled": debug_mode,
-            "name": player_name,
-        }))
-        response = pickle.loads(client.recv(4096))
-        if response.get("type") == "lobby_status":
-            lobby_status = response
+        try:
+            client.sendall(pickle.dumps({
+                "type": "lobby_join",
+                "mode": selected_game_mode,
+                "debug_enabled": debug_mode,
+                "name": player_name.strip() or default_player_name(),
+            }))
+            response = pickle.loads(client.recv(4096))
+            if response.get("type") == "lobby_status":
+                lobby_status = response
+        except (OSError, EOFError, pickle.PickleError, KeyError):
+            reconnect_to_server()
+            last_lobby_request_at = 0
         last_lobby_request_at = now
 
     main_screen.draw_loading(
@@ -611,11 +676,8 @@ def GameOverView():
     _draw_result_screen("패배", (220, 50, 50), pygame.time.get_ticks() - result_started_at)
 
     for event in pygame.event.get():
-    
         if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-            client.sendall(pickle.dumps({"type": "lobby_leave"}))
-            client.recv(NETWORK_BUFFER_SIZE)
-            ScreenState = "MainView"
+            leave_game_to_main()
 
 
 def VictoryView():
@@ -625,11 +687,8 @@ def VictoryView():
     _draw_result_screen("승리", (255, 220, 80), pygame.time.get_ticks() - result_started_at)
 
     for event in pygame.event.get():
-        
         if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-            client.sendall(pickle.dumps({"type": "lobby_leave"}))
-            client.recv(NETWORK_BUFFER_SIZE)
-            ScreenState = "MainView"
+            leave_game_to_main()
 
 
 def _draw_result_screen(title_text, color, elapsed):
@@ -651,18 +710,36 @@ def _draw_result_screen(title_text, color, elapsed):
         (max(1, round(title.get_width() * pulse)), max(1, round(title.get_height() * pulse))),
     )
     display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
-    guide = GuiFont.render("ESC를 눌러 종료,스페이스키를 눌러 로비로 이동하세요", True, (255, 255, 255))
+    guide = GuiFont.render("스페이스키를 눌러 로비로 이동하세요", True, (255, 255, 255))
     display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 70)))
 
 
 def SpectatorView():
-    global running, ScreenState, spectator_players, spectator_camera_x, spectator_camera_y, last_spectator_poll_at
+    global running, ScreenState, spectator_players, spectator_camera_x, spectator_camera_y, last_spectator_poll_at, spectator_target_id
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            try:
+                leave_spectator(client, NETWORK_BUFFER_SIZE)
+            except (OSError, EOFError, pickle.PickleError):
+                pass
+            spectator_players = {}
+            spectator_target_id = None
             ScreenState = "ModeSelectView"
             return
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_q:
+            alive_ids = sorted(
+                int(player_id)
+                for player_id, player_info in spectator_players.items()
+                if player_info.get("hp", 0) > 0
+            )
+            if alive_ids:
+                if spectator_target_id not in alive_ids:
+                    spectator_target_id = alive_ids[0]
+                else:
+                    current_index = alive_ids.index(spectator_target_id)
+                    spectator_target_id = alive_ids[(current_index + 1) % len(alive_ids)]
 
     now = pygame.time.get_ticks()
     if now - last_spectator_poll_at >= 100:
@@ -672,8 +749,17 @@ def SpectatorView():
         draw_waiting(display, GuiFont, ScreenX, ScreenY)
         return
 
-    tracked_id = next(iter(spectator_players))
-    tracked = spectator_players[tracked_id]
+    alive_ids = sorted(
+        int(player_id)
+        for player_id, player_info in spectator_players.items()
+        if player_info.get("hp", 0) > 0
+    )
+    if not alive_ids:
+        draw_waiting(display, GuiFont, ScreenX, ScreenY)
+        return
+    if spectator_target_id not in alive_ids:
+        spectator_target_id = alive_ids[0]
+    tracked = spectator_players.get(spectator_target_id, spectator_players.get(str(spectator_target_id), {}))
     target_x = tracked.get("posX", 0) + 36
     target_y = tracked.get("posY", 0) + 36
     spectator_camera_x, spectator_camera_y = get_camera_target(
@@ -692,6 +778,8 @@ def SpectatorView():
         (spectator_camera_x, spectator_camera_y),
         camera_zoom,
         ScreenX,
+        spectator_target_id,
+        IML,
     )
 
 
@@ -839,6 +927,7 @@ def activate_quick_slot(key):
 
 def select_weapon(weapon_id):
     global system_message, vision_shape_override, main_weapon_id
+    global weapon_fire_until, weapon_smoke_until, knife_attack_until, screen_shake
     if ScreenState != "GameView":
         main_weapon_id = weapon_id
     elif not debug_mode and weapon_id not in (main_weapon_id, "knife"):
@@ -846,6 +935,11 @@ def select_weapon(weapon_id):
         return
     if weapon_state.select(weapon_id):
         vision_shape_override = None
+        visibility_polygon_cache.clear()
+        weapon_fire_until = 0
+        weapon_smoke_until = 0
+        knife_attack_until = 0
+        screen_shake = 0
         system_message = f"무기 변경: {weapon_state.config.name}"
 
 
@@ -944,14 +1038,14 @@ def handle_key_event(event, _mouse_pos):
 
 
 def leave_game_to_main():
-    """훈련장이나 로컬 게임을 정리하고 메인 화면으로 돌아갑니다."""
+    """현재 게임과 로비 상태를 정리하고 메인 화면으로 돌아갑니다."""
     global ScreenState, local_match, debug_mode
-    if local_match or debug_mode:
+    if not local_match and not debug_mode:
+        leave_lobby()
+    else:
         reset_match_state()
-        local_match = False
-        debug_mode = False
-        ScreenState = "MainView"
-        return
+    local_match = False
+    debug_mode = False
     ScreenState = "MainView"
 
 
@@ -1238,7 +1332,7 @@ def handle_game_events():
 def GameView():
     global running, ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, camera_fov, camera_zoom, match_result, local_stun_until, zone_elapsed_ms, game_start_banner_until
     global screen_shake, server_players, bullets, remote_bullets, processed_bullet_events, processed_damage_event_ids, MousePos, system_message, kill_feed, main_weapon_id
-    global vision_shape_override, vision_skill_until, shield_until, haste_until
+    global vision_shape_override, vision_skill_until, shield_until, haste_until, last_lobby_request_at, local_match
     global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys, pending_furniture_destroys, pending_hit_events, pending_heal_amount, wards, active_rune_tile, rune_alerts
     global visibility_polygon_cache, mouse_fire_hold, last_effect_tick, preserve_magazine_after_chest
     global aim_lock_until, aim_locked_pos, weapon_fire_until
@@ -1509,17 +1603,16 @@ def GameView():
                 my_player.Hp = own_snapshot.get("hp", my_player.Hp)
                 local_stun_until = now + own_snapshot.get("stun_ms_remaining", 0)
                 weapon_id = own_snapshot.get("weapon_id", weapon_state.weapon_id)
-                if weapon_id in WEAPONS:
-                    weapon_state.weapon_id = weapon_id
-                if preserve_magazine_after_chest:
-                    preserve_magazine_after_chest = False
-                else:
-                    weapon_state.magazine_ammo = own_snapshot.get(
-                        "magazine_ammo", weapon_state.magazine_ammo
-                    )
-                weapon_state.reserve_ammo = own_snapshot.get(
-                    "reserve_ammo", weapon_state.reserve_ammo
-                )
+                if weapon_id == weapon_state.weapon_id:
+                    if preserve_magazine_after_chest:
+                        preserve_magazine_after_chest = False
+                    elif not weapon_state.is_reloading_now():
+                        weapon_state.magazine_ammo = own_snapshot.get(
+                            "magazine_ammo", weapon_state.magazine_ammo
+                        )
+                        weapon_state.reserve_ammo = own_snapshot.get(
+                            "reserve_ammo", weapon_state.reserve_ammo
+                        )
                 if my_player.Hp <= 0:
                     revived_after_server_update = use_revive_skill()
             own_winner_id = own_snapshot.get("winner_id") if own_snapshot else None
@@ -1536,8 +1629,14 @@ def GameView():
             #     "hp": hp,           # 상대 플레이어 체력
             #     "bullets": [...]    # 상대가 발사한 총알들
             # }
-    except Exception as e:
+    except (OSError, EOFError, pickle.PickleError, KeyError) as e:
         print(f"네트워크 통신 오류: {e}")
+        if reconnect_to_server():
+            reset_match_state()
+            local_match = False
+            last_lobby_request_at = 0
+            ScreenState = "LoadingView"
+            return
 
     # 카메라 이동
     player_center_x, player_center_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
@@ -1821,7 +1920,8 @@ def GameView():
 
     visible_player_ids = set()
     # 다른 플레이어 그리기
-    for p_id, p_info in server_players.items():
+    remote_players = {} if debug_mode else server_players
+    for p_id, p_info in remote_players.items():
         if int(p_id) == my_id or is_hidden_player(p_info):
             continue
 
@@ -1855,8 +1955,19 @@ def GameView():
         display.blit(other_image, (other_screen_x + stun_offset_x, other_screen_y))
 
         other_center_x, other_center_y = get_player_screen_center(p_info["posX"], p_info["posY"], IML.Player.get_width(), IML.Player.get_height(), CameraPosX, CameraPosY, camera_zoom)
-        other_weapon_image = IML.GetWeaponImage(p_info.get("weapon_id", DEFAULT_WEAPON_ID))
-        if p_info.get("weapon_id") == "pistol":
+        server_weapon_id = p_info.get("weapon_id", DEFAULT_WEAPON_ID)
+        if server_weapon_id == "knife" and IML.GetBladeFrames():
+            other_weapon_image = IML.GetBladeFrames()[0]
+            other_weapon_image = pygame.transform.smoothscale(
+                other_weapon_image,
+                (
+                    max(1, round(other_weapon_image.get_width() * camera_zoom * MELEE_WEAPON_SCALE)),
+                    max(1, round(other_weapon_image.get_height() * camera_zoom * MELEE_WEAPON_SCALE)),
+                ),
+            )
+        else:
+            other_weapon_image = IML.GetWeaponImage(server_weapon_id)
+        if server_weapon_id in ("pistol", "knife"):
             other_weapon_image = pygame.transform.flip(other_weapon_image, True, False)
         other_gun = other_weapon_image if camera_zoom == 1.0 else pygame.transform.scale(
             other_weapon_image, (round(other_weapon_image.get_width() * camera_zoom), round(other_weapon_image.get_height() * camera_zoom))

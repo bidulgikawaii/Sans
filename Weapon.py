@@ -29,7 +29,7 @@ class WeaponConfig:
 WEAPONS = {
     "pistol": WeaponConfig(
         "권총", damage=12, magazine_size=14, reserve_ammo=42, fire_interval=0.22,
-        reload_time=1.3, bullet_size=5, bullet_speed=18.0, recoil=2.0,
+        reload_time=1.3, bullet_size=5, bullet_speed=20.0, recoil=2.0,
         bullet_lifetime=2.4, vision_radius=500, vision_fov=95, vision_width=240,
     ),
     "rifle": WeaponConfig(
@@ -39,15 +39,15 @@ WEAPONS = {
         bullet_lifetime=2.6, vision_radius=700, vision_fov=75, vision_width=180,
     ),
     "shotgun": WeaponConfig(
-        "샷건", damage=5, magazine_size=5, reserve_ammo=15,
-        fire_interval=0.85, reload_time=2.8, bullet_size=4, bullet_speed=18.0,
+        "샷건", damage=1, magazine_size=5, reserve_ammo=15,
+        fire_interval=0.85, reload_time=3, bullet_size=4, bullet_speed=16.0,
         pellets=10, spread_degrees=20.0, recoil=6.0, bullet_lifetime=1.4,
         vision_radius=300, vision_fov=120, vision_width=300,
     ),
     "sniper": WeaponConfig(
-        "저격총", damage=60, magazine_size=10, reserve_ammo=15, fire_interval=1.1,
-        reload_time=3.1, bullet_size=6, bullet_speed=32.0, recoil=8.0,
-        bullet_lifetime=3.8, vision_shape="line", vision_radius=3400.0, vision_width=120.0,
+        "저격총", damage=30, magazine_size=10, reserve_ammo=15, fire_interval=0.95,
+        reload_time=3.1, bullet_size=3, bullet_speed=32.0, recoil=8.0,
+        bullet_lifetime=3.8, vision_shape="cone", vision_radius=200.0, vision_fov=52.0, vision_width=520.0,
     ),
     "smg": WeaponConfig(
         "기관단총", damage=5, magazine_size=50, reserve_ammo=100, fire_interval=0.08,
@@ -70,7 +70,9 @@ class WeaponState:
         self.weapon_id = weapon_id
         self.magazine_ammo = WEAPONS[weapon_id].magazine_size
         self.reserve_ammo = WEAPONS[weapon_id].reserve_ammo
-        self._reserve_by_weapon = {weapon_id: self.reserve_ammo}
+        self._ammo_by_weapon = {
+            weapon_id: (self.magazine_ammo, self.reserve_ammo),
+        }
         self.last_fired_at = 0.0
         self.reloading = False
         self.reload_started_at = 0.0
@@ -81,13 +83,20 @@ class WeaponState:
         return WEAPONS[self.weapon_id]
 
     def select(self, weapon_id):
-        if weapon_id not in WEAPONS or weapon_id == self.weapon_id:
+        if weapon_id not in WEAPONS:
             return False
-        self._reserve_by_weapon[self.weapon_id] = self.reserve_ammo
+        if weapon_id == self.weapon_id:
+            self.reloading = False
+            self.reload_started_at = 0.0
+            self.reload_finished_at = 0.0
+            return True
+        self._ammo_by_weapon[self.weapon_id] = (self.magazine_ammo, self.reserve_ammo)
         self.weapon_id = weapon_id
         config = self.config
-        self.magazine_ammo = config.magazine_size
-        self.reserve_ammo = self._reserve_by_weapon.setdefault(weapon_id, config.reserve_ammo)
+        self.magazine_ammo, self.reserve_ammo = self._ammo_by_weapon.setdefault(
+            weapon_id,
+            (config.magazine_size, config.reserve_ammo),
+        )
         self.last_fired_at = 0.0
         self.reloading = False
         self.reload_started_at = 0.0
@@ -100,7 +109,9 @@ class WeaponState:
         config = self.config
         self.magazine_ammo = config.magazine_size
         self.reserve_ammo = config.reserve_ammo
-        self._reserve_by_weapon = {self.weapon_id: self.reserve_ammo}
+        self._ammo_by_weapon = {
+            self.weapon_id: (self.magazine_ammo, self.reserve_ammo),
+        }
         self.last_fired_at = 0.0
         self.reloading = False
         self.reload_started_at = 0.0
@@ -120,7 +131,7 @@ class WeaponState:
         self.last_fired_at = time.monotonic()
 
     def is_reloading_now(self):
-        return self.reloading and time.monotonic() < self.reload_finished_at
+        return self.reloading
 
     def start_reload(self):
         if self.reloading:

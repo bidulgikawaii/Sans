@@ -130,13 +130,16 @@ def reconnect_to_server():
 
 def leave_lobby():
     """로비에서 나간 뒤 다음 경기에 사용할 클라이언트 상태를 정리합니다."""
-    global lobby_status
+    global lobby_status, spectator_players, spectator_target_id, last_spectator_poll_at
     try:
         client.sendall(pickle.dumps({"type": "lobby_leave"}))
         client.recv(NETWORK_BUFFER_SIZE)
     except (OSError, EOFError, pickle.PickleError):
         reconnect_to_server()
     reset_match_state()
+    spectator_players.clear()
+    spectator_target_id = None
+    last_spectator_poll_at = 0
     lobby_status = {
         "count": 0,
         "max_players": MAX_PLAYERS,
@@ -167,15 +170,33 @@ HpBarFrame = pygame.transform.smoothscale(IML.HpBar, HP_FRAME_SIZE)
 p_w = IML.Player.get_width()
 p_h = IML.Player.get_height()
 
-# [커스텀 가능] 안전 스폰을 찾을 타일 좌표 범위입니다.
-safe_spawn = TileGene.find_safe_spawn(
-    SPAWN_MIN_X,
-    SPAWN_MAX_X,
-    SPAWN_MIN_Y,
-    SPAWN_MAX_Y,
-    rng=random.SystemRandom(),
-)
-spawn_tile_x, spawn_tile_y = safe_spawn or (MAP_WIDTH_TILES // 2, MAP_HEIGHT_TILES // 2)
+def get_fixed_spawn_tile():
+    """맵마다 같은 안전 스폰 타일을 반환합니다."""
+    preferred = (SPAWN_TILE_X, SPAWN_TILE_Y)
+    preferred_tile = TileGene.get_tile_at(*preferred)
+    if preferred_tile and all(
+        TileGene.get_tile_at(SPAWN_TILE_X + offset_x, SPAWN_TILE_Y + offset_y)
+        and TileGene.get_tile_at(SPAWN_TILE_X + offset_x, SPAWN_TILE_Y + offset_y).tile_type == 0
+        for offset_y in (0, 1)
+        for offset_x in (0, 1)
+    ):
+        return preferred
+
+    # 설정 좌표가 맵 장애물과 겹칠 때도 결과가 매번 같도록 순서대로 검색합니다.
+    for tile_y in range(SPAWN_MIN_Y, SPAWN_MAX_Y + 1):
+        for tile_x in range(SPAWN_MIN_X, SPAWN_MAX_X + 1):
+            candidate = TileGene.get_tile_at(tile_x, tile_y)
+            if candidate and all(
+                TileGene.get_tile_at(tile_x + offset_x, tile_y + offset_y)
+                and TileGene.get_tile_at(tile_x + offset_x, tile_y + offset_y).tile_type == 0
+                for offset_y in (0, 1)
+                for offset_x in (0, 1)
+            ):
+                return tile_x, tile_y
+    return MAP_WIDTH_TILES // 2, MAP_HEIGHT_TILES // 2
+
+
+spawn_tile_x, spawn_tile_y = get_fixed_spawn_tile()
 spawn_world_x = spawn_tile_x * TileGene.tile_size
 spawn_world_y = spawn_tile_y * TileGene.tile_size
 
@@ -308,7 +329,13 @@ def spawn_supply_drop(now):
     """안전한 바닥 타일에 보급품을 하나 생성합니다."""
     # 벽이나 집 안에 생성되면 플레이어가 접근할 수 없으므로
     # TileGenerator가 찾은 이동 가능한 타일의 중앙에 배치합니다.
-    spawn_tile = TileGene.find_safe_spawn(2, TileGene.map_width - 3, 2, TileGene.map_height - 3)
+    spawn_tile = TileGene.find_safe_spawn(
+        2,
+        TileGene.map_width - 3,
+        2,
+        TileGene.map_height - 3,
+        rng=random.SystemRandom(),
+    )
     if not spawn_tile:
         return
     tile_x, tile_y = spawn_tile
@@ -323,36 +350,22 @@ def spawn_supply_drop(now):
 
 
 def apply_supply_reward(reward_type):
-    """보급품 종류별 회복·버프 효과를 적용합니다."""
+    """보급품에서 스킬을 하나 획득합니다."""
     # 보급품은 서버에 아이템 자체를 동기화하지 않고,
     # 획득한 클라이언트의 플레이어 상태에만 효과를 적용합니다.
-    global send_data, heal_token, pending_heal_amount
-    now = pygame.time.get_ticks()
+    global send_data
     center_x, center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
-    if reward_type == "heal":
-        my_player.Hp = min(my_player.MaxHp, my_player.Hp + SUPPLY_HEAL_AMOUNT)
-        heal_token += 1
-        pending_heal_amount += SUPPLY_HEAL_AMOUNT
-        message = f"보급품 획득: 체력 +{SUPPLY_HEAL_AMOUNT}"
-        color = (100, 255, 130)
-    elif reward_type == "haste":
-        global haste_until
-        haste_until = max(haste_until, now) + SUPPLY_BUFF_DURATION_MS
-        message = "보급품 획득: 이동속도 증가"
-        color = (255, 240, 100)
-    elif reward_type == "shield":
-        global shield_until
-        shield_until = max(shield_until, now) + SUPPLY_BUFF_DURATION_MS
-        message = "보급품 획득: 보호막"
-        color = (100, 220, 255)
+    available = [name for name in SKILL_BOOK if name not in owned_skills]
+    if reward_type == "skill" and available:
+        obtained_skill = random.choice(available)
+        add_skill_to_inventory(obtained_skill)
+        message = f"보급품 획득: [{obtained_skill}] 스킬을 얻었습니다."
+        color = (180, 120, 255)
     else:
-        my_player.Hp = min(my_player.MaxHp, my_player.Hp + SUPPLY_HEAL_AMOUNT)
-        heal_token += 1
-        pending_heal_amount += SUPPLY_HEAL_AMOUNT
-        message = "보급품 획득: 체력 회복"
-        color = (100, 255, 130)
+        message = "보급품 획득: 이미 모든 스킬을 보유하고 있습니다."
+        color = (200, 200, 220)
     particles.emit(center_x, center_y, color, count=24, speed=80, lifetime=600, size=6)
     return message
 
@@ -435,6 +448,7 @@ def reset_match_state():
     global Weapon_Angle, Weapon_Pos, screen_shake, knife_attack_until
     global weapon_fire_until, weapon_smoke_until
     global vision_shape_override, vision_shape_index, inventory_open, mouse_fire_hold
+    global spectator_players, spectator_target_id, last_spectator_poll_at
     for collection in (
         bullets, remote_bullets, kill_feed, active_bombs, active_explosions,
         supply_drops, pending_treasure_destroys, pending_furniture_destroys,
@@ -444,6 +458,9 @@ def reset_match_state():
     processed_bullet_events.clear()
     processed_damage_event_ids.clear()
     server_players.clear()
+    spectator_players.clear()
+    spectator_target_id = None
+    last_spectator_poll_at = 0
     skill_cooldowns.clear()
     owned_skills.clear()
     for slot in quick_slots:
@@ -476,14 +493,11 @@ def reset_match_state():
     mouse_fire_hold = False
     visibility_polygon_cache.clear()
     my_player.Hp = my_player.MaxHp
-    spawn = TileGene.find_safe_spawn(
-        SPAWN_MIN_X, SPAWN_MAX_X, SPAWN_MIN_Y, SPAWN_MAX_Y, rng=random.SystemRandom()
-    )
-    if spawn:
-        my_player.X = spawn[0] * TileGene.tile_size
-        my_player.Y = spawn[1] * TileGene.tile_size
-        my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
-        my_player._update_hitboxes()
+    spawn_tile_x, spawn_tile_y = get_fixed_spawn_tile()
+    my_player.X = spawn_tile_x * TileGene.tile_size
+    my_player.Y = spawn_tile_y * TileGene.tile_size
+    my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
+    my_player._update_hitboxes()
 
 def MainView():
     global running, ScreenState, selected_game_mode, debug_mode, local_match, game_start_banner_until
@@ -608,6 +622,7 @@ def SpectatorPromptView():
             running = False
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
+                leave_lobby()
                 ScreenState = "ModeSelectView"
             elif event.key == pygame.K_SPACE:
                 spectator_players = {}
@@ -650,14 +665,12 @@ def LoadingView():
             refresh_skill_inventory()
         game_start_banner_until = pygame.time.get_ticks() + 2000
         ScreenState = "GameView"
-    elif lobby_status.get("accepted") is False and not debug_mode:
-        ScreenState = "SpectatorPromptView"
-
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
+                leave_lobby()
                 ScreenState = "ModeSelectView"
             elif event.key == pygame.K_SPACE and not lobby_status.get("started"):
                 client.sendall(pickle.dumps({
@@ -726,6 +739,7 @@ def SpectatorView():
                 pass
             spectator_players = {}
             spectator_target_id = None
+            reset_match_state()
             ScreenState = "ModeSelectView"
             return
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_q:
@@ -1409,7 +1423,7 @@ def GameView():
         vision_skill_until = 0
         vision_shape_override = None
     base_speed = PLAYER_HASTE_SPEED if now < haste_until else PLAYER_NORMAL_SPEED
-    knife_speed_bonus = 3 if weapon_state.weapon_id == "knife" else 0
+    knife_speed_bonus = KNIFE_DASH_SPEED_BONUS if weapon_state.weapon_id == "knife" else 0
     player_center_x, player_center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
@@ -1419,8 +1433,7 @@ def GameView():
     my_player.dash_speed = PLAYER_DASH_SPEED + knife_speed_bonus
 
     if now >= next_supply_drop_at:
-        if len(supply_drops) < SUPPLY_DROP_MAX and random.random() < SUPPLY_DROP_CHANCE:
-            spawn_supply_drop(now)
+        spawn_supply_drop(now)
         next_supply_drop_at = now + SUPPLY_DROP_INTERVAL_MS
 
     player_rect = my_player.rect

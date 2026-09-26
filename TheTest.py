@@ -641,13 +641,13 @@ def MainView():
                 ScreenState = "GameView"
             elif event.key == pygame.K_SPACE:
                 ScreenState = "NameInputView"
-            elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7):
+            elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_7):
                 if event.key == pygame.K_7:
                     select_weapon(random.choice(WEAPON_KEYS[:-1]))
                     continue
                 select_weapon(dict(zip(
-                    (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6),
-                    WEAPON_KEYS,
+                    (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5),
+                    WEAPON_KEYS[:-1],
                 ))[event.key])
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if button_rects["name"].collidepoint(event.pos):
@@ -683,8 +683,6 @@ def ModeSelectView():
                 local_match = False
                 selected_game_mode = GAME_MODE_DEBUG
                 ScreenState = "LoadingView"
-            elif event.key == pygame.K_3:
-                ScreenState = "SpectatorPromptView"
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if button_rects["normal"].collidepoint(event.pos):
                 debug_mode = False
@@ -695,10 +693,10 @@ def ModeSelectView():
                 debug_mode = True
                 local_match = True
                 selected_game_mode = GAME_MODE_DEBUG
+                owned_skills.update(SKILL_BOOK)
+                refresh_skill_inventory()
                 game_start_banner_until = pygame.time.get_ticks() + 2000
                 ScreenState = "GameView"
-            elif button_rects["spectator"].collidepoint(event.pos):
-                ScreenState = "SpectatorPromptView"
 
 
 def NameInputView():
@@ -744,7 +742,7 @@ def SpectatorPromptView():
 
 
 def LoadingView():
-    global running, ScreenState, lobby_status, last_lobby_request_at, local_match, game_start_banner_until, debug_mode
+    global running, ScreenState, lobby_status, last_lobby_request_at, local_match, game_start_banner_until, debug_mode, spectator_players
     global match_spawn_index
     if selected_game_mode == GAME_MODE_DEBUG:
         debug_mode = True
@@ -765,6 +763,10 @@ def LoadingView():
                 lobby_status = response
                 if response.get("accepted"):
                     match_spawn_index = response.get("spawn_index", 0)
+                elif response.get("started"):
+                    spectator_players = {}
+                    ScreenState = "SpectatorView"
+                    return
         except (OSError, EOFError, pickle.PickleError, KeyError):
             reconnect_to_server()
             last_lobby_request_at = 0
@@ -809,7 +811,8 @@ def GameOverView():
 
     for event in pygame.event.get():
         if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-            leave_game_to_main()
+            if not enter_spectator_after_death():
+                leave_game_to_main()
 
 
 def VictoryView():
@@ -887,7 +890,7 @@ def SpectatorView():
             spectator_players = {}
             spectator_target_id = None
             reset_match_state()
-            ScreenState = "ModeSelectView"
+            ScreenState = "MainView"
             return
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_q:
             alive_ids = sorted(
@@ -1171,8 +1174,8 @@ def handle_key_event(event, _mouse_pos):
         weapon_id = "knife"
     elif ScreenState != "GameView":
         weapon_id = dict(zip(
-            (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6),
-            WEAPON_KEYS,
+            (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5),
+            WEAPON_KEYS[:-1],
         )).get(event.key)
     if weapon_id:
         select_weapon(weapon_id)
@@ -2170,7 +2173,7 @@ def GameView():
     # 내 캐릭터 및 무기 그리기
     local_stun_offset_x = round(math.sin(now * 0.08) * 8) if now < local_stun_until else 0
     if now < stealth_until or in_bush:
-        stealth_image = my_player.image.copy()
+        stealth_image = my_player.get_display_image().copy()
         stealth_image.set_alpha(75 if now < stealth_until else 145)
         display.blit(
             stealth_image,
@@ -2302,7 +2305,7 @@ def GameView():
 
     # 시야 오버레이 위에 로컬 플레이어를 다시 그려 기본 시야에서도 항상 보이게 합니다.
     if now < stealth_until or in_bush:
-        visible_player_image = my_player.image.copy()
+        visible_player_image = my_player.get_display_image().copy()
         visible_player_image.set_alpha(75 if now < stealth_until else 145)
         if camera_zoom != 1.0:
             visible_player_image = pygame.transform.scale(

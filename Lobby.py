@@ -19,12 +19,20 @@ class LobbyState:
         self.start_at = None
         self.started_at = None
         self.practice_players = set()
+        self.match_normal_player_ids = set()
 
     def _update_start_state(self):
         if self.start_at is not None and time.monotonic() >= self.start_at:
             self.started = True
             self.started_at = time.monotonic()
             self.start_at = None
+            # 경기 도중 관전 전환이나 화면별 표시 필터가 바뀌어도
+            # 승리 판정 대상은 시작 당시 일반전 참가자로 유지합니다.
+            self.match_normal_player_ids = {
+                player_id
+                for player_id, mode in self.modes.items()
+                if mode == GAME_MODE_NORMAL and player_id not in self.practice_players
+            }
 
     def join(self, player_id, mode, debug_enabled=False):
         self._update_start_state()
@@ -78,6 +86,7 @@ class LobbyState:
         self.modes.clear()
         self.ready_players.clear()
         self.practice_players.clear()
+        self.match_normal_player_ids.clear()
         self.started = False
         self.start_at = None
         self.started_at = None

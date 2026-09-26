@@ -7,6 +7,9 @@ from ImageLoad import *
 class Player:
     def __init__(self, x, y, size, IML: Imageload,tile_Gene = None):
         self.image = IML.GetPlayer()
+        self.walk_frames = IML.GetPlayerWalkFrames()
+        self.is_moving = False
+        self.facing_left = False
         self.X = x
         self.Y = y
         self.size = size
@@ -122,7 +125,11 @@ class Player:
         final_dy = dy * speed
         
         if final_dx != 0 or final_dy != 0:
-            self.Move(final_dx, final_dy)
+            self.is_moving = self.Move(final_dx, final_dy)
+            if dx:
+                self.facing_left = dx < 0
+        else:
+            self.is_moving = False
 
     def Move(self, dx, dy):
         """이동 시 벽 충돌 감지를 수행합니다."""
@@ -155,14 +162,23 @@ class Player:
                 moved = True
         return moved
 
+    def get_display_image(self):
+        """Return the idle or walking frame while preserving a stable collision size."""
+        image = self.image
+        if self.is_moving and self.walk_frames:
+            frame_index = (pygame.time.get_ticks() // 120) % len(self.walk_frames)
+            image = self.walk_frames[frame_index]
+        return pygame.transform.flip(image, True, False) if self.facing_left else image
+
     def draw(self, surface, camera_x=0, camera_y=0, zoom=1.0, offset_x=0, offset_y=0):
         # 카메라 위치를 차감하여 화면용 상대 좌표 계산
         screen_x = (self.rect.x - camera_x) * zoom + offset_x
         screen_y = (self.rect.y - camera_y) * zoom + offset_y
         
         # 화면 좌표 기준 캐릭터 렌더링
-        image = self.image if zoom == 1.0 else pygame.transform.scale(
-            self.image, (max(1, round(self.image.get_width() * zoom)), max(1, round(self.image.get_height() * zoom)))
+        source_image = self.get_display_image()
+        image = source_image if zoom == 1.0 else pygame.transform.scale(
+            source_image, (max(1, round(source_image.get_width() * zoom)), max(1, round(source_image.get_height() * zoom)))
         )
         surface.blit(image, (screen_x, screen_y))
         

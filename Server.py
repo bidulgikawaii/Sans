@@ -15,6 +15,7 @@ from Config import (
     MAP_HEIGHT_TILES,
     MAP_WIDTH_TILES,
     MAX_PLAYERS,
+    NORMAL_MATCH_MIN_PLAYERS,
     RUNE_ALERT_DURATION_MS,
     REVIVE_HP_RATIO,
 )
@@ -378,22 +379,22 @@ def handle_client(conn, player_id):
                     for active_id in active_ids
                     if active_id in players
                 }
+                match_player_ids = lobby.match_normal_player_ids
                 alive_ids = [
-                    active_id for active_id in active_ids
+                    active_id for active_id in match_player_ids
                     if active_id in players and players[active_id]["hp"] > 0
                 ]
                 revive_waiting_ids = [
-                    active_id for active_id in active_ids
+                    active_id for active_id in match_player_ids
                     if active_id in players
                     and players[active_id]["hp"] <= 0
                     and players[active_id].get("revive_armed", False)
                 ]
-                lobby_mode = lobby.status()["mode"]
                 winner_id = (
                     alive_ids[0]
                     if (
                         lobby.started
-                        and lobby_mode == "normal"
+                        and len(match_player_ids) >= NORMAL_MATCH_MIN_PLAYERS
                         and len(alive_ids) == 1
                         and not revive_waiting_ids
                     )

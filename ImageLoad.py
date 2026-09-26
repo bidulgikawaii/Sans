@@ -34,7 +34,7 @@ class Imageload:
     def __init__(self):
         # convert_alpha()를 쓰므로 Pygame 디스플레이 초기화 이후 생성해야 합니다.
         self.root = Path(__file__).resolve().parent / "Image"
-        self.player_path = self.root / "PlayerPng.png"
+        self.player_path = self.root / "Player.png"
         self.backGround = str(self.root / "Back")  # 기존 속성명과 자료형 유지
         self.BackG = self._load_image_file(self.root / "BackG.png")
 
@@ -49,7 +49,14 @@ class Imageload:
         self.ShotGun = [shotgun] if shotgun is not None else []
 
         self.Tile = self._load_scaled_image("Tile.png", (64, 64))
-        self.Player = self._load_scaled_image("PlayerPng.png", (72, 72))
+        self.Player = self._load_scaled_image("Player.png", (72, 72))
+        self.PlayerWalk = [
+            frame for frame in (
+                self._load_scaled_image("PlayerWalk (1).png", (72, 72)),
+                self._load_scaled_image("PlayerWalk (2).png", (72, 72)),
+            )
+            if frame is not None
+        ]
         self.HpBar = self._load_image_file(self.root / "HpBar.png")
         self.SkillWindow = self._load_image_file(self.root / "SkillWindow.png")
         self.QuickSlot = self._load_image_file(self.root / "QuickSlot.png")
@@ -130,6 +137,9 @@ class Imageload:
 
     def GetPlayer(self):
         return self.Player
+
+    def GetPlayerWalkFrames(self):
+        return self.PlayerWalk
 
     def GetPistol(self):
         return self.Pistol

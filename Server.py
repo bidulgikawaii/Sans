@@ -14,7 +14,7 @@ from Config import (
     HEADSHOT_DAMAGE_MULTIPLIER,
     MAP_HEIGHT_TILES,
     MAP_WIDTH_TILES,
-    RUNE_ALERT_RADIUS,
+    MAX_PLAYERS,
     RUNE_ALERT_DURATION_MS,
     REVIVE_HP_RATIO,
 )
@@ -120,13 +120,18 @@ def handle_client(conn, player_id):
                         conn.sendall(pickle.dumps({}))
                         continue
                     # 경기 참가자는 관전 요청으로 로비에서 제거하지 않습니다.
-                    if player_id in lobby.modes:
+                    if player_id in lobby.modes and players[player_id].get("hp", 0) > 0:
                         conn.sendall(pickle.dumps({"error": "active_player_cannot_spectate"}))
                         continue
-                    spectator_ids.add(player_id)
                     active_ids = lobby.visible_player_ids(player_id)
+                    if player_id in lobby.modes:
+                        lobby.leave(player_id)
+                    spectator_ids.add(player_id)
                     spectator_snapshot = {
-                        active_id: players[active_id]
+                        active_id: {
+                            key: players[active_id].get(key)
+                            for key in ("posX", "posY", "angle", "hp", "name", "weapon_id")
+                        }
                         for active_id in active_ids
                         if active_id in players
                     }
@@ -362,7 +367,14 @@ def handle_client(conn, player_id):
             with player_lock:
                 active_ids = lobby.visible_player_ids(player_id) - spectator_ids
                 active_players = {
-                    active_id: players[active_id]
+                    active_id: (
+                        {
+                            key: players[active_id].get(key)
+                            for key in ("posX", "posY", "angle", "hp", "name", "weapon_id")
+                        }
+                        if player_id in spectator_ids
+                        else players[active_id]
+                    )
                     for active_id in active_ids
                     if active_id in players
                 }
@@ -396,6 +408,9 @@ def handle_client(conn, player_id):
             if pending_bullets:
                 last_sent_bullet_event_id = pending_bullets[-1]["event_id"]
             for snapshot_player_id, player in snapshot.items():
+                if player_id in spectator_ids:
+                    player["kill_events"] = list(kill_events[-12:])
+                    continue
                 player["bullets"] = list(pending_bullets)
                 player["destroyed_treasures"] = list(destroyed_treasures)
                 player["destroyed_furniture"] = list(destroyed_furniture)

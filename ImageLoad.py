@@ -53,7 +53,6 @@ class Imageload:
         self.HpBar = self._load_image_file(self.root / "HpBar.png")
         self.SkillWindow = self._load_image_file(self.root / "SkillWindow.png")
         self.QuickSlot = self._load_image_file(self.root / "QuickSlot.png")
-        self.TanChang = self._load_image_file(self.root / "Tanchang.png")
         self.TpStatue = self._load_scaled_image("TpStatue.png", (64, 96))
 
         self.TitleImages = self._load_title_images()

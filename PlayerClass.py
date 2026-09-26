@@ -1,3 +1,5 @@
+import math
+
 import pygame
 from Config import *
 from ImageLoad import *
@@ -125,27 +127,32 @@ class Player:
     def Move(self, dx, dy):
         """이동 시 벽 충돌 감지를 수행합니다."""
         moved = False
-        for axis_dx, axis_dy in ((dx, 0), (0, dy)):
-            if axis_dx == 0 and axis_dy == 0:
+        for delta_x, delta_y in ((dx, 0), (0, dy)):
+            distance = delta_x if delta_x else delta_y
+            if distance == 0:
                 continue
-            candidate_x = self.X + axis_dx
-            candidate_y = self.Y + axis_dy
-            next_head_hitbox, next_body_hitbox = self.hitboxes_for_position(
-                candidate_x, candidate_y, self.rect.width, self.rect.height
-            )
-            collision_margin = PLAYER_COLLISION_MARGIN
-            next_head_hitbox = next_head_hitbox.inflate(-collision_margin * 2, -collision_margin * 2)
-            next_body_hitbox = next_body_hitbox.inflate(-collision_margin * 2, -collision_margin * 2)
-            if self.tile_generator and (
-                self.tile_generator.check_collision(next_head_hitbox)
-                or self.tile_generator.check_collision(next_body_hitbox)
-            ):
-                continue
-            self.X = candidate_x
-            self.Y = candidate_y
-            self.rect.topleft = (round(self.X), round(self.Y))
-            self._update_hitboxes()
-            moved = True
+            steps = max(1, math.ceil(abs(distance) / 4))
+            step_x = delta_x / steps
+            step_y = delta_y / steps
+            for _ in range(steps):
+                candidate_x = self.X + step_x
+                candidate_y = self.Y + step_y
+                next_head_hitbox, next_body_hitbox = self.hitboxes_for_position(
+                    candidate_x, candidate_y, self.rect.width, self.rect.height
+                )
+                margin = PLAYER_COLLISION_MARGIN
+                next_head_hitbox = next_head_hitbox.inflate(-margin * 2, -margin * 2)
+                next_body_hitbox = next_body_hitbox.inflate(-margin * 2, -margin * 2)
+                if self.tile_generator and (
+                    self.tile_generator.check_collision(next_head_hitbox)
+                    or self.tile_generator.check_collision(next_body_hitbox)
+                ):
+                    break
+                self.X = candidate_x
+                self.Y = candidate_y
+                self.rect.topleft = (round(self.X), round(self.Y))
+                self._update_hitboxes()
+                moved = True
         return moved
 
     def draw(self, surface, camera_x=0, camera_y=0, zoom=1.0, offset_x=0, offset_y=0):

@@ -71,7 +71,18 @@ class MainScreenRenderer:
         self.surface.blit(normal, normal_rect)
         self.surface.blit(debug, debug_rect)
         self.surface.blit(back, back_rect)
-        return {"normal": normal_rect, "debug": debug_rect, "back": back_rect}
+        spectator_rect = pygame.Rect(0, 0, 300, 56)
+        spectator_rect.center = (self.screen_width // 2, 625)
+        pygame.draw.rect(self.surface, (20, 30, 48), spectator_rect, border_radius=8)
+        pygame.draw.rect(self.surface, (255, 220, 120), spectator_rect, 2, border_radius=8)
+        spectator_text = self.font.render("관전 모드  [3]", True, (255, 235, 160))
+        self.surface.blit(spectator_text, spectator_text.get_rect(center=spectator_rect.center))
+        return {
+            "normal": normal_rect,
+            "debug": debug_rect,
+            "spectator": spectator_rect,
+            "back": back_rect,
+        }
 
     def draw_name_input(self, nickname, default_name="플레이어"):
         self._draw_background()
@@ -106,7 +117,7 @@ class MainScreenRenderer:
         )
         self.surface.blit(ready_text, ready_text.get_rect(center=(self.screen_width // 2, 440)))
         confirm_text = self.font.render(
-            "확인됨" if lobby_status.get("confirmed", False) else "Space를 눌러 확인",
+            "확인됨 · Space를 눌러 취소" if lobby_status.get("confirmed", False) else "Space를 눌러 확인",
             True,
             (120, 255, 160) if lobby_status.get("confirmed", False) else (220, 220, 220),
         )

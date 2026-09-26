@@ -697,6 +697,8 @@ def ModeSelectView():
                 selected_game_mode = GAME_MODE_DEBUG
                 game_start_banner_until = pygame.time.get_ticks() + 2000
                 ScreenState = "GameView"
+            elif button_rects["spectator"].collidepoint(event.pos):
+                ScreenState = "SpectatorPromptView"
 
 
 def NameInputView():
@@ -742,8 +744,10 @@ def SpectatorPromptView():
 
 
 def LoadingView():
-    global running, ScreenState, lobby_status, last_lobby_request_at, local_match, game_start_banner_until
+    global running, ScreenState, lobby_status, last_lobby_request_at, local_match, game_start_banner_until, debug_mode
     global match_spawn_index
+    if selected_game_mode == GAME_MODE_DEBUG:
+        debug_mode = True
     if debug_mode:
         owned_skills.update(SKILL_BOOK)
         refresh_skill_inventory()
@@ -790,7 +794,7 @@ def LoadingView():
             elif event.key == pygame.K_SPACE and not lobby_status.get("started"):
                 client.sendall(pickle.dumps({
                     "type": "lobby_ready",
-                    "ready": True,
+                    "ready": not lobby_status.get("confirmed", False),
                 }))
                 response = pickle.loads(client.recv(NETWORK_BUFFER_SIZE))
                 if response.get("type") == "lobby_status":
@@ -817,6 +821,25 @@ def VictoryView():
     for event in pygame.event.get():
         if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
             leave_game_to_main()
+
+
+def enter_spectator_after_death():
+    """사망한 참가자를 서버에서 관전자로 바꾸고 남은 플레이어를 보여줍니다."""
+    global ScreenState, spectator_players, spectator_target_id, last_spectator_poll_at
+    try:
+        client.sendall(pickle.dumps({"type": "spectator_join"}))
+        response = pickle.loads(client.recv(NETWORK_BUFFER_SIZE))
+    except (OSError, EOFError, pickle.PickleError):
+        ScreenState = "GameOver"
+        return False
+    if not isinstance(response, dict) or response.get("error"):
+        ScreenState = "GameOver"
+        return False
+    spectator_players = response
+    spectator_target_id = None
+    last_spectator_poll_at = 0
+    ScreenState = "SpectatorView"
+    return True
 
 
 def _draw_result_screen(title_text, color, elapsed):
@@ -880,13 +903,18 @@ def SpectatorView():
                     spectator_target_id = alive_ids[(current_index + 1) % len(alive_ids)]
 
     now = pygame.time.get_ticks()
-    if now - last_spectator_poll_at >= 100:
+    if now - last_spectator_poll_at >= 50:
         spectator_players = poll_players(client, NETWORK_BUFFER_SIZE)
         last_spectator_poll_at = now
     if spectator_players.get("error") == "active_player_cannot_spectate":
         spectator_players = {}
         ScreenState = "GameView"
         return
+    spectator_players = {
+        player_id: player_info
+        for player_id, player_info in spectator_players.items()
+        if isinstance(player_info, dict) and player_info.get("hp", 0) > 0
+    }
     if not spectator_players:
         draw_waiting(display, GuiFont, ScreenX, ScreenY)
         return
@@ -1479,6 +1507,8 @@ def GameView():
 
     MousePos = pygame.mouse.get_pos()
     if my_player.Hp <= 0 and not use_revive_skill():
+        if not debug_mode and enter_spectator_after_death():
+            return
         ScreenState = "GameOver"
         return
     now = pygame.time.get_ticks()
@@ -2059,6 +2089,8 @@ def GameView():
     remote_bullets = [b for b in remote_bullets if b.is_active]
 
     if my_player.Hp <= 0 and not use_revive_skill():
+        if not debug_mode and enter_spectator_after_death():
+            return
         ScreenState = "GameOver"
         return
 
@@ -2529,7 +2561,6 @@ def GameView():
         GuiFont,
         ScreenX,
         ScreenY,
-        IML.TanChang,
         AMMO_PANEL_SIZE,
         AMMO_PANEL_MARGIN,
     )

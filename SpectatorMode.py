@@ -3,6 +3,37 @@ import pickle
 import pygame
 
 
+_scaled_cache = {}
+_rotated_cache = {}
+_label_cache = {}
+_shade_cache = {}
+
+
+def _cached_scale(image, size):
+    key = (id(image), size)
+    result = _scaled_cache.get(key)
+    if result is None:
+        result = pygame.transform.scale(image, size)
+        if len(_scaled_cache) >= 96:
+            _scaled_cache.clear()
+        _scaled_cache[key] = result
+    return result
+
+
+def _cached_rotate(image, size, angle, flip):
+    key = (id(image), size, angle, flip)
+    result = _rotated_cache.get(key)
+    if result is None:
+        result = _cached_scale(image, size)
+        if flip:
+            result = pygame.transform.flip(result, True, False)
+        result = pygame.transform.rotate(result, angle)
+        if len(_rotated_cache) >= 192:
+            _rotated_cache.clear()
+        _rotated_cache[key] = result
+    return result
+
+
 def poll_players(client, buffer_size):
     """관전 대상 플레이어 스냅샷을 한 번 요청합니다."""
     client.sendall(pickle.dumps({"type": "spectator_join"}))
@@ -39,14 +70,31 @@ def draw_world(
 ):
     camera_x, camera_y = camera
     tile_generator.draw(surface, camera_x, camera_y, zoom)
+    shade = _shade_cache.get(surface.get_size())
+    if shade is None:
+        shade = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 34))
+        _shade_cache[surface.get_size()] = shade
+    surface.blit(shade, (0, 0))
     title = font.render("관전모드  |  Q: 시점 변경  ESC: 나가기", True, (255, 235, 150))
     surface.blit(title, (30, 25))
     for player_id, player_info in players.items():
         screen_x = round((player_info.get("posX", 0) - camera_x) * zoom)
         screen_y = round((player_info.get("posY", 0) - camera_y) * zoom)
-        player_image = image if zoom == 1.0 else pygame.transform.smoothscale(
-            image,
-            (max(1, round(image.get_width() * zoom)), max(1, round(image.get_height() * zoom))),
+        image_size = (
+            max(1, round(image.get_width() * zoom)),
+            max(1, round(image.get_height() * zoom)),
+        )
+        player_image = image if zoom == 1.0 else _cached_scale(image, image_size)
+        center_x = round(screen_x + image_size[0] / 2)
+        foot_y = round(screen_y + image_size[1] * 0.88)
+        shadow_width = max(12, round(image_size[0] * 0.75))
+        shadow_height = max(4, round(image_size[1] * 0.18))
+        pygame.draw.ellipse(
+            surface,
+            (55, 55, 65),
+            (center_x - shadow_width // 2, foot_y - shadow_height // 2,
+             shadow_width, shadow_height),
         )
         surface.blit(player_image, (screen_x, screen_y))
         if str(player_id) == str(tracked_id):
@@ -64,16 +112,14 @@ def draw_world(
                 if weapon_id == "knife" and weapon_loader.GetBladeFrames()
                 else weapon_loader.GetWeaponImage(weapon_id)
             )
-            weapon_image = pygame.transform.smoothscale(
-                weapon_image,
-                (
-                    max(1, round(weapon_image.get_width() * zoom * 0.15)),
-                    max(1, round(weapon_image.get_height() * zoom * 0.15)),
-                ),
+            weapon_size = (
+                max(1, round(weapon_image.get_width() * zoom * 0.15)),
+                max(1, round(weapon_image.get_height() * zoom * 0.15)),
             )
-            if weapon_id in ("pistol", "knife"):
-                weapon_image = pygame.transform.flip(weapon_image, True, False)
-            weapon_image = pygame.transform.rotate(weapon_image, -player_info.get("angle", 0))
+            angle = round(player_info.get("angle", 0) / 10) * 10
+            weapon_image = _cached_rotate(
+                weapon_image, weapon_size, -angle, weapon_id in ("pistol", "knife")
+            )
             weapon_rect = weapon_image.get_rect(
                 center=(
                     round(screen_x + image.get_width() * zoom / 2),
@@ -81,7 +127,13 @@ def draw_world(
                 )
             )
             surface.blit(weapon_image, weapon_rect)
-        label = font.render(str(player_info.get("name", f"P{player_id}")), True, (255, 230, 160))
+        name = str(player_info.get("name", f"P{player_id}"))
+        label = _label_cache.get(name)
+        if label is None:
+            label = font.render(name, True, (255, 230, 160))
+            if len(_label_cache) >= 64:
+                _label_cache.clear()
+            _label_cache[name] = label
         surface.blit(label, label.get_rect(midbottom=(round(screen_x + image.get_width() * zoom / 2), round(screen_y - 5))))
 
     kill_events = []

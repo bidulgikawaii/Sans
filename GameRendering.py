@@ -10,7 +10,6 @@ def _get_font(path, size):
     return pygame.font.Font(path, size)
 
 
-_scaled_panels = {}
 _scaled_images = {}
 _cooldown_overlays = {}
 _damage_text_surfaces = {}
@@ -161,7 +160,6 @@ def draw_ammo_status(
     font,
     screen_width,
     screen_height,
-    panel_image,
     panel_size,
     panel_margin,
 ):
@@ -173,14 +171,8 @@ def draw_ammo_status(
         (255, 180, 120) if weapon_state.is_reloading_now() else (255, 255, 255),
     )
     reserve_text = font.render(f"예비 탄약 {weapon_state.reserve_ammo}", True, (190, 220, 255))
-    panel_key = (id(panel_image), panel_size)
-    panel = _scaled_panels.get(panel_key)
-    if panel is None:
-        panel = pygame.transform.smoothscale(panel_image, panel_size)
-        _scaled_panels[panel_key] = panel
     panel_x = screen_width - panel_size[0] - panel_margin[0]
     panel_y = screen_height - panel_size[1] - panel_margin[1]
-    surface.blit(panel, (panel_x, panel_y))
     panel_center_x = panel_x + panel_size[0] // 2
     name_rect = name_text.get_rect(center=(panel_center_x, panel_y + 20))
     reserve_rect = reserve_text.get_rect(center=(panel_center_x, panel_y + 60))

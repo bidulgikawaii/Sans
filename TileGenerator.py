@@ -54,6 +54,7 @@ class TileGenerator:
         self._visibility_cache = {}
         # 시야 계산에 사용할 벽 타일 목록입니다.
         self._vision_wall_rects = None
+        self._vision_wall_buckets = None
         
         # 이미지 풀링 생성
         self._load_placeholder_images()
@@ -258,6 +259,7 @@ class TileGenerator:
         self._build_world_surface()
         self._visibility_cache.clear()
         self._vision_wall_rects = None
+        self._vision_wall_buckets = None
 
     def _place_bushes(self):
         """집과 외곽 벽을 피해 여러 클러스터로 은신용 덤불을 배치합니다."""
@@ -670,6 +672,12 @@ class TileGenerator:
                 (stone["rect"].left, stone["rect"].top, stone["rect"].right, stone["rect"].bottom)
                 for stone in self.stone_objects
             )
+            bucket_size = self.tile_size * 8
+            buckets = {}
+            for wall in self._vision_wall_rects:
+                key = (int(wall[0] // bucket_size), int(wall[1] // bucket_size))
+                buckets.setdefault(key, []).append(wall)
+            self._vision_wall_buckets = buckets
 
         # [최적화] 저격총 같은 긴 시야는 시야각 폭만 체크 (좌우 side width)
         # 직선 시야는 width가 좁으므로, 중앙 방향 근처만 체크하면 됨
@@ -680,8 +688,19 @@ class TileGenerator:
             # 원형/원뿔/사각형: 기존 대로 처리
             search_radius = max_radius + self.tile_size
         
+        bucket_size = self.tile_size * 8
+        min_bucket_x = int((player_x - search_radius) // bucket_size)
+        max_bucket_x = int((player_x + search_radius) // bucket_size)
+        min_bucket_y = int((player_y - search_radius) // bucket_size)
+        max_bucket_y = int((player_y + search_radius) // bucket_size)
+        nearby_walls = (
+            wall
+            for bucket_y in range(min_bucket_y, max_bucket_y + 1)
+            for bucket_x in range(min_bucket_x, max_bucket_x + 1)
+            for wall in self._vision_wall_buckets.get((bucket_x, bucket_y), ())
+        )
         shadows = []
-        for left, top, right, bottom in self._vision_wall_rects:
+        for left, top, right, bottom in nearby_walls:
             if abs((left + right) / 2 - player_x) > search_radius or abs((top + bottom) / 2 - player_y) > search_radius:
                 continue
             corners = [(left, top), (right, top), (right, bottom), (left, bottom)]
@@ -832,6 +851,7 @@ class TileGenerator:
             self._scaled_world_zoom = None
         self._visibility_cache.clear()
         self._vision_wall_rects = None
+        self._vision_wall_buckets = None
 
     def destroy_treasure_at(self, rect):
         """총알이 맞은 보물상자를 제거하고 맵을 다시 합성합니다."""

@@ -53,6 +53,27 @@ last_lobby_request_at = 0
 GuiFont = pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__)
         ),"Font","HeirofLightRegular.ttf"
             ), 30)
+KillFeedFont = pygame.font.Font(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"), 20
+)
+BannerFont = pygame.font.Font(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"), 54
+)
+RuneAlertFont = pygame.font.Font(None, 24)
+_scaled_surface_cache = {}
+
+
+def _scale_cached(image, size, smooth=True):
+    """애니메이션 자산의 같은 크기 변환을 재사용합니다."""
+    key = (id(image), size, smooth)
+    scaled = _scaled_surface_cache.get(key)
+    if scaled is None:
+        scaler = pygame.transform.smoothscale if smooth else pygame.transform.scale
+        scaled = scaler(image, size)
+        if len(_scaled_surface_cache) >= 96:
+            _scaled_surface_cache.clear()
+        _scaled_surface_cache[key] = scaled
+    return scaled
 
 
 class OfflineClient:
@@ -170,33 +191,61 @@ HpBarFrame = pygame.transform.smoothscale(IML.HpBar, HP_FRAME_SIZE)
 p_w = IML.Player.get_width()
 p_h = IML.Player.get_height()
 
-def get_fixed_spawn_tile():
-    """맵마다 같은 안전 스폰 타일을 반환합니다."""
-    preferred = (SPAWN_TILE_X, SPAWN_TILE_Y)
-    preferred_tile = TileGene.get_tile_at(*preferred)
-    if preferred_tile and all(
-        TileGene.get_tile_at(SPAWN_TILE_X + offset_x, SPAWN_TILE_Y + offset_y)
-        and TileGene.get_tile_at(SPAWN_TILE_X + offset_x, SPAWN_TILE_Y + offset_y).tile_type == 0
-        for offset_y in (0, 1)
-        for offset_x in (0, 1)
-    ):
-        return preferred
+def get_fixed_spawn_tiles():
+    """맵 시드마다 고정된 12개 안전 좌표를 만들고 서로 간격을 둡니다."""
+    def is_clear(x, y):
+        return all(
+            (tile := TileGene.get_tile_at(x + offset_x, y + offset_y)) is not None
+            and tile.tile_type == 0
+            for offset_y in range(3)
+            for offset_x in range(3)
+        )
 
-    # 설정 좌표가 맵 장애물과 겹칠 때도 결과가 매번 같도록 순서대로 검색합니다.
-    for tile_y in range(SPAWN_MIN_Y, SPAWN_MAX_Y + 1):
-        for tile_x in range(SPAWN_MIN_X, SPAWN_MAX_X + 1):
-            candidate = TileGene.get_tile_at(tile_x, tile_y)
-            if candidate and all(
-                TileGene.get_tile_at(tile_x + offset_x, tile_y + offset_y)
-                and TileGene.get_tile_at(tile_x + offset_x, tile_y + offset_y).tile_type == 0
-                for offset_y in (0, 1)
-                for offset_x in (0, 1)
-            ):
-                return tile_x, tile_y
-    return MAP_WIDTH_TILES // 2, MAP_HEIGHT_TILES // 2
+    selected = [point for point in SPAWN_POSITION_TILES if is_clear(*point)]
+    candidates = [
+        (x, y)
+        for y in range(MAP_SAFE_ZONE_MIN, MAP_SAFE_ZONE_MAX - 2)
+        for x in range(MAP_SAFE_ZONE_MIN, MAP_SAFE_ZONE_MAX - 2)
+        if is_clear(x, y) and (x, y) not in selected
+    ]
+    if len(candidates) < MAX_PLAYERS:
+        candidates = [
+            (x, y)
+            for y in range(SPAWN_MIN_Y, SPAWN_MAX_Y - 1)
+            for x in range(SPAWN_MIN_X, SPAWN_MAX_X - 1)
+            if is_clear(x, y)
+        ]
+
+    center_x, center_y = MAP_WIDTH_TILES // 2, MAP_HEIGHT_TILES // 2
+    while candidates and len(selected) < MAX_PLAYERS:
+        if not selected:
+            choice = min(
+                candidates,
+                key=lambda point: ((point[0] - center_x) ** 2 + (point[1] - center_y) ** 2, point[1], point[0]),
+            )
+        else:
+            choice = max(
+                candidates,
+                key=lambda point: (
+                    min((point[0] - sx) ** 2 + (point[1] - sy) ** 2 for sx, sy in selected),
+                    -((point[0] - center_x) ** 2 + (point[1] - center_y) ** 2),
+                    -point[1],
+                    -point[0],
+                ),
+            )
+            if min((choice[0] - sx) ** 2 + (choice[1] - sy) ** 2 for sx, sy in selected) < 16:
+                break
+        selected.append(choice)
+        candidates = [
+            point for point in candidates
+            if (point[0] - choice[0]) ** 2 + (point[1] - choice[1]) ** 2 >= 16
+        ]
+    return selected
 
 
-spawn_tile_x, spawn_tile_y = get_fixed_spawn_tile()
+spawn_tiles = get_fixed_spawn_tiles()
+match_spawn_index = 0
+spawn_tile_x, spawn_tile_y = spawn_tiles[match_spawn_index]
 spawn_world_x = spawn_tile_x * TileGene.tile_size
 spawn_world_y = spawn_tile_y * TileGene.tile_size
 
@@ -309,6 +358,16 @@ particles = ParticleSystem()
 last_effect_tick = pygame.time.get_ticks()
 # 시야 밖을 검게 덮을 때 재사용하는 투명 레이어입니다.
 vision_overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
+base_vision_overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
+result_overlays = {}
+result_text_cache = {}
+game_start_banner = BannerFont.render("게임 시작!", True, (255, 225, 120))
+SUPPLY_COLORS = {
+    "heal": (100, 255, 130),
+    "haste": (255, 240, 100),
+    "shield": (100, 220, 255),
+    "skill": (210, 150, 255),
+}
 # 방향과 모양이 크게 바뀔 때만 시야 폴리곤을 다시 계산합니다.
 visibility_polygon_cache = {}
 mouse_fire_hold = False
@@ -326,39 +385,57 @@ def is_hidden_player(player_info):
     return player_info.get("hidden", False) or player_info.get("hp", 1) <= 0
 
 def spawn_supply_drop(now):
-    """안전한 바닥 타일에 보급품을 하나 생성합니다."""
+    """안전한 바닥 타일에 보급품 묶음을 생성하고 활성 개수를 제한합니다."""
+    if random.random() > SUPPLY_DROP_CHANCE:
+        return
+    drop_count = min(SUPPLY_DROP_BATCH_COUNT, SUPPLY_DROP_MAX - len(supply_drops))
+    if drop_count <= 0:
+        return
     # 벽이나 집 안에 생성되면 플레이어가 접근할 수 없으므로
     # TileGenerator가 찾은 이동 가능한 타일의 중앙에 배치합니다.
-    spawn_tile = TileGene.find_safe_spawn(
-        2,
-        TileGene.map_width - 3,
-        2,
-        TileGene.map_height - 3,
-        rng=random.SystemRandom(),
-    )
-    if not spawn_tile:
-        return
-    tile_x, tile_y = spawn_tile
-    reward_type = random.choice(SUPPLY_REWARD_TYPES)
-    supply_drops.append({
-        "x": (tile_x + 0.5) * TileGene.tile_size,
-        "y": (tile_y + 0.5) * TileGene.tile_size,
-        "type": reward_type,
-        "warning_until": now + SUPPLY_DROP_WARNING_MS,
-        "expires_at": now + SUPPLY_DROP_LIFETIME_MS,
-    })
+    for _ in range(drop_count):
+        spawn_tile = TileGene.find_safe_spawn(
+            2,
+            TileGene.map_width - 3,
+            2,
+            TileGene.map_height - 3,
+            rng=random.SystemRandom(),
+        )
+        if not spawn_tile:
+            break
+        tile_x, tile_y = spawn_tile
+        supply_drops.append({
+            "x": (tile_x + 0.5) * TileGene.tile_size,
+            "y": (tile_y + 0.5) * TileGene.tile_size,
+            "type": random.choice(SUPPLY_REWARD_TYPES),
+            "warning_until": now + SUPPLY_DROP_WARNING_MS,
+            "expires_at": now + SUPPLY_DROP_LIFETIME_MS,
+        })
 
 
 def apply_supply_reward(reward_type):
-    """보급품에서 스킬을 하나 획득합니다."""
+    """회복, 이동 속도, 보호막, 스킬 중 보급품 효과를 적용합니다."""
     # 보급품은 서버에 아이템 자체를 동기화하지 않고,
     # 획득한 클라이언트의 플레이어 상태에만 효과를 적용합니다.
-    global send_data
+    global send_data, heal_token, pending_heal_amount, haste_until, shield_until
     center_x, center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
     available = [name for name in SKILL_BOOK if name not in owned_skills]
-    if reward_type == "skill" and available:
+    if reward_type == "heal":
+        heal_token += 1
+        pending_heal_amount += SUPPLY_HEAL_AMOUNT
+        message = f"보급품 획득: 체력을 {SUPPLY_HEAL_AMOUNT} 회복합니다."
+        color = (100, 255, 130)
+    elif reward_type == "haste":
+        haste_until = max(haste_until, pygame.time.get_ticks()) + SUPPLY_BUFF_DURATION_MS
+        message = "보급품 획득: 이동 속도가 증가했습니다."
+        color = (255, 240, 100)
+    elif reward_type == "shield":
+        shield_until = max(shield_until, pygame.time.get_ticks()) + SUPPLY_BUFF_DURATION_MS
+        message = "보급품 획득: 보호막이 활성화됐습니다."
+        color = (100, 220, 255)
+    elif reward_type == "skill" and available:
         obtained_skill = random.choice(available)
         add_skill_to_inventory(obtained_skill)
         message = f"보급품 획득: [{obtained_skill}] 스킬을 얻었습니다."
@@ -445,10 +522,12 @@ def reset_match_state():
     global training_dummy, server_players, preserve_magazine_after_chest
     global local_stun_until, zone_elapsed_ms, next_supply_drop_at
     global CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY
+    global camera_fov, camera_zoom
     global Weapon_Angle, Weapon_Pos, screen_shake, knife_attack_until
     global weapon_fire_until, weapon_smoke_until
     global vision_shape_override, vision_shape_index, inventory_open, mouse_fire_hold
     global spectator_players, spectator_target_id, last_spectator_poll_at
+    global match_spawn_index
     for collection in (
         bullets, remote_bullets, kill_feed, active_bombs, active_explosions,
         supply_drops, pending_treasure_destroys, pending_furniture_destroys,
@@ -462,6 +541,7 @@ def reset_match_state():
     spectator_target_id = None
     last_spectator_poll_at = 0
     skill_cooldowns.clear()
+    clear_selected_skill()
     owned_skills.clear()
     for slot in quick_slots:
         slot.assigned_skill = None
@@ -481,6 +561,8 @@ def reset_match_state():
     system_message = ""
     weapon_state.reset(main_weapon_id)
     CameraPosX = CameraPosY = AimCameraPosX = AimCameraPosY = 0
+    camera_fov = CAMERA_FOV
+    camera_zoom = 1.0 / camera_fov
     Weapon_Angle = 0
     Weapon_Pos = (0, 0)
     screen_shake = 0
@@ -493,11 +575,41 @@ def reset_match_state():
     mouse_fire_hold = False
     visibility_polygon_cache.clear()
     my_player.Hp = my_player.MaxHp
-    spawn_tile_x, spawn_tile_y = get_fixed_spawn_tile()
+    my_player.is_dashing = False
+    spawn_tile_x, spawn_tile_y = spawn_tiles[match_spawn_index % len(spawn_tiles)]
     my_player.X = spawn_tile_x * TileGene.tile_size
     my_player.Y = spawn_tile_y * TileGene.tile_size
     my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
     my_player._update_hitboxes()
+    my_player.is_dashing = False
+    my_player.dash_duration = PLAYER_DASH_DURATION_MS
+    my_player.dash_end_time = 0
+    my_player.last_dash_time = -my_player.dash_cooldown
+    my_player.normal_speed = PLAYER_NORMAL_SPEED
+    my_player.sprint_speed = PLAYER_SPRINT_SPEED
+    my_player.dash_speed = PLAYER_DASH_SPEED
+    send_data.update({
+        "posX": my_player.X,
+        "posY": my_player.Y,
+        "hp": my_player.MaxHp,
+        "angle": 0.0,
+        "weapon_id": weapon_state.weapon_id,
+        "magazine_ammo": weapon_state.magazine_ammo,
+        "reserve_ammo": weapon_state.reserve_ammo,
+        "wards": [],
+        "destroyed_treasures": [],
+        "destroyed_furniture": [],
+        "rune_ping": None,
+        "revive_token": 0,
+        "revive_request": False,
+        "revive_armed": False,
+        "heal_token": 0,
+        "heal_amount": 0,
+        "shield_active": False,
+        "stealth_token": 0,
+        "bullets": [],
+        "hit_events": [],
+    })
 
 def MainView():
     global running, ScreenState, selected_game_mode, debug_mode, local_match, game_start_banner_until
@@ -631,6 +743,7 @@ def SpectatorPromptView():
 
 def LoadingView():
     global running, ScreenState, lobby_status, last_lobby_request_at, local_match, game_start_banner_until
+    global match_spawn_index
     if debug_mode:
         owned_skills.update(SKILL_BOOK)
         refresh_skill_inventory()
@@ -646,6 +759,8 @@ def LoadingView():
             response = pickle.loads(client.recv(4096))
             if response.get("type") == "lobby_status":
                 lobby_status = response
+                if response.get("accepted"):
+                    match_spawn_index = response.get("spawn_index", 0)
         except (OSError, EOFError, pickle.PickleError, KeyError):
             reconnect_to_server()
             last_lobby_request_at = 0
@@ -707,7 +822,10 @@ def VictoryView():
 def _draw_result_screen(title_text, color, elapsed):
     pulse = 1.0 + 0.06 * math.sin(elapsed * 0.006)
     fade = min(210, 80 + elapsed // 8)
-    overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
+    overlay = result_overlays.get(color)
+    if overlay is None:
+        overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
+        result_overlays[color] = overlay
     overlay.fill((*color, fade))
     display.blit(overlay, (0, 0))
     pygame.draw.circle(
@@ -717,13 +835,19 @@ def _draw_result_screen(title_text, color, elapsed):
         max(40, round(150 * pulse)),
         5,
     )
-    title = GuiFont.render(title_text, True, (255, 255, 255))
+    title = result_text_cache.get(title_text)
+    if title is None:
+        title = GuiFont.render(title_text, True, (255, 255, 255))
+        result_text_cache[title_text] = title
     title = pygame.transform.smoothscale(
         title,
         (max(1, round(title.get_width() * pulse)), max(1, round(title.get_height() * pulse))),
     )
     display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
-    guide = GuiFont.render("스페이스키를 눌러 로비로 이동하세요", True, (255, 255, 255))
+    guide = result_text_cache.get("guide")
+    if guide is None:
+        guide = GuiFont.render("스페이스키를 눌러 로비로 이동하세요", True, (255, 255, 255))
+        result_text_cache["guide"] = guide
     display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 70)))
 
 
@@ -759,6 +883,10 @@ def SpectatorView():
     if now - last_spectator_poll_at >= 100:
         spectator_players = poll_players(client, NETWORK_BUFFER_SIZE)
         last_spectator_poll_at = now
+    if spectator_players.get("error") == "active_player_cannot_spectate":
+        spectator_players = {}
+        ScreenState = "GameView"
+        return
     if not spectator_players:
         draw_waiting(display, GuiFont, ScreenX, ScreenY)
         return
@@ -1006,7 +1134,7 @@ def remove_ward_at_cursor():
 
 
 def handle_key_event(event, _mouse_pos):
-    global inventory_open, dragging_skill, debug_mode, system_message, show_hitboxes
+    global inventory_open, debug_mode, system_message, show_hitboxes
     global ScreenState, local_match
     weapon_id = None
     if event.key == pygame.K_1:
@@ -1037,6 +1165,20 @@ def handle_key_event(event, _mouse_pos):
         system_message = f"히트박스 표시: {'켜짐' if show_hitboxes else '꺼짐'}"
         return
 
+    slot_key_names = {
+        pygame.K_q: "Q",
+        pygame.K_e: "E",
+        pygame.K_t: "T",
+    }
+    if inventory_open and event.key in slot_key_names:
+        skill_name, assigned = bind_selected_skill(slot_key_names[event.key])
+        if skill_name is not None:
+            system_message = (
+                f"[{skill_name}] 스킬을 [{slot_key_names[event.key]}] 슬롯에 장착했습니다."
+                if assigned else f"[{skill_name}]은 이미 다른 퀵슬롯에 장착되어 있습니다."
+            )
+            return
+
     key_actions = {
         pygame.K_ESCAPE: lambda _key: leave_game_to_main(),
         pygame.K_i: lambda _key: toggle_inventory(),
@@ -1064,9 +1206,10 @@ def leave_game_to_main():
 
 
 def toggle_inventory():
-    global inventory_open, dragging_skill
+    global inventory_open
     inventory_open = not inventory_open
-    dragging_skill = None
+    if not inventory_open:
+        clear_selected_skill()
 
 
 def cycle_vision_shape():
@@ -1115,8 +1258,8 @@ def fire_knife():
         enemy_center_x = p_info["posX"] + IML.Player.get_width() / 2
         enemy_center_y = p_info["posY"] + IML.Player.get_height() / 2
 
-        distance = math.sqrt((center_x - enemy_center_x)**2 + (center_y - enemy_center_y)**2)
-        if distance <= knife_range:
+        distance_squared = (center_x - enemy_center_x) ** 2 + (center_y - enemy_center_y) ** 2
+        if distance_squared <= knife_range ** 2:
             attacked_count += 1
             pending_hit_events.append({
                 "target_id": int(p_id),
@@ -1135,16 +1278,18 @@ def fire_knife():
                 (tile_x + 0.5) * TileGene.tile_size,
                 (tile_y + 0.5) * TileGene.tile_size,
             )
-            if math.hypot(center_x - tile_center[0], center_y - tile_center[1]) > knife_range:
+            if (center_x - tile_center[0]) ** 2 + (center_y - tile_center[1]) ** 2 > knife_range ** 2:
                 continue
-            if TileGene.destroy_furniture(tile_x, tile_y):
+            if TileGene.destroy_furniture(tile_x, tile_y, rebuild_surface=False):
                 pending_furniture_destroys.append((tile_x, tile_y))
                 destroyed_furniture_count += 1
+    if destroyed_furniture_count:
+        TileGene.refresh_world_surface(pending_furniture_destroys)
 
     if debug_mode and training_dummy is not None and training_dummy.Hp > 0:
         dummy_center_x = training_dummy.rect.centerx
         dummy_center_y = training_dummy.rect.centery
-        if math.hypot(center_x - dummy_center_x, center_y - dummy_center_y) <= knife_range:
+        if (center_x - dummy_center_x) ** 2 + (center_y - dummy_center_y) ** 2 <= knife_range ** 2:
             training_dummy.Hp = max(0, training_dummy.Hp - config.damage)
             damage_numbers.append({
                 "x": dummy_center_x,
@@ -1286,47 +1431,26 @@ def fire_bullet():
 
 
 def handle_mouse_down(event, mouse_pos):
-    global dragging_skill, mouse_fire_hold
+    global mouse_fire_hold, system_message
     if event.button != 1:
         return
-
-    available_items = inventory_items if inventory_open else ()
-    dragging_skill = next(
-        (
-            item.skill_name
-            for item in available_items
-            if item.is_owned and item.rect.collidepoint(mouse_pos)
-        ),
-        None,
-    )
-    if dragging_skill is None:
-        mouse_fire_hold = weapon_state.config.automatic
-        fire_bullet()
+    if inventory_open:
+        skill_name = select_skill_at(mouse_pos)
+        if skill_name:
+            system_message = f"[{skill_name}] 선택됨. Q, E 또는 T를 눌러 슬롯을 지정하세요."
+        else:
+            system_message = "보유 스킬 아이콘을 선택하세요."
+        return
+    mouse_fire_hold = weapon_state.config.automatic
+    fire_bullet()
 
 
 def handle_mouse_up(event, mouse_pos):
-    global dragging_skill, system_message, mouse_fire_hold
+    global mouse_fire_hold
     if event.button != 1:
         mouse_fire_hold = False
         return
     mouse_fire_hold = False
-    if not dragging_skill:
-        return
-
-    slot = next(
-        (slot for slot in quick_slots if slot.rect.collidepoint(mouse_pos)),
-        None,
-    )
-    if slot:
-        skill = SKILL_BOOK[dragging_skill]
-        if assign_skill_to_quick_slot(slot, dragging_skill):
-            system_message = (
-                f"⌨️ [{slot.key_name}] 슬롯에 [{skill.name}] 장착! "
-                f"(공격력: {skill.Power})"
-            )
-        else:
-            system_message = f"[{skill.name}]은 이미 다른 퀵슬롯에 장착되어 있습니다."
-    dragging_skill = None
 
 
 def handle_game_events():
@@ -1377,7 +1501,17 @@ def GameView():
 
     Weapon_Pos = pygame.mouse.get_pos()
 
+    haste_bonus = (
+        PLAYER_HASTE_SPEED - PLAYER_NORMAL_SPEED if now < haste_until else 0
+    )
+    knife_speed_bonus = KNIFE_DASH_SPEED_BONUS if weapon_state.weapon_id == "knife" else 0
+    my_player.normal_speed = PLAYER_NORMAL_SPEED + haste_bonus + knife_speed_bonus
+    my_player.sprint_speed = PLAYER_SPRINT_SPEED + haste_bonus + knife_speed_bonus
+    my_player.dash_speed = PLAYER_DASH_SPEED + haste_bonus + knife_speed_bonus
     if now >= local_stun_until:
+        my_player.dash_duration = PLAYER_DASH_DURATION_MS + (
+            KNIFE_DASH_DURATION_BONUS_MS if weapon_state.weapon_id == "knife" else 0
+        )
         dash_requested = (
             weapon_state.weapon_id == "knife"
             and pygame.mouse.get_pressed(3)[2]
@@ -1422,16 +1556,9 @@ def GameView():
     if vision_skill_until and now >= vision_skill_until:
         vision_skill_until = 0
         vision_shape_override = None
-    base_speed = PLAYER_HASTE_SPEED if now < haste_until else PLAYER_NORMAL_SPEED
-    knife_speed_bonus = KNIFE_DASH_SPEED_BONUS if weapon_state.weapon_id == "knife" else 0
     player_center_x, player_center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
-    effective_base_speed = base_speed + knife_speed_bonus
-    my_player.normal_speed = effective_base_speed
-    my_player.sprint_speed = PLAYER_SPRINT_SPEED + knife_speed_bonus
-    my_player.dash_speed = PLAYER_DASH_SPEED + knife_speed_bonus
-
     if now >= next_supply_drop_at:
         spawn_supply_drop(now)
         next_supply_drop_at = now + SUPPLY_DROP_INTERVAL_MS
@@ -1600,8 +1727,12 @@ def GameView():
                 synchronized_rune_alerts = own_snapshot.get("rune_alerts", [])
             for tile_x, tile_y in synchronized_treasures:
                 TileGene.destroy_treasure(tile_x, tile_y)
+            synchronized_furniture_changes = []
             for tile_x, tile_y in synchronized_furniture:
-                TileGene.destroy_furniture(tile_x, tile_y)
+                if TileGene.destroy_furniture(tile_x, tile_y, rebuild_surface=False):
+                    synchronized_furniture_changes.append((tile_x, tile_y))
+            if synchronized_furniture_changes:
+                TileGene.refresh_world_surface(synchronized_furniture_changes)
             rune_alerts = synchronized_rune_alerts
             pending_treasure_destroys.clear()
             pending_furniture_destroys.clear()
@@ -1971,7 +2102,7 @@ def GameView():
         server_weapon_id = p_info.get("weapon_id", DEFAULT_WEAPON_ID)
         if server_weapon_id == "knife" and IML.GetBladeFrames():
             other_weapon_image = IML.GetBladeFrames()[0]
-            other_weapon_image = pygame.transform.smoothscale(
+            other_weapon_image = _scale_cached(
                 other_weapon_image,
                 (
                     max(1, round(other_weapon_image.get_width() * camera_zoom * MELEE_WEAPON_SCALE)),
@@ -2023,7 +2154,7 @@ def GameView():
                 max(0, int(elapsed / MELEE_ATTACK_DURATION_MS * len(IML.GetBladeFrames()))),
             )
             blade = IML.GetBladeFrames()[frame_index]
-            blade = pygame.transform.smoothscale(
+            blade = _scale_cached(
                 blade,
                 (
                     max(1, round(blade.get_width() * camera_zoom * MELEE_WEAPON_SCALE)),
@@ -2040,7 +2171,7 @@ def GameView():
 
     
     # 기본 시야는 무기 시야와 구분되는 어두운 청색 영역으로 표시합니다.
-    base_overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
+    base_overlay = base_vision_overlay
     base_overlay.fill((8, 24, 42, PLAYER_BASE_VISION_ALPHA))
     base_vision_polygon = TileGene.get_visibility_polygon(
         player_world_x,
@@ -2183,7 +2314,7 @@ def GameView():
             (round(alert_screen_x), round(alert_screen_y)),
             2,
         )
-        alert_text = pygame.font.Font(None, 24).render("발광 룬", True, (255, 235, 130))
+        alert_text = RuneAlertFont.render("발광 룬", True, (255, 235, 130))
         display.blit(
             alert_text,
             alert_text.get_rect(
@@ -2249,14 +2380,8 @@ def GameView():
             )
 
     # 폭탄과 폭발 범위는 시야 효과 위에 표시합니다.
-    supply_colors = {
-        "heal": (100, 255, 130),
-        "haste": (255, 240, 100),
-        "shield": (100, 220, 255),
-        "skill": (210, 150, 255),
-    }
     for supply in supply_drops:
-        draw_supply_drop(display, supply, CameraPosX, CameraPosY, camera_zoom, supply_colors, now)
+        draw_supply_drop(display, supply, CameraPosX, CameraPosY, camera_zoom, SUPPLY_COLORS, now)
 
     for bomb in active_bombs:
         bomb_screen = world_to_screen(bomb["x"], bomb["y"], CameraPosX, CameraPosY, camera_zoom)
@@ -2326,7 +2451,9 @@ def GameView():
         # Protect.png 이미지가 있으면 반투명으로 표시
         if IML.Protect:
             protect_size = max(50, int(90 * camera_zoom))
-            protect_scaled = pygame.transform.scale(IML.Protect, (protect_size, protect_size))
+            protect_scaled = _scale_cached(
+                IML.Protect, (protect_size, protect_size), smooth=False
+            )
             protect_scaled.set_alpha(SHIELD_ALPHA)
             protect_rect = protect_scaled.get_rect(center=shield_center)
             display.blit(protect_scaled, protect_rect)
@@ -2356,24 +2483,15 @@ def GameView():
         event for event in kill_feed
         if now - event.get("started_at", now) < 5000
     ][-5:]
-    kill_font = pygame.font.Font(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"),
-        20,
-    )
     for index, event in enumerate(reversed(kill_feed)):
         killer = player_name or "플레이어" if event.get("killer_id") == my_id else event.get("killer_name", f"플레이어 {event.get('killer_id')}")
         target = player_name or "플레이어" if event.get("target_id") == my_id else event.get("target_name", str(event.get("target_id")))
-        kill_text = kill_font.render(f"{killer}  >  {target}", True, (255, 225, 150))
+        kill_text = KillFeedFont.render(f"{killer}  >  {target}", True, (255, 225, 150))
         display.blit(kill_text, (ScreenX - 330, 330 + index * 26))
     if game_start_banner_until > now:
         remaining = game_start_banner_until - now
-        banner_font = pygame.font.Font(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"),
-            54,
-        )
-        banner = banner_font.render("게임 시작!", True, (255, 225, 120))
-        banner.set_alpha(min(255, max(0, remaining * 2)))
-        display.blit(banner, banner.get_rect(center=(ScreenX // 2, 150)))
+        game_start_banner.set_alpha(min(255, max(0, remaining * 2)))
+        display.blit(game_start_banner, game_start_banner.get_rect(center=(ScreenX // 2, 150)))
     ui_x = 30
     ui_y = 80  
     draw_health_bar(
@@ -2397,7 +2515,7 @@ def GameView():
     
     # --- [퀵슬롯 배경과 스킬 소스창] ---
     draw_skill_panel(display)
-    hovered_skill = draw_skill_inventory(display, MousePos, inventory_open, dragging_skill)
+    hovered_skill = draw_skill_inventory(display, MousePos, inventory_open)
 
     # 하단 퀵슬롯 (�익슬롯은 항상 보임)
     for slot in quick_slots:
@@ -2417,7 +2535,7 @@ def GameView():
     )
     
     # ★ [추가] 스킬 툴팁 그리기 (마우스 raycast 무시 - 드래그 중이 아닐 때만)
-    if hovered_skill and dragging_skill is None:
+    if hovered_skill:
         draw_skill_tooltip(display, MousePos, hovered_skill)
 
     player_name_text = GuiFont.render(player_name or "플레이어", True, (255, 230, 160))

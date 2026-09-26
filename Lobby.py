@@ -28,6 +28,8 @@ class LobbyState:
 
     def join(self, player_id, mode, debug_enabled=False):
         self._update_start_state()
+        if player_id not in self.modes and len(self.modes) >= MAX_PLAYERS:
+            return False
         if (self.started or self.start_at is not None) and player_id not in self.modes:
             return False
         if mode not in (GAME_MODE_NORMAL, GAME_MODE_DEBUG):
@@ -70,6 +72,15 @@ class LobbyState:
             self.started = False
             self.start_at = None
             self.started_at = None
+
+    def finish_match(self):
+        """경기 결과가 확정되면 다음 대기열을 위한 상태를 비웁니다."""
+        self.modes.clear()
+        self.ready_players.clear()
+        self.practice_players.clear()
+        self.started = False
+        self.start_at = None
+        self.started_at = None
 
     def active_player_ids(self):
         return set(self.modes)

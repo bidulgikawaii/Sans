@@ -1,3 +1,4 @@
+import copy
 import socket
 import threading
 import pickle
@@ -118,8 +119,11 @@ def handle_client(conn, player_id):
                     if not lobby.started:
                         conn.sendall(pickle.dumps({}))
                         continue
+                    # 경기 참가자는 관전 요청으로 로비에서 제거하지 않습니다.
+                    if player_id in lobby.modes:
+                        conn.sendall(pickle.dumps({"error": "active_player_cannot_spectate"}))
+                        continue
                     spectator_ids.add(player_id)
-                    lobby.leave(player_id)
                     active_ids = lobby.visible_player_ids(player_id)
                     spectator_snapshot = {
                         active_id: players[active_id]
@@ -134,7 +138,6 @@ def handle_client(conn, player_id):
             if client_data.get("type") == "spectator_leave":
                 with player_lock:
                     spectator_ids.discard(player_id)
-                    lobby.leave(player_id)
                 conn.sendall(pickle.dumps({}))
                 continue
 
@@ -148,16 +151,40 @@ def handle_client(conn, player_id):
                     if accepted:
                         spectator_ids.discard(player_id)
                         requested_name = str(client_data.get("name", "")).strip()
-                        players[player_id]["name"] = (requested_name or f"유저_{player_id}")[:16]
-                        players[player_id]["hp"] = PLAYER_MAX_HP
-                        players[player_id]["weapon_id"] = DEFAULT_WEAPON_ID
-                        players[player_id]["weapon_name"] = WEAPONS[DEFAULT_WEAPON_ID].name
-                        players[player_id]["magazine_ammo"] = WEAPONS[DEFAULT_WEAPON_ID].magazine_size
-                        players[player_id]["reserve_ammo"] = WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo
+                        player = players[player_id]
+                        player.update({
+                            "name": (requested_name or f"유저_{player_id}")[:16],
+                            "hp": PLAYER_MAX_HP,
+                            "weapon_id": DEFAULT_WEAPON_ID,
+                            "weapon_name": WEAPONS[DEFAULT_WEAPON_ID].name,
+                            "magazine_ammo": WEAPONS[DEFAULT_WEAPON_ID].magazine_size,
+                            "reserve_ammo": WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo,
+                            "stealth": False,
+                            "in_bush": False,
+                            "stealth_token": 0,
+                            "stealth_until": 0.0,
+                            "wards": [],
+                            "revive_token": 0,
+                            "revive_armed": False,
+                            "heal_token": 0,
+                            "shield_active": False,
+                            "rune_alerts": [],
+                            "stunned_until": 0.0,
+                            "zone_outside_since": None,
+                            "zone_damage_credit": 0.0,
+                            "zone_last_tick": time.monotonic(),
+                            "bullets": [],
+                        })
                     lobby_status = lobby.status(player_id)
                     lobby_status["accepted"] = accepted
-                    if not accepted:
-                        lobby_status["message"] = "게임이 진행 중이라 참가할 수 없습니다."
+                    if accepted:
+                        lobby_status["spawn_index"] = sorted(lobby.modes).index(player_id)
+                    else:
+                        lobby_status["message"] = (
+                            "게임이 진행 중이라 참가할 수 없습니다."
+                            if lobby.started or lobby.start_at is not None
+                            else f"로비가 가득 찼습니다. 최대 {MAX_PLAYERS}명까지 참가할 수 있습니다."
+                        )
                 conn.sendall(pickle.dumps(lobby_status))
                 continue
 
@@ -360,7 +387,8 @@ def handle_client(conn, player_id):
                     )
                     else None
                 )
-            snapshot = pickle.loads(pickle.dumps(active_players))
+            # 네트워크 직렬화 전 복사본을 만들되, pickle 왕복은 피합니다.
+            snapshot = copy.deepcopy(active_players)
             pending_bullets = [
                 bullet for bullet in bullet_events
                 if bullet["event_id"] > last_sent_bullet_event_id
@@ -388,6 +416,17 @@ def handle_client(conn, player_id):
                 )
                 player["hidden"] = player.get("hp", 0) <= 0
             conn.sendall(pickle.dumps(snapshot))
+            if winner_id is not None:
+                # 승리 결과를 전송한 뒤 이전 경기의 참가/수집 상태를 정리합니다.
+                with player_lock:
+                    lobby.finish_match()
+                    spectator_ids.clear()
+                    destroyed_treasures.clear()
+                    destroyed_furniture.clear()
+                    bullet_events.clear()
+                    rune_alerts.clear()
+                    kill_events.clear()
+                    damage_events.clear()
     except Exception as e:
         print(f"[네트워크 오류] 플레이어 {player_id}번: {e}")
     finally:

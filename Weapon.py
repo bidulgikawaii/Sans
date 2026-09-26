@@ -33,7 +33,7 @@ WEAPONS = {
         bullet_lifetime=2.4, vision_radius=500, vision_fov=95, vision_width=240,
     ),
     "rifle": WeaponConfig(
-        "라이플", damage=10, magazine_size=24, reserve_ammo=72, fire_interval=0.1,
+        "라이플", damage=10, magazine_size=24, reserve_ammo=72, fire_interval=0.16,
         automatic=True,
         reload_time=2.1, bullet_size=4, bullet_speed=23.0, recoil=1.6,
         bullet_lifetime=2.6, vision_radius=700, vision_fov=75, vision_width=180,
@@ -41,13 +41,13 @@ WEAPONS = {
     "shotgun": WeaponConfig(
         "샷건", damage=7.0, magazine_size=5, reserve_ammo=15,
         fire_interval=0.85, reload_time=3, bullet_size=4, bullet_speed=16.0,
-        pellets=10, spread_degrees=25.0, recoil=6.0, bullet_lifetime=1.4,
+        pellets=10, spread_degrees=40.0, recoil=6.0, bullet_lifetime=1.4,
         vision_radius=300, vision_fov=120, vision_width=300,
     ),
     "sniper": WeaponConfig(
-        "저격총", damage=70, magazine_size=10, reserve_ammo=15, fire_interval=1.5,
+    "저격총", damage=70, magazine_size=10, reserve_ammo=15, fire_interval=1.0,
         reload_time=3.1, bullet_size=3, bullet_speed=32.0, recoil=8.0,
-        bullet_lifetime=3.8, vision_shape="cone", vision_radius=1400.0, vision_fov=100.0, vision_width=420.0,
+        bullet_lifetime=3.8, vision_shape="cone", vision_radius=1400.0, vision_fov=180.0, vision_width=420.0,
     ),
     "smg": WeaponConfig(
         "기관단총", damage=5, magazine_size=50, reserve_ammo=100, fire_interval=0.08,

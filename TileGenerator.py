@@ -379,28 +379,32 @@ class TileGenerator:
         )
         self.world_surface = pygame.Surface(world_size).convert()
         for (tile_x, tile_y), tile in self.map_data.items():
-            self.world_surface.blit(
-                self.tile_images[tile.tile_type],
-                (tile_x * self.tile_size, tile_y * self.tile_size),
-            )
-            if tile.tile_type == 0:
-                # 타일 경계선 대신 좌표 기반 잔디 결을 넣어 반복 무늬를 줄입니다.
-                tile_rng = random.Random(tile_x * 73856093 ^ tile_y * 19349663)
-                tile_left = tile_x * self.tile_size
-                tile_top = tile_y * self.tile_size
-                for _ in range(3):
-                    detail_x = tile_left + tile_rng.randrange(4, self.tile_size - 4)
-                    detail_y = tile_top + tile_rng.randrange(4, self.tile_size - 4)
-                    detail_color = tile_rng.choice(((116, 161, 105), (157, 192, 138), (126, 171, 112)))
-                    pygame.draw.line(
-                        self.world_surface,
-                        detail_color,
-                        (detail_x, detail_y),
-                        (detail_x + tile_rng.choice((-2, -1, 1, 2)), detail_y - 3),
-                        1,
-                    )
+            self._draw_world_tile(tile_x, tile_y, tile)
         self._scaled_world_surface = None
         self._scaled_world_zoom = None
+
+    def _draw_world_tile(self, tile_x, tile_y, tile):
+        self.world_surface.blit(
+            self.tile_images[tile.tile_type],
+            (tile_x * self.tile_size, tile_y * self.tile_size),
+        )
+        if tile.tile_type != 0:
+            return
+        # 타일 경계선 대신 좌표 기반 잔디 결을 넣어 반복 무늬를 줄입니다.
+        tile_rng = random.Random(tile_x * 73856093 ^ tile_y * 19349663)
+        tile_left = tile_x * self.tile_size
+        tile_top = tile_y * self.tile_size
+        for _ in range(3):
+            detail_x = tile_left + tile_rng.randrange(4, self.tile_size - 4)
+            detail_y = tile_top + tile_rng.randrange(4, self.tile_size - 4)
+            detail_color = tile_rng.choice(((116, 161, 105), (157, 192, 138), (126, 171, 112)))
+            pygame.draw.line(
+                self.world_surface,
+                detail_color,
+                (detail_x, detail_y),
+                (detail_x + tile_rng.choice((-2, -1, 1, 2)), detail_y - 3),
+                1,
+            )
 
     def draw(self, surface, camera_x, camera_y, zoom=1.0):
         """미리 합성한 월드 Surface를 카메라 위치에 맞춰 그립니다."""
@@ -806,15 +810,28 @@ class TileGenerator:
                     return tile_x, tile_y, tile.tile_type
         return None
 
-    def destroy_furniture(self, tile_x, tile_y):
+    def destroy_furniture(self, tile_x, tile_y, rebuild_surface=True):
         tile = self.map_data.get((tile_x, tile_y))
         if not tile or tile.tile_type not in (7, 8):
             return False
         self.map_data[(tile_x, tile_y)] = Tile(tile_type=0, is_walkable=True)
-        self._build_world_surface()
+        if rebuild_surface:
+            self.refresh_world_surface(((tile_x, tile_y),))
+        return True
+
+    def refresh_world_surface(self, changed_tiles=None):
+        """변경 타일만 다시 그린 뒤 시야 캐시를 비웁니다."""
+        if changed_tiles is None or self.world_surface is None:
+            self._build_world_surface()
+        else:
+            for tile_x, tile_y in changed_tiles:
+                tile = self.map_data.get((tile_x, tile_y))
+                if tile is not None:
+                    self._draw_world_tile(tile_x, tile_y, tile)
+            self._scaled_world_surface = None
+            self._scaled_world_zoom = None
         self._visibility_cache.clear()
         self._vision_wall_rects = None
-        return True
 
     def destroy_treasure_at(self, rect):
         """총알이 맞은 보물상자를 제거하고 맵을 다시 합성합니다."""
@@ -850,6 +867,5 @@ class TileGenerator:
             return False
 
         self.map_data[(tile_x, tile_y)] = Tile(tile_type=0, is_walkable=True)
-        self._build_world_surface()
-        self._visibility_cache.clear()
+        self.refresh_world_surface(((tile_x, tile_y),))
         return True

@@ -11,6 +11,11 @@ def _get_font(path, size):
 
 
 _scaled_panels = {}
+_scaled_images = {}
+_cooldown_overlays = {}
+_damage_text_surfaces = {}
+_HEALTH_FRAME_COLOR = pygame.Color("gray20")
+_HEALTH_COLORS = (pygame.Color("green"), pygame.Color("yellow"), pygame.Color("red"))
 
 
 def draw_visibility_geometry(surface, geometry, camera_x, camera_y, zoom):
@@ -90,13 +95,17 @@ def draw_teleport_anchor(surface, anchor_x, anchor_y, camera_x, camera_y, zoom, 
     screen_y = (anchor_y - camera_y) * zoom
     center = (round(screen_x), round(screen_y))
     if image is not None:
-        scaled_image = pygame.transform.smoothscale(
-            image,
-            (
-                max(1, round(image.get_width() * zoom)),
-                max(1, round(image.get_height() * zoom)),
-            ),
+        size = (
+            max(1, round(image.get_width() * zoom)),
+            max(1, round(image.get_height() * zoom)),
         )
+        cache_key = (id(image), size)
+        scaled_image = _scaled_images.get(cache_key)
+        if scaled_image is None:
+            scaled_image = pygame.transform.smoothscale(image, size)
+            if len(_scaled_images) >= 64:
+                _scaled_images.clear()
+            _scaled_images[cache_key] = scaled_image
         surface.blit(scaled_image, scaled_image.get_rect(center=center))
         return
     width = max(8, round(18 * zoom))
@@ -127,19 +136,22 @@ def draw_health_bar(surface, x, y, current_value, max_value, frame, frame_size, 
     inner_width = int(frame_width * 0.78)
     inner_height = int(frame_height * 0.27)
     inner_rect = pygame.Rect(x + inner_x, y + inner_y, inner_width, inner_height)
-    pygame.draw.rect(surface, pygame.Color("gray20"), inner_rect)
+    pygame.draw.rect(surface, _HEALTH_FRAME_COLOR, inner_rect)
 
     health_ratio = current_value / max(1, max_value)
     if health_ratio >= thresholds[0]:
-        health_color = pygame.Color("green")
+        health_color = _HEALTH_COLORS[0]
     elif health_ratio >= thresholds[1]:
-        health_color = pygame.Color("yellow")
+        health_color = _HEALTH_COLORS[1]
     else:
-        health_color = pygame.Color("red")
-    fill_rect = inner_rect.copy()
-    fill_rect.width = int(inner_rect.width * health_ratio)
-    if fill_rect.width > 0:
-        pygame.draw.rect(surface, health_color, fill_rect)
+        health_color = _HEALTH_COLORS[2]
+    fill_width = int(inner_rect.width * health_ratio)
+    if fill_width > 0:
+        pygame.draw.rect(
+            surface,
+            health_color,
+            (inner_rect.x, inner_rect.y, fill_width, inner_rect.height),
+        )
     surface.blit(frame, (x, y))
 
 
@@ -196,8 +208,12 @@ def draw_quick_slot_cooldowns(surface, slots, cooldowns, font):
         if end_time <= now:
             continue
         remain = max(0.0, (end_time - now) / 1000.0)
-        overlay = pygame.Surface((slot.rect.width, slot.rect.height), pygame.SRCALPHA)
-        pygame.draw.rect(overlay, (0, 0, 0, 170), overlay.get_rect(), border_radius=8)
+        overlay_size = (slot.rect.width, slot.rect.height)
+        overlay = _cooldown_overlays.get(overlay_size)
+        if overlay is None:
+            overlay = pygame.Surface(overlay_size, pygame.SRCALPHA)
+            pygame.draw.rect(overlay, (0, 0, 0, 170), overlay.get_rect(), border_radius=8)
+            _cooldown_overlays[overlay_size] = overlay
         surface.blit(overlay, slot.rect.topleft)
         text = font.render(f"{remain:.1f}s", True, (255, 255, 255))
         surface.blit(text, (slot.rect.centerx - text.get_width() / 2, slot.rect.centery - 8))
@@ -211,7 +227,13 @@ def draw_damage_numbers(surface, damage_numbers, camera_x, camera_y, zoom, font,
         progress = age / number["lifetime"]
         screen_x = (number["x"] - camera_x) * zoom
         screen_y = (number["y"] - camera_y - progress * 42) * zoom
-        text = font.render(str(number["damage"]), True, number["color"])
+        text_key = (str(number["damage"]), tuple(number["color"]))
+        text = _damage_text_surfaces.get(text_key)
+        if text is None:
+            text = font.render(text_key[0], True, text_key[1])
+            if len(_damage_text_surfaces) >= 256:
+                _damage_text_surfaces.clear()
+            _damage_text_surfaces[text_key] = text
         text.set_alpha(round(255 * (1.0 - progress)))
         surface.blit(text, text.get_rect(center=(round(screen_x), round(screen_y))))
 

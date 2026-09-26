@@ -173,22 +173,26 @@ class TileGenerator:
         self.map_width = width_tiles
         self.map_height = height_tiles
 
-        # 1. 일단 전체 맵을 다 바닥(0)으로 초기화
+        # 바닥과 외곽 벽을 한 번에 만들어 경계 타일 객체를 덮어쓰지 않습니다.
         for y in range(height_tiles):
             for x in range(width_tiles):
-                self.map_data[(x, y)] = Tile(tile_type=0, is_walkable=True)
-
-        # 2. 외곽 테두리 영역을 겉벽(1)으로 채우기
-        for y in range(height_tiles):
-            for x in range(width_tiles):
-                if x == 0 or x == width_tiles - 1 or y == 0 or y == height_tiles - 1:
-                    self.map_data[(x, y)] = Tile(tile_type=1, is_walkable=False)
+                is_border = x == 0 or x == width_tiles - 1 or y == 0 or y == height_tiles - 1
+                self.map_data[(x, y)] = Tile(
+                    tile_type=1 if is_border else 0,
+                    is_walkable=not is_border,
+                )
 
         # 3. 맵 중간중간 무작위 위치에 '집' 형태 구조물 빌드
         # ★ [개선] 집의 윤곽선만 벽으로 생성 (내부는 비워 플레이어가 드나들 수 있음)
         # ★ [추가] 문과 보물상자 추가
         num_houses = MAP_HOUSE_COUNT
         self.house_rects = []
+        safe_zone = pygame.Rect(
+            MAP_SAFE_ZONE_MIN,
+            MAP_SAFE_ZONE_MIN,
+            MAP_SAFE_ZONE_MAX - MAP_SAFE_ZONE_MIN,
+            MAP_SAFE_ZONE_MAX - MAP_SAFE_ZONE_MIN,
+        )
         attempts = 0
         while len(self.house_rects) < num_houses and attempts < num_houses * 10:
             attempts += 1
@@ -203,12 +207,6 @@ class TileGenerator:
                 house_y - MAP_HOUSE_PADDING,
                 house_w + MAP_HOUSE_PADDING * 2,
                 house_h + MAP_HOUSE_PADDING * 2,
-            )
-            safe_zone = pygame.Rect(
-                MAP_SAFE_ZONE_MIN,
-                MAP_SAFE_ZONE_MIN,
-                MAP_SAFE_ZONE_MAX - MAP_SAFE_ZONE_MIN,
-                MAP_SAFE_ZONE_MAX - MAP_SAFE_ZONE_MIN,
             )
             if candidate.colliderect(safe_zone) or any(
                 candidate.colliderect(existing) for existing in self.house_rects

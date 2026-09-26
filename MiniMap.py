@@ -24,6 +24,9 @@ class MiniMap:
         self.font = font or pygame.font.Font(None, 20)
         self._map_surface = None
         self._map_signature = None
+        self._panel_surface = None
+        self._panel_surface_size = None
+        self._marker_surface = pygame.Surface(self.size, pygame.SRCALPHA)
 
     def _get_map_signature(self):
         generator = self.tile_generator
@@ -76,7 +79,12 @@ class MiniMap:
         alert_width = 190 if magnetic_zone is not None else 0
         total_panel_width = panel_width + alert_width
         panel_x = surface.get_width() - total_panel_width - self.margin[0]
-        panel = pygame.Surface((total_panel_width, panel_height), pygame.SRCALPHA)
+        panel_size = (total_panel_width, panel_height)
+        if self._panel_surface_size != panel_size:
+            self._panel_surface = pygame.Surface(panel_size, pygame.SRCALPHA)
+            self._panel_surface_size = panel_size
+        panel = self._panel_surface
+        panel.fill((0, 0, 0, 0))
         pygame.draw.rect(panel, (12, 18, 22, 225), panel.get_rect(), border_radius=8)
         pygame.draw.rect(panel, (170, 205, 190, 220), panel.get_rect(), 2, border_radius=8)
         map_x = alert_width + 8
@@ -96,7 +104,8 @@ class MiniMap:
             else:
                 panel.blit(alert_font.render("자기장 중앙 고정", True, (255, 170, 170)), (12, 48))
 
-        marker_surface = pygame.Surface(self.size, pygame.SRCALPHA)
+        marker_surface = self._marker_surface
+        marker_surface.fill((0, 0, 0, 0))
         if magnetic_zone is not None:
             zone_rect = magnetic_zone.bounds_at(zone_elapsed_ms)
             zone_left, zone_top = self._world_to_map(zone_rect.left, zone_rect.top)
@@ -113,6 +122,7 @@ class MiniMap:
 
         # 룬 경보 위치와 가까운 상대만 경보를 밟은 플레이어로 표시합니다.
         alert_positions = [(alert_x, alert_y) for alert_x, alert_y, _remaining_ms in rune_alerts or ()]
+        alert_distance_squared = (self.tile_generator.tile_size * 1.5) ** 2
         for player_id, player_info in (players or {}).items():
             if local_player_id is not None and int(player_id) == int(local_player_id):
                 continue
@@ -124,7 +134,7 @@ class MiniMap:
             )
             if any(
                 (player_position[0] - alert_x) ** 2 + (player_position[1] - alert_y) ** 2
-                <= (self.tile_generator.tile_size * 1.5) ** 2
+                <= alert_distance_squared
                 for alert_x, alert_y in alert_positions
             ):
                 player_marker = self._world_to_map(*player_position)

@@ -12,14 +12,22 @@ class MainScreenRenderer:
         self.font = font
         self.screen_width, self.screen_height = screen_size
         self.background = titles.get("BackG")
+        self._background_scaled = (
+            pygame.transform.smoothscale(self.background, screen_size)
+            if self.background is not None else None
+        )
+        self._weapon_previews = {}
+        font_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"
+        )
+        self._credit_text = pygame.font.Font(font_path, 30).render(
+            "By PGM.", True, (190, 200, 220)
+        )
 
     def _draw_background(self, image=False):
         self.surface.fill(MAIN_SCREEN_BACKGROUND_COLOR)
-        if image and self.background is not None:
-            background = pygame.transform.smoothscale(
-                self.background, (self.screen_width, self.screen_height)
-            )
-            self.surface.blit(background, (0, 0))
+        if image and self._background_scaled is not None:
+            self.surface.blit(self._background_scaled, (0, 0))
 
     def _center_rect(self, image_name, center_y):
         image = self.titles[image_name]
@@ -35,16 +43,19 @@ class MainScreenRenderer:
             weapon_text = self.font.render(f"무기: {weapon_name}  [1~6 선택]", True, (220, 235, 255))
             self.surface.blit(weapon_text, weapon_text.get_rect(center=(270, 820)))
         if weapon_image is not None:
-            preview = pygame.transform.smoothscale(weapon_image, (240, 120))
+            cache_key = id(weapon_image)
+            preview = self._weapon_previews.get(cache_key)
+            if preview is None:
+                preview = pygame.transform.smoothscale(weapon_image, (240, 120))
+                self._weapon_previews[cache_key] = preview
             preview_rect = preview.get_rect(center=(270, 680))
             pygame.draw.rect(self.surface, (20, 28, 46), preview_rect.inflate(34, 24), border_radius=10)
             pygame.draw.rect(self.surface, (255, 220, 120), preview_rect.inflate(34, 24), 2, border_radius=10)
             self.surface.blit(preview, preview_rect)
-        credit_font =  pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__)
-        ),"Font","HeirofLightRegular.ttf"
-            ), 30)
-        credit = credit_font.render("By PGM.", True, (190, 200, 220))
-        self.surface.blit(credit, credit.get_rect(center=(self.screen_width // 2, self.screen_height - 24)))
+        self.surface.blit(
+            self._credit_text,
+            self._credit_text.get_rect(center=(self.screen_width // 2, self.screen_height - 24)),
+        )
         name_button = pygame.Rect(self.screen_width - 300, 35, 250, 64)
         pygame.draw.rect(self.surface, (20, 30, 48), name_button, border_radius=8)
         pygame.draw.rect(self.surface, (255, 220, 120), name_button, 2, border_radius=8)

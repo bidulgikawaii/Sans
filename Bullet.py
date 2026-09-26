@@ -2,12 +2,34 @@ import pygame
 import math
 import os
 import time
+from functools import lru_cache
 from Config import (
     BULLET_IMAGE_FILE,
     DEFAULT_BULLET_DAMAGE,
     DEFAULT_BULLET_SIZE,
     DEFAULT_WEAPON_ID,
 )
+
+
+_BULLET_IMAGE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "Image", BULLET_IMAGE_FILE
+)
+
+
+@lru_cache(maxsize=16)
+def _get_bullet_surface(size):
+    """재사용 가능한 크기별 총알 이미지를 한 번만 생성합니다."""
+    source = _get_bullet_image()
+    image_width = max(8, size * 4)
+    image_height = max(1, round(source.get_height() * image_width / source.get_width()))
+    surface = pygame.transform.smoothscale(source, (image_width, image_height))
+    surface.fill((255, 255, 255, 255), special_flags=pygame.BLEND_RGBA_MULT)
+    return surface
+
+
+@lru_cache(maxsize=1)
+def _get_bullet_image():
+    return pygame.image.load(_BULLET_IMAGE_PATH).convert_alpha()
 
 class Bullet:
     def __init__(
@@ -18,19 +40,7 @@ class Bullet:
         weapon_id=DEFAULT_WEAPON_ID,
         stun_ms=0,
     ):
-        image_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "Image",
-            BULLET_IMAGE_FILE,
-        )
-        bullet_image = pygame.image.load(image_path).convert_alpha()
-        image_width = max(8, size * 4)
-        image_height = max(1, round(bullet_image.get_height() * image_width / bullet_image.get_width()))
-        self.surface = pygame.transform.smoothscale(
-            bullet_image,
-            (image_width, image_height),
-        )
-        self.surface.fill((255, 255, 255, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        self.surface = _get_bullet_surface(size)
         
         # 좌표 및 속도 초기화
         self.x = 0

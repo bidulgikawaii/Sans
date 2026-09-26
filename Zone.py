@@ -10,6 +10,8 @@ class MagneticZone:
         self.world_height = map_height_tiles * tile_size
         self.center = pygame.Vector2(self.world_width / 2, self.world_height / 2)
         self.stages = ((60_000, 0.72), (110_000, 0.42), (180_000, MAGNETIC_ZONE_FINAL_RATIO))
+        self._overlay = None
+        self._overlay_size = None
 
     def bounds_at(self, elapsed_ms):
         elapsed_ms = max(0, elapsed_ms)
@@ -55,7 +57,10 @@ class MagneticZone:
             max(1, round(safe_rect.width * zoom)),
             max(1, round(safe_rect.height * zoom)),
         )
-        overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        if self._overlay_size != surface.get_size():
+            self._overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            self._overlay_size = surface.get_size()
+        overlay = self._overlay
         overlay.fill((190, 20, 35, 92))
         pygame.draw.rect(overlay, (0, 0, 0, 0), screen_rect)
         surface.blit(overlay, (0, 0))

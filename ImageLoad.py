@@ -1,161 +1,136 @@
-import os
+"""게임에서 사용하는 이미지와 애니메이션 프레임을 한 번 로드합니다."""
+
 import re
-import pygame
-from Config import MAIN_SCREEN_IMAGE_SIZES, PISTOL_IMAGE_SIZE, SKILL_ICON_SIZE
 from pathlib import Path
 
-class Imageload():
+import pygame
+
+from Config import MAIN_SCREEN_IMAGE_SIZES, PISTOL_IMAGE_SIZE, SKILL_ICON_SIZE
+
+
+SKILL_ICON_FILES = {
+    "폭탄받아라!": "Bomb.png",
+    "매의 눈": "egle_Eyes.png",
+    "보호막": "ProtectShield.png",
+    "은신": "Invis.png",
+    "텔포": "Tp.png",
+    "기절탄": "Stun_Icon.png",
+    "부활의 차": "Retry.png",
+    "와드": "Ward.png",
+}
+
+
+class Imageload:
+    """Pygame Surface 자산을 캐시해 기존 getter 인터페이스로 제공합니다."""
+
+    _WEAPON_IMAGE_ATTRIBUTES = {
+        "pistol": "Pistol",
+        "rifle": "Gigwan",
+        "smg": "Gigwan",
+        "sniper": "Sniper",
+        "shotgun": "ShotGun",
+    }
+
     def __init__(self):
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.player_path = os.path.join(current_dir, "Image", "PlayerPng.png")
-        self.backGround = os.path.join(current_dir, "Image", "Back")
-        self.BackG = self._load_image_file(os.path.join(current_dir, "Image", "BackG.png"))
-        self.ShotGun_Path = os.path.join(current_dir, "Image", "ShotGun_3.png")
-        self.Pistol = self._load_image("pistol_idle_transparent.png")
-        if self.Pistol:
-            self.Pistol = pygame.transform.smoothscale(self.Pistol, PISTOL_IMAGE_SIZE)
+        # convert_alpha()를 쓰므로 Pygame 디스플레이 초기화 이후 생성해야 합니다.
+        self.root = Path(__file__).resolve().parent / "Image"
+        self.player_path = self.root / "PlayerPng.png"
+        self.backGround = str(self.root / "Back")  # 기존 속성명과 자료형 유지
+        self.BackG = self._load_image_file(self.root / "BackG.png")
+
+        self.Pistol = self._load_scaled_image("pistol_idle_transparent.png", PISTOL_IMAGE_SIZE)
         self.PistolFire = self._load_scaled_image("pistol_fire_transparent.png", PISTOL_IMAGE_SIZE)
         self.PistolSmoke = self._load_scaled_image("pistol_smoke_transparent.png", PISTOL_IMAGE_SIZE)
         self.Gigwan = self._load_scaled_image("Gigwan.png", (128, 64))
         self.HBlade = self._load_animation("H_blade")
         self.Expo = self._load_animation("Expo", (128, 128))
         self.Sniper = self._load_scaled_image("Sniper.png", (192, 64))
-        
-        # 1. 반복문 안에서 불러오기 -> 크기 조절 -> 최적화를 한 번에 처리
-        shotgun_image = pygame.image.load(self.ShotGun_Path).convert_alpha()
-        self.ShotGun = [pygame.transform.smoothscale(shotgun_image, (128, 64))]
+        shotgun = self._load_scaled_image("ShotGun_3.png", (128, 64))
+        self.ShotGun = [shotgun] if shotgun is not None else []
 
-        self.Tile = pygame.image.load(os.path.join(current_dir, "Image", "Tile.png")).convert_alpha()
-        self.Tile = pygame.transform.scale(self.Tile, (64, 64))
-        
-        self.Player = pygame.image.load(self.player_path).convert_alpha()
-        self.Player = pygame.transform.scale(self.Player, (72, 72))
-
-        # HP 게이지 바깥 프레임 이미지
-        self.HpBar = pygame.image.load(
-            os.path.join(current_dir, "Image", "HpBar.png")
-        ).convert_alpha()
-
-        self.SkillWindow = pygame.image.load(os.path.join(current_dir,"Image","SkillWindow.png")).convert_alpha()
-        self.QuickSlot = pygame.image.load(os.path.join(current_dir, "Image", "QuickSlot.png")).convert_alpha()
-        self.TanChang = pygame.image.load(
-            os.path.join(current_dir, "Image", "Tanchang.png")
-        ).convert_alpha()
+        self.Tile = self._load_scaled_image("Tile.png", (64, 64))
+        self.Player = self._load_scaled_image("PlayerPng.png", (72, 72))
+        self.HpBar = self._load_image_file(self.root / "HpBar.png")
+        self.SkillWindow = self._load_image_file(self.root / "SkillWindow.png")
+        self.QuickSlot = self._load_image_file(self.root / "QuickSlot.png")
+        self.TanChang = self._load_image_file(self.root / "Tanchang.png")
         self.TpStatue = self._load_scaled_image("TpStatue.png", (64, 96))
 
-        self.TitleImages = []
-        
-        
-        # 1. Pygame 초기화
-    
-
-        # 2. 이미지가 저장된 폴더 설정
-        image_dir = Path(current_dir) / "Image" / "MainScreen"
-
-        # 3. 이미지들을 담을 딕셔너리 생성
-        self.TitleImages = {}
-
-        # 4. 지원할 이미지 확장자 정의
-        valid_extensions = {".png"}
-
-        # rglob("*")을 사용하면 하위 폴더의 모든 파일까지 탐색합니다.
-        for file_path in image_dir.rglob("*"):
-            # 파일의 확장자가 이미지 형식인지 확인
-            if file_path.suffix.lower() in valid_extensions:
-                # 파일 이름(확장자 제외)을 키(Key)로 사용하여 Pygame 이미지 로드
-                # 예: images/player.png -> 'player'
-                image = pygame.image.load(str(file_path)).convert_alpha()
-                image_size = MAIN_SCREEN_IMAGE_SIZES.get(file_path.stem)
-                if image_size:
-                    image = pygame.transform.smoothscale(image, image_size)
-                self.TitleImages[file_path.stem] = image
+        self.TitleImages = self._load_title_images()
         if self.BackG is not None:
             self.TitleImages["BackG"] = self.BackG
-        # [확인용] 로드된 이미지 목록 출
-        
-        # ===== 스킬 아이콘 이미지 로드 =====
-        self.skill_icons = {}
-        skill_names = ["폭탄받아라!", "매의 눈", "보호막", "은신", "텔포", "기절탄", "부활의 차", "와드"]
-        skill_files = [
-            "Bomb.png", "egle_Eyes.png", "ProtectShield.png", "Invis.png", "Tp.png", "Stun_Icon.png", "Retry.png", "Ward.png",
-        ]
+        self.skill_icons = {
+            name: self._load_scaled_image(filename, (SKILL_ICON_SIZE, SKILL_ICON_SIZE))
+            for name, filename in SKILL_ICON_FILES.items()
+        }
+        self.Protect = self._load_image_file(self.root / "Protect.png")
 
-
-
-        
-        for skill_name, skill_file in zip(skill_names, skill_files):
-            try:
-                icon_path = os.path.join(current_dir, "Image", skill_file)
-                if os.path.exists(icon_path):
-                    icon = pygame.image.load(icon_path).convert_alpha()
-                    icon = pygame.transform.scale(icon, (SKILL_ICON_SIZE, SKILL_ICON_SIZE))
-                    self.skill_icons[skill_name] = icon
-            except Exception:
-                self.skill_icons[skill_name] = None
-        
-        # 보호막 스킬 시각화용 이미지
-        try:
-            protect_path = os.path.join(current_dir, "Image", "Protect.png")
-            if os.path.exists(protect_path):
-                self.Protect = pygame.image.load(protect_path).convert_alpha()
-            else:
-                self.Protect = None
-        except Exception:
-            self.Protect = None
-
-    def _load_image(self, filename):
-        path = os.path.join(os.path.dirname(self.player_path), filename)
-        if not os.path.exists(path):
+    @staticmethod
+    def _load_image_file(path):
+        """파일이 있으면 투명도를 보존해 로드하고, 없으면 None을 반환합니다."""
+        path = Path(path)
+        if not path.is_file():
             return None
-        return pygame.transform.smoothscale(pygame.image.load(path).convert_alpha(), (64, 64))
-
-    def _load_image_file(self, path):
-        if not os.path.exists(path):
-            return None
-        return pygame.image.load(path).convert_alpha()
+        return pygame.image.load(str(path)).convert_alpha()
 
     def _load_scaled_image(self, filename, size):
-        path = os.path.join(os.path.dirname(self.player_path), filename)
-        if not os.path.exists(path):
+        image = self._load_image_file(self.root / filename)
+        if image is None:
             return None
-        return pygame.transform.smoothscale(pygame.image.load(path).convert_alpha(), size)
-    
-    def _load_animation(self, prefix, target_size=None):
-        image_dir = os.path.dirname(self.player_path)
-        filenames = [
-            filename for filename in os.listdir(image_dir)
-            if filename.lower().startswith(prefix.lower()) and filename.lower().endswith(".png")
-        ]
-        filenames.sort(
-            key=lambda filename: (
-                int(match.group(1)) if (match := re.search(r"\((\d+)\)", filename)) else -1
-            )
-        )
-        frames = []
-        for filename in filenames:
-            image = pygame.image.load(os.path.join(image_dir, filename)).convert_alpha()
-            if target_size:
-                image = pygame.transform.smoothscale(image, target_size)
-            frames.append(image)
-        return frames 
+        return pygame.transform.smoothscale(image, size)
 
+    def _load_animation(self, prefix, target_size=None):
+        """파일 이름의 괄호 숫자 순서대로 프레임을 로드합니다."""
+        paths = [
+            path for path in self.root.iterdir()
+            if path.is_file() and path.suffix.lower() == ".png"
+            and path.name.lower().startswith(prefix.lower())
+        ]
+
+        def frame_number(path):
+            match = re.search(r"\((\d+)\)", path.name)
+            return int(match.group(1)) if match else -1
+
+        frames = []
+        for path in sorted(paths, key=frame_number):
+            image = self._load_image_file(path)
+            if image is not None:
+                if target_size is not None:
+                    image = pygame.transform.smoothscale(image, target_size)
+                frames.append(image)
+        return frames
+
+    def _load_title_images(self):
+        image_dir = self.root / "MainScreen"
+        images = {}
+        if not image_dir.is_dir():
+            return images
+        # 화면에서 쓰는 파일만 한 번 순회해 읽고, 크기 지정이 있는 자산만 축소합니다.
+        for path in image_dir.iterdir():
+            if not path.is_file() or path.suffix.lower() != ".png":
+                continue
+            image = self._load_image_file(path)
+            if image is None:
+                continue
+            size = MAIN_SCREEN_IMAGE_SIZES.get(path.stem)
+            images[path.stem] = pygame.transform.smoothscale(image, size) if size else image
+        return images
 
     def GetTitles(self):
         return self.TitleImages
 
     def GetTitiles(self):
-        """기존 호출부 호환을 위한 오탈자 메서드 별칭입니다."""
+        """기존 호출부의 오탈자 메서드를 호환용 별칭으로 유지합니다."""
         return self.GetTitles()
-    # 2. 이미 크기가 줄어든 상태이므로 원본을 바로 리턴하면 됩니다.
+
     def GetShotGun(self, index=0):
-        # index 인자를 주면 ShotGun[0]뿐만 아니라 다른 프레임(1~7)도 가져올 수 있어 확장성에 좋습니다.
         return self.ShotGun[index]
 
     def GetGigwan(self):
         return self.Gigwan
 
     def GetPlayer(self):
-        return self.Player  
+        return self.Player
 
     def GetPistol(self):
         return self.Pistol
@@ -170,26 +145,23 @@ class Imageload():
         return self.Sniper
 
     def GetWeaponImage(self, weapon_id):
-        return {
-            "pistol": self.GetPistol(),
-            "rifle": self.GetGigwan(),
-            "smg": self.GetGigwan(),
-            "sniper": self.GetSniper(),
-            "shotgun": self.GetShotGun(),
-        }.get(weapon_id, self.GetShotGun())
+        attribute = self._WEAPON_IMAGE_ATTRIBUTES.get(weapon_id, "ShotGun")
+        image = getattr(self, attribute)
+        if attribute == "ShotGun":
+            return image[0] if image else None
+        return image
 
     def GetBladeFrames(self):
         return self.HBlade
 
     def GetExplosionFrames(self):
         return self.Expo
+
     def GetTileTest(self):
         return self.Tile
-    
+
     def GetSkillIcon(self, skill_name):
-        """스킬 아이콘 이미지 반환. 없으면 None"""
-        return self.skill_icons.get(skill_name, None)
-    
+        return self.skill_icons.get(skill_name)
+
     def GetProtectImage(self):
-        """보호막 스킬 시각화 이미지 반환"""
         return self.Protect

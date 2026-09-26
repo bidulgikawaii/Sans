@@ -1,6 +1,16 @@
 import math
 import os
+from functools import lru_cache
 import pygame
+
+
+@lru_cache(maxsize=8)
+def _get_font(path, size):
+    """경고 표시용 폰트를 프레임마다 다시 만들지 않도록 캐시합니다."""
+    return pygame.font.Font(path, size)
+
+
+_scaled_panels = {}
 
 
 def draw_visibility_geometry(surface, geometry, camera_x, camera_y, zoom):
@@ -151,7 +161,11 @@ def draw_ammo_status(
         (255, 180, 120) if weapon_state.is_reloading_now() else (255, 255, 255),
     )
     reserve_text = font.render(f"예비 탄약 {weapon_state.reserve_ammo}", True, (190, 220, 255))
-    panel = pygame.transform.smoothscale(panel_image, panel_size)
+    panel_key = (id(panel_image), panel_size)
+    panel = _scaled_panels.get(panel_key)
+    if panel is None:
+        panel = pygame.transform.smoothscale(panel_image, panel_size)
+        _scaled_panels[panel_key] = panel
     panel_x = screen_width - panel_size[0] - panel_margin[0]
     panel_y = screen_height - panel_size[1] - panel_margin[1]
     surface.blit(panel, (panel_x, panel_y))
@@ -211,8 +225,10 @@ def draw_supply_drop(surface, supply, camera_x, camera_y, zoom, colors, now):
         pulse = 22 + round(8 * math.sin(now * 0.012))
         pygame.draw.circle(surface, (255, 230, 120), (x, y), max(18, round(pulse * zoom)), 3)
         pygame.draw.line(surface, (255, 240, 150), (x, max(0, y - round(150 * zoom))), (x, y), 2)
-        label = pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__)
-        ),"Font","HeirofLightRegular.ttf"), 26).render("보급품 낙하", True, (255, 240, 150))
+        font_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"
+        )
+        label = _get_font(font_path, 26).render("보급품 낙하", True, (255, 240, 150))
         surface.blit(label, label.get_rect(center=(x, max(18, y - round(165 * zoom)))))
     box = pygame.Rect(0, 0, max(22, round(36 * zoom)), max(18, round(28 * zoom)))
     box.center = (x, y)

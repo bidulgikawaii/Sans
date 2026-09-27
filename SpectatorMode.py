@@ -1,12 +1,18 @@
 import pickle
 
 import pygame
+from Bullet import Bullet
+from Config import BULLET_TARGET_DISTANCE, DEFAULT_WEAPON_ID
+from Weapon import WEAPONS
 
 
 _scaled_cache = {}
 _rotated_cache = {}
 _label_cache = {}
 _shade_cache = {}
+_shadow_cache = {}
+_spectator_bullets = []
+_processed_bullet_event_ids = set()
 
 
 def _cached_scale(image, size):
@@ -70,6 +76,39 @@ def draw_world(
 ):
     camera_x, camera_y = camera
     tile_generator.draw(surface, camera_x, camera_y, zoom)
+    for player_info in players.values():
+        for bullet_info in player_info.get("bullets", []):
+            event_id = bullet_info.get("event_id")
+            if event_id is None or event_id in _processed_bullet_event_ids:
+                continue
+            _processed_bullet_event_ids.add(event_id)
+            weapon_id = bullet_info.get("weapon_id", DEFAULT_WEAPON_ID)
+            config = WEAPONS.get(weapon_id, WEAPONS[DEFAULT_WEAPON_ID])
+            bullet = Bullet(
+                config.bullet_size,
+                damage=config.damage,
+                owner_id=bullet_info.get("owner_id"),
+                weapon_id=weapon_id,
+                stun_ms=bullet_info.get("stun_ms", 0),
+            )
+            angle = bullet_info.get("angle", 0.0)
+            radians = pygame.math.Vector2(1, 0).rotate(angle)
+            bullet.launch(
+                bullet_info["x"],
+                bullet_info["y"],
+                bullet_info["x"] + radians.x * BULLET_TARGET_DISTANCE,
+                bullet_info["y"] + radians.y * BULLET_TARGET_DISTANCE,
+                speed=config.bullet_speed,
+                hold_ms=bullet_info.get("hold_ms", 0),
+            )
+            bullet.life_time = config.bullet_lifetime
+            _spectator_bullets.append(bullet)
+    for bullet in _spectator_bullets:
+        bullet.update()
+        bullet.draw(surface, camera_x, camera_y, zoom, force_visible=True)
+    _spectator_bullets[:] = [bullet for bullet in _spectator_bullets if bullet.is_active]
+    if len(_processed_bullet_event_ids) > 2048:
+        _processed_bullet_event_ids.clear()
     shade = _shade_cache.get(surface.get_size())
     if shade is None:
         shade = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
@@ -90,12 +129,13 @@ def draw_world(
         foot_y = round(screen_y + image_size[1] * 0.88)
         shadow_width = max(12, round(image_size[0] * 0.75))
         shadow_height = max(4, round(image_size[1] * 0.18))
-        pygame.draw.ellipse(
-            surface,
-            (55, 55, 65),
-            (center_x - shadow_width // 2, foot_y - shadow_height // 2,
-             shadow_width, shadow_height),
-        )
+        shadow_size = (shadow_width, shadow_height)
+        shadow = _shadow_cache.get(shadow_size)
+        if shadow is None:
+            shadow = pygame.Surface(shadow_size, pygame.SRCALPHA)
+            pygame.draw.ellipse(shadow, (45, 50, 55, 38), shadow.get_rect())
+            _shadow_cache[shadow_size] = shadow
+        surface.blit(shadow, (center_x - shadow_width // 2, foot_y - shadow_height // 2))
         surface.blit(player_image, (screen_x, screen_y))
         if str(player_id) == str(tracked_id):
             pygame.draw.circle(

@@ -18,6 +18,8 @@ SKILL_ICON_FILES = {
     "부활의 차": "Retry.png",
     "와드": "Ward.png",
 }
+PLAYER_FRAME_SIZE = (72, 72)
+PLAYER_VISIBLE_SIZE = (44, 64)
 
 
 class Imageload:
@@ -49,11 +51,11 @@ class Imageload:
         self.ShotGun = [shotgun] if shotgun is not None else []
 
         self.Tile = self._load_scaled_image("Tile.png", (64, 64))
-        self.Player = self._load_scaled_image("Player.png", (72, 72))
+        self.Player = self._load_player_frame("Player.png")
         self.PlayerWalk = [
             frame for frame in (
-                self._load_scaled_image("PlayerWalk (1).png", (72, 72)),
-                self._load_scaled_image("PlayerWalk (2).png", (72, 72)),
+                self._load_player_frame("PlayerWalk (1).png"),
+                self._load_player_frame("PlayerWalk (2).png"),
             )
             if frame is not None
         ]
@@ -70,6 +72,7 @@ class Imageload:
             for name, filename in SKILL_ICON_FILES.items()
         }
         self.Protect = self._load_image_file(self.root / "Protect.png")
+        self.GrassTile = self._load_scaled_image("GrassTile.png", (64, 64))
 
     @staticmethod
     def _load_image_file(path):
@@ -84,6 +87,19 @@ class Imageload:
         if image is None:
             return None
         return pygame.transform.smoothscale(image, size)
+
+    def _load_player_frame(self, filename):
+        image = self._load_image_file(self.root / filename)
+        if image is None:
+            return None
+        visible_rect = image.get_bounding_rect(min_alpha=8)
+        if visible_rect.width <= 0 or visible_rect.height <= 0:
+            return None
+        visible_image = image.subsurface(visible_rect).copy()
+        visible_image = pygame.transform.smoothscale(visible_image, PLAYER_VISIBLE_SIZE)
+        frame = pygame.Surface(PLAYER_FRAME_SIZE, pygame.SRCALPHA)
+        frame.blit(visible_image, visible_image.get_rect(center=frame.get_rect().center))
+        return frame
 
     def _load_animation(self, prefix, target_size=None):
         """파일 이름의 괄호 숫자 순서대로 프레임을 로드합니다."""
@@ -174,3 +190,6 @@ class Imageload:
 
     def GetProtectImage(self):
         return self.Protect
+
+    def GetGrassTile(self):
+        return self.GrassTile

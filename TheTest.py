@@ -61,6 +61,8 @@ BannerFont = pygame.font.Font(
 )
 RuneAlertFont = pygame.font.Font(None, 24)
 _scaled_surface_cache = {}
+HEAL_INVENTORY_PANEL_RECT = pygame.Rect(30, 220, 330, 112)
+HEAL_ITEM_RECT = pygame.Rect(42, 236, 68, 68)
 
 
 def _scale_cached(image, size, smooth=True):
@@ -417,15 +419,14 @@ def apply_supply_reward(reward_type):
     """회복, 이동 속도, 보호막, 스킬 중 보급품 효과를 적용합니다."""
     # 보급품은 서버에 아이템 자체를 동기화하지 않고,
     # 획득한 클라이언트의 플레이어 상태에만 효과를 적용합니다.
-    global send_data, heal_token, pending_heal_amount, haste_until, shield_until
+    global healing_item_count, haste_until, shield_until
     center_x, center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
     available = [name for name in SKILL_BOOK if name not in owned_skills]
     if reward_type == "heal":
-        heal_token += 1
-        pending_heal_amount += SUPPLY_HEAL_AMOUNT
-        message = f"보급품 획득: 체력을 {SUPPLY_HEAL_AMOUNT} 회복합니다."
+        healing_item_count += 1
+        message = f"회복 아이템 획득: 보유 {healing_item_count}개"
         color = (100, 255, 130)
     elif reward_type == "haste":
         haste_until = max(haste_until, pygame.time.get_ticks()) + SUPPLY_BUFF_DURATION_MS
@@ -445,6 +446,39 @@ def apply_supply_reward(reward_type):
         color = (200, 200, 220)
     particles.emit(center_x, center_y, color, count=24, speed=80, lifetime=600, size=6)
     return message
+
+
+def use_healing_item():
+    global healing_item_count, heal_token, pending_heal_amount, system_message
+    if healing_item_count <= 0:
+        system_message = "보유한 회복 아이템이 없습니다."
+        return
+    missing_health = my_player.MaxHp - my_player.Hp - pending_heal_amount
+    if missing_health <= 0:
+        system_message = "회복 대기량을 포함하면 체력이 가득 찹니다."
+        return
+    heal_amount = min(SUPPLY_HEAL_AMOUNT, missing_health)
+    healing_item_count -= 1
+    heal_token += 1
+    pending_heal_amount += heal_amount
+    system_message = f"회복 아이템 사용: 체력 {heal_amount} 회복"
+
+
+def draw_healing_inventory(surface):
+    if not healing_inventory_open:
+        return
+    pygame.draw.rect(surface, (20, 28, 32), HEAL_INVENTORY_PANEL_RECT, border_radius=4)
+    pygame.draw.rect(surface, (100, 220, 145), HEAL_INVENTORY_PANEL_RECT, 2, border_radius=4)
+    pygame.draw.rect(surface, (42, 62, 48), HEAL_ITEM_RECT, border_radius=4)
+    pygame.draw.rect(surface, (130, 235, 155), HEAL_ITEM_RECT, 2, border_radius=4)
+    pygame.draw.rect(surface, (225, 245, 225), (HEAL_ITEM_RECT.x + 28, HEAL_ITEM_RECT.y + 12, 12, 44))
+    pygame.draw.rect(surface, (225, 245, 225), (HEAL_ITEM_RECT.x + 12, HEAL_ITEM_RECT.y + 28, 44, 12))
+    title = GuiFont.render("회복 아이템", True, (225, 245, 225))
+    count = GuiFont.render(f"x {healing_item_count}", True, (150, 255, 170))
+    hint = GuiFont.render("클릭 또는 H 사용", True, (190, 205, 195))
+    surface.blit(title, (HEAL_ITEM_RECT.right + 12, HEAL_ITEM_RECT.y - 2))
+    surface.blit(count, (HEAL_ITEM_RECT.right + 12, HEAL_ITEM_RECT.y + 28))
+    surface.blit(hint, (HEAL_ITEM_RECT.right + 12, HEAL_ITEM_RECT.y + 54))
 
 
 def collect_treasure(tile_position):
@@ -510,6 +544,8 @@ vision_shapes = (VISION_CIRCLE, VISION_CONE, VISION_RECTANGLE, VISION_LINE)
 vision_shape_index = 0
 
 inventory_open = False
+healing_inventory_open = False
+healing_item_count = 0
 weapon_state = WeaponState()
 vision_shape_override = None
 
@@ -525,7 +561,8 @@ def reset_match_state():
     global camera_fov, camera_zoom
     global Weapon_Angle, Weapon_Pos, screen_shake, knife_attack_until
     global weapon_fire_until, weapon_smoke_until
-    global vision_shape_override, vision_shape_index, inventory_open, mouse_fire_hold
+    global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
+    global healing_item_count, mouse_fire_hold
     global spectator_players, spectator_target_id, last_spectator_poll_at
     global match_spawn_index
     for collection in (
@@ -547,6 +584,7 @@ def reset_match_state():
         slot.assigned_skill = None
     refresh_skill_inventory()
     revive_token = heal_token = pending_heal_amount = 0
+    healing_item_count = 0
     vision_skill_until = shield_until = haste_until = stealth_until = 0
     stealth_token = 0
     teleport_anchor = None
@@ -572,6 +610,7 @@ def reset_match_state():
     vision_shape_index = 0
     vision_shape_override = None
     inventory_open = False
+    healing_inventory_open = False
     mouse_fire_hold = False
     visibility_polygon_cache.clear()
     my_player.Hp = my_player.MaxHp
@@ -1096,7 +1135,10 @@ def activate_quick_slot(key):
             my_player._update_hitboxes()
             particles.emit(old_x, old_y, (180, 255, 180), count=24, speed=80, lifetime=600, size=5)
             particles.emit(teleport_anchor[0], teleport_anchor[1], (180, 255, 180), count=30, speed=90, lifetime=700, size=6)
-            system_message = "텔레포트로 이동했습니다. 5초 후 석상이 사라집니다."
+            teleport_anchor = None
+            teleport_anchor_expires_at = 0
+            skill_cooldowns["텔포"] = now + TELEPORT_COOLDOWN_MS
+            system_message = "텔레포트했습니다. 15초 후 다시 사용할 수 있습니다."
 
 def select_weapon(weapon_id):
     global system_message, vision_shape_override, main_weapon_id
@@ -1166,7 +1208,7 @@ def remove_ward_at_cursor():
 
 def handle_key_event(event, _mouse_pos):
     global inventory_open, debug_mode, system_message, show_hitboxes
-    global ScreenState, local_match
+    global ScreenState, local_match, healing_inventory_open
     weapon_id = None
     if event.key == pygame.K_1:
         weapon_id = main_weapon_id
@@ -1196,6 +1238,13 @@ def handle_key_event(event, _mouse_pos):
         system_message = f"히트박스 표시: {'켜짐' if show_hitboxes else '꺼짐'}"
         return
 
+    if event.key == pygame.K_b:
+        healing_inventory_open = not healing_inventory_open
+        if healing_inventory_open:
+            inventory_open = False
+            clear_selected_skill()
+        return
+
     slot_key_names = {
         pygame.K_q: "Q",
         pygame.K_e: "E",
@@ -1213,6 +1262,7 @@ def handle_key_event(event, _mouse_pos):
     key_actions = {
         pygame.K_ESCAPE: lambda _key: leave_game_to_main(),
         pygame.K_i: lambda _key: toggle_inventory(),
+        pygame.K_h: lambda _key: use_healing_item(),
         pygame.K_v: lambda _key: cycle_vision_shape(),
         pygame.K_q: lambda _key: activate_quick_slot(_key),
         pygame.K_e: lambda _key: activate_quick_slot(_key),
@@ -1237,9 +1287,11 @@ def leave_game_to_main():
 
 
 def toggle_inventory():
-    global inventory_open
+    global inventory_open, healing_inventory_open
     inventory_open = not inventory_open
-    if not inventory_open:
+    if inventory_open:
+        healing_inventory_open = False
+    else:
         clear_selected_skill()
 
 
@@ -1471,6 +1523,9 @@ def handle_mouse_down(event, mouse_pos):
             system_message = f"[{skill_name}] 선택됨. Q, E 또는 T를 눌러 슬롯을 지정하세요."
         else:
             system_message = "보유 스킬 아이콘을 선택하세요."
+        return
+    if healing_inventory_open and HEAL_ITEM_RECT.collidepoint(mouse_pos):
+        use_healing_item()
         return
     mouse_fire_hold = weapon_state.config.automatic
     fire_bullet()
@@ -1749,6 +1804,17 @@ def GameView():
                         "started_at": now,
                         "lifetime": DAMAGE_TEXT_LIFETIME_MS,
                     })
+                if int(target_id) == my_id:
+                    screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 7)
+                    particles.emit(
+                        my_player.rect.centerx,
+                        my_player.rect.centery,
+                        (255, 75, 75),
+                        count=16,
+                        speed=100,
+                        lifetime=420,
+                        size=5,
+                    )
             synchronized_treasures = {
                 tuple(treasure) for treasure in event_snapshot.get("destroyed_treasures", [])
             }
@@ -2551,6 +2617,7 @@ def GameView():
     # --- [퀵슬롯 배경과 스킬 소스창] ---
     draw_skill_panel(display)
     hovered_skill = draw_skill_inventory(display, MousePos, inventory_open)
+    draw_healing_inventory(display)
 
     # 하단 퀵슬롯 (�익슬롯은 항상 보임)
     for slot in quick_slots:

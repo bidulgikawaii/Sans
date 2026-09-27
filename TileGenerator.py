@@ -69,8 +69,7 @@ class TileGenerator:
         # -------------------------------------
         # 0: 기본 바닥 (부드러운 잔디/흙 느낌의 연녹색)
         # -------------------------------------
-        floor = pygame.Surface((self.tile_size, self.tile_size))
-        floor.fill((140, 180, 130)) # [커스텀 가능] 바닥 기본 색상
+        floor = self.IML.GetGrassTile()
         self.tile_images[0] = floor
 
         # -------------------------------------

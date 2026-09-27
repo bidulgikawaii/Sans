@@ -49,6 +49,8 @@ next_kill_event_id = 1
 damage_events = []
 spectator_ids = set()
 next_damage_event_id = 1
+completed_match_winner_id = None
+result_pending_player_ids = set()
 player_count = 0
 next_player_id = 1
 lobby = LobbyState()
@@ -71,6 +73,7 @@ def get_next_player_id():
 
 def handle_client(conn, player_id):
     global next_bullet_event_id, next_damage_event_id, next_kill_event_id
+    global completed_match_winner_id, result_pending_player_ids
     with player_lock:
         # 접속 전에 발생한 총알은 새 플레이어에게 전달하지 않습니다.
         last_sent_bullet_event_id = next_bullet_event_id - 1
@@ -136,8 +139,15 @@ def handle_client(conn, player_id):
                         for active_id in active_ids
                         if active_id in players
                     }
+                    pending_bullets = [
+                        bullet for bullet in bullet_events
+                        if bullet["event_id"] > last_sent_bullet_event_id
+                    ]
+                    if pending_bullets:
+                        last_sent_bullet_event_id = pending_bullets[-1]["event_id"]
                     for player in spectator_snapshot.values():
                         player["kill_events"] = list(kill_events[-12:])
+                        player["bullets"] = list(pending_bullets)
                 conn.sendall(pickle.dumps(spectator_snapshot))
                 continue
 
@@ -390,16 +400,16 @@ def handle_client(conn, player_id):
                     and players[active_id]["hp"] <= 0
                     and players[active_id].get("revive_armed", False)
                 ]
-                winner_id = (
-                    alive_ids[0]
-                    if (
+                winner_id = completed_match_winner_id
+                if winner_id is None and (
                         lobby.started
                         and len(match_player_ids) >= NORMAL_MATCH_MIN_PLAYERS
                         and len(alive_ids) == 1
                         and not revive_waiting_ids
-                    )
-                    else None
-                )
+                ):
+                    winner_id = alive_ids[0]
+                    completed_match_winner_id = winner_id
+                    result_pending_player_ids = set(match_player_ids) & players.keys()
             # 네트워크 직렬화 전 복사본을 만들되, pickle 왕복은 피합니다.
             snapshot = copy.deepcopy(active_players)
             pending_bullets = [
@@ -419,11 +429,7 @@ def handle_client(conn, player_id):
                     (alert[0], alert[1], max(0, round((alert[2] - now_monotonic) * 1000)))
                     for alert in rune_alerts
                 ]
-                player["winner_id"] = (
-                    winner_id
-                    if winner_id is not None and int(snapshot_player_id) == int(winner_id)
-                    else None
-                )
+                player["winner_id"] = winner_id
                 player["zone_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
                 player["kill_events"] = list(kill_events[-12:])
                 player["damage_events"] = list(damage_events[-32:])
@@ -433,16 +439,18 @@ def handle_client(conn, player_id):
                 player["hidden"] = player.get("hp", 0) <= 0
             conn.sendall(pickle.dumps(snapshot))
             if winner_id is not None:
-                # 승리 결과를 전송한 뒤 이전 경기의 참가/수집 상태를 정리합니다.
                 with player_lock:
-                    lobby.finish_match()
-                    spectator_ids.clear()
-                    destroyed_treasures.clear()
-                    destroyed_furniture.clear()
-                    bullet_events.clear()
-                    rune_alerts.clear()
-                    kill_events.clear()
-                    damage_events.clear()
+                    result_pending_player_ids.discard(player_id)
+                    if not result_pending_player_ids:
+                        lobby.finish_match()
+                        completed_match_winner_id = None
+                        spectator_ids.clear()
+                        destroyed_treasures.clear()
+                        destroyed_furniture.clear()
+                        bullet_events.clear()
+                        rune_alerts.clear()
+                        kill_events.clear()
+                        damage_events.clear()
     except Exception as e:
         print(f"[네트워크 오류] 플레이어 {player_id}번: {e}")
     finally:
@@ -452,6 +460,16 @@ def handle_client(conn, player_id):
             players.pop(player_id, None)
             spectator_ids.discard(player_id)
             lobby.leave(player_id)
+            result_pending_player_ids.discard(player_id)
+            if completed_match_winner_id is not None and not result_pending_player_ids:
+                lobby.finish_match()
+                completed_match_winner_id = None
+                destroyed_treasures.clear()
+                destroyed_furniture.clear()
+                bullet_events.clear()
+                rune_alerts.clear()
+                kill_events.clear()
+                damage_events.clear()
 
         current_count = update_player_count(-1)
         print(f"[카운트] 현재 접속 인원: {current_count}")

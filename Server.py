@@ -131,6 +131,7 @@ def handle_client(conn, player_id):
                     if player_id in lobby.modes:
                         lobby.leave(player_id)
                     spectator_ids.add(player_id)
+                    result_winner_id = completed_match_winner_id
                     spectator_snapshot = {
                         active_id: {
                             key: players[active_id].get(key)
@@ -148,7 +149,21 @@ def handle_client(conn, player_id):
                     for player in spectator_snapshot.values():
                         player["kill_events"] = list(kill_events[-12:])
                         player["bullets"] = list(pending_bullets)
+                        player["winner_id"] = result_winner_id
                 conn.sendall(pickle.dumps(spectator_snapshot))
+                if result_winner_id is not None:
+                    with player_lock:
+                        result_pending_player_ids.discard(player_id)
+                        if not result_pending_player_ids:
+                            lobby.finish_match()
+                            completed_match_winner_id = None
+                            spectator_ids.clear()
+                            destroyed_treasures.clear()
+                            destroyed_furniture.clear()
+                            bullet_events.clear()
+                            rune_alerts.clear()
+                            kill_events.clear()
+                            damage_events.clear()
                 continue
 
             if client_data.get("type") == "spectator_leave":

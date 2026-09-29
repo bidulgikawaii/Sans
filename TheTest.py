@@ -153,7 +153,7 @@ def reconnect_to_server():
 
 def leave_lobby():
     """로비에서 나간 뒤 다음 경기에 사용할 클라이언트 상태를 정리합니다."""
-    global lobby_status, spectator_players, spectator_target_id, last_spectator_poll_at
+    global lobby_status, spectator_players, spectator_target_id, last_spectator_poll_at, last_lobby_request_at
     try:
         client.sendall(pickle.dumps({"type": "lobby_leave"}))
         client.recv(NETWORK_BUFFER_SIZE)
@@ -169,6 +169,7 @@ def leave_lobby():
         "mode": GAME_MODE_NORMAL,
         "started": False,
     }
+    last_lobby_request_at = 0
 
 
 random.seed(init_data["seed"])
@@ -543,9 +544,9 @@ weapon_state = WeaponState()
 vision_shape_override = None
 
 
-def reset_match_state():
+def reset_match_state(regenerate_world=False):
     """새 경기에 들어갈 때 이전 경기의 클라이언트 상태를 초기화합니다."""
-    global match_result, result_started_at, system_message, revive_token, heal_token
+    global match_result, result_started_at, system_message, revive_token, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
     global pending_heal_amount, vision_skill_until, shield_until, haste_until
     global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
     global training_dummy, server_players, preserve_magazine_after_chest
@@ -553,11 +554,18 @@ def reset_match_state():
     global CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY
     global camera_fov, camera_zoom
     global Weapon_Angle, Weapon_Pos, screen_shake, knife_attack_until
-    global weapon_fire_until, weapon_smoke_until
+    global weapon_fire_until, weapon_smoke_until, aim_lock_until, aim_locked_pos
+    global game_start_banner_until, spectator_camera_x, spectator_camera_y
     global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
     global healing_item_count, mouse_fire_hold
     global spectator_players, spectator_target_id, last_spectator_poll_at
     global match_spawn_index
+    if regenerate_world:
+        TileGene.generate_map(
+            MAP_WIDTH_TILES,
+            MAP_HEIGHT_TILES,
+            seed_value=init_data["seed"],
+        )
     for collection in (
         bullets, remote_bullets, kill_feed, active_bombs, active_explosions,
         supply_drops, pending_treasure_destroys, pending_furniture_destroys,
@@ -566,9 +574,11 @@ def reset_match_state():
         collection.clear()
     processed_bullet_events.clear()
     processed_damage_event_ids.clear()
+    particles.particles.clear()
     server_players.clear()
     spectator_players.clear()
     spectator_target_id = None
+    spectator_camera_x = spectator_camera_y = 0
     last_spectator_poll_at = 0
     skill_cooldowns.clear()
     clear_selected_skill()
@@ -580,6 +590,7 @@ def reset_match_state():
     healing_item_count = 0
     vision_skill_until = shield_until = haste_until = stealth_until = 0
     stealth_token = 0
+    active_rune_tile = None
     teleport_anchor = None
     teleport_anchor_expires_at = 0
     training_dummy = None
@@ -587,8 +598,10 @@ def reset_match_state():
     local_stun_until = 0
     zone_elapsed_ms = 0
     next_supply_drop_at = pygame.time.get_ticks() + SUPPLY_DROP_INTERVAL_MS
+    last_effect_tick = pygame.time.get_ticks()
     match_result = None
     result_started_at = 0
+    game_start_banner_until = 0
     system_message = ""
     weapon_state.reset(main_weapon_id)
     CameraPosX = CameraPosY = AimCameraPosX = AimCameraPosY = 0
@@ -600,6 +613,10 @@ def reset_match_state():
     knife_attack_until = 0
     weapon_fire_until = 0
     weapon_smoke_until = 0
+    aim_lock_until = 0
+    aim_locked_pos = None
+    easter_egg_found = False
+    easter_egg_flash_until = 0
     vision_shape_index = 0
     vision_shape_override = None
     inventory_open = False
@@ -638,6 +655,8 @@ def reset_match_state():
         "heal_token": 0,
         "heal_amount": 0,
         "shield_active": False,
+        "stealth": False,
+        "in_bush": False,
         "stealth_token": 0,
         "bullets": [],
         "hit_events": [],
@@ -662,7 +681,7 @@ def MainView():
             if event.key == pygame.K_ESCAPE:
                 running = False
             elif event.key == pygame.K_F10:
-                reset_match_state()
+                reset_match_state(regenerate_world=True)
                 debug_mode = True
                 owned_skills.update(SKILL_BOOK)
                 refresh_skill_inventory()
@@ -689,6 +708,24 @@ def MainView():
                 ScreenState = "ModeSelectView"
 
 
+def begin_lobby_join(mode):
+    global ScreenState, selected_game_mode, debug_mode, local_match
+    global lobby_status, last_lobby_request_at
+    selected_game_mode = mode
+    debug_mode = mode == GAME_MODE_DEBUG
+    local_match = False
+    lobby_status = {
+        "count": 0,
+        "max_players": MAX_PLAYERS,
+        "mode": mode,
+        "started": False,
+        "accepted": False,
+        "confirmed": False,
+    }
+    last_lobby_request_at = 0
+    ScreenState = "LoadingView"
+
+
 def ModeSelectView():
     global running, ScreenState, selected_game_mode, debug_mode, local_match, game_start_banner_until
     button_rects = main_screen.draw_mode_select()
@@ -701,30 +738,19 @@ def ModeSelectView():
                 pygame.key.stop_text_input()
                 ScreenState = "MainView"
             elif event.key == pygame.K_F10:
-                debug_mode = False
-                local_match = False
-                selected_game_mode = GAME_MODE_NORMAL
-                ScreenState = "LoadingView"
+                begin_lobby_join(GAME_MODE_NORMAL)
             elif event.key == pygame.K_1:
-                debug_mode = False
-                selected_game_mode = GAME_MODE_NORMAL
-                local_match = False
-                ScreenState = "LoadingView"
+                begin_lobby_join(GAME_MODE_NORMAL)
             elif event.key == pygame.K_2:
-                debug_mode = True
-                local_match = False
-                selected_game_mode = GAME_MODE_DEBUG
-                ScreenState = "LoadingView"
+                begin_lobby_join(GAME_MODE_DEBUG)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if button_rects["normal"].collidepoint(event.pos):
-                debug_mode = False
-                selected_game_mode = GAME_MODE_NORMAL
-                local_match = False
-                ScreenState = "LoadingView"
+                begin_lobby_join(GAME_MODE_NORMAL)
             elif button_rects["debug"].collidepoint(event.pos):
                 debug_mode = True
                 local_match = True
                 selected_game_mode = GAME_MODE_DEBUG
+                reset_match_state(regenerate_world=True)
                 owned_skills.update(SKILL_BOOK)
                 refresh_skill_inventory()
                 game_start_banner_until = pygame.time.get_ticks() + 2000
@@ -794,9 +820,9 @@ def LoadingView():
                 lobby_status = response
                 if response.get("accepted"):
                     match_spawn_index = response.get("spawn_index", 0)
-                elif response.get("started"):
+                elif response.get("started") and response.get("accepted") is False:
                     spectator_players = {}
-                    ScreenState = "SpectatorView"
+                    ScreenState = "SpectatorPromptView"
                     return
         except (OSError, EOFError, pickle.PickleError, KeyError):
             reconnect_to_server()
@@ -811,7 +837,7 @@ def LoadingView():
     )
 
     if lobby_status.get("started") and lobby_status.get("accepted", True):
-        reset_match_state()
+        reset_match_state(regenerate_world=True)
         if debug_mode:
             owned_skills.update(SKILL_BOOK)
             refresh_skill_inventory()
@@ -843,7 +869,7 @@ def GameOverView():
     for event in pygame.event.get():
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_SPACE:
-                enter_spectator_after_death()
+                leave_game_to_main()
             elif event.key == pygame.K_ESCAPE:
                 leave_game_to_main()
 
@@ -857,25 +883,6 @@ def VictoryView():
     for event in pygame.event.get():
         if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
             leave_game_to_main()
-
-
-def enter_spectator_after_death():
-    """사망한 참가자를 서버에서 관전자로 바꾸고 남은 플레이어를 보여줍니다."""
-    global ScreenState, spectator_players, spectator_target_id, last_spectator_poll_at
-    try:
-        client.sendall(pickle.dumps({"type": "spectator_join"}))
-        response = pickle.loads(client.recv(NETWORK_BUFFER_SIZE))
-    except (OSError, EOFError, pickle.PickleError):
-        ScreenState = "GameOver"
-        return False
-    if not isinstance(response, dict) or response.get("error"):
-        ScreenState = "GameOver"
-        return False
-    spectator_players = response
-    spectator_target_id = None
-    last_spectator_poll_at = 0
-    ScreenState = "SpectatorView"
-    return True
 
 
 def _draw_result_screen(title_text, color, elapsed):
@@ -904,7 +911,7 @@ def _draw_result_screen(title_text, color, elapsed):
     )
     display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
     guide_text = (
-        "스페이스: 관전하기   ESC: 메인 메뉴"
+        "Space / ESC: 메인 메뉴"
         if title_text == "패배"
         else "스페이스키를 눌러 로비로 이동하세요"
     )
@@ -925,10 +932,7 @@ def SpectatorView():
                 leave_spectator(client, NETWORK_BUFFER_SIZE)
             except (OSError, EOFError, pickle.PickleError):
                 pass
-            spectator_players = {}
-            spectator_target_id = None
-            reset_match_state()
-            ScreenState = "MainView"
+            leave_game_to_main()
             return
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_q:
             alive_ids = sorted(
@@ -947,6 +951,21 @@ def SpectatorView():
     if now - last_spectator_poll_at >= 50:
         spectator_players = poll_players(client, NETWORK_BUFFER_SIZE)
         last_spectator_poll_at = now
+    result_winner_id = next(
+        (
+            player_info.get("winner_id")
+            for player_info in spectator_players.values()
+            if isinstance(player_info, dict) and player_info.get("winner_id") is not None
+        ),
+        None,
+    )
+    if result_winner_id is not None:
+        try:
+            leave_spectator(client, NETWORK_BUFFER_SIZE)
+        except (OSError, EOFError, pickle.PickleError):
+            pass
+        leave_game_to_main()
+        return
     if spectator_players.get("error") == "active_player_cannot_spectate":
         spectator_players = {}
         ScreenState = "GameView"
@@ -1279,13 +1298,11 @@ def handle_key_event(event, _mouse_pos):
 
 def leave_game_to_main():
     """현재 게임과 로비 상태를 정리하고 메인 화면으로 돌아갑니다."""
-    global ScreenState, local_match, debug_mode
-    if not local_match and not debug_mode:
-        leave_lobby()
-    else:
-        reset_match_state()
+    global ScreenState, local_match, debug_mode, selected_game_mode
+    leave_lobby()
     local_match = False
     debug_mode = False
+    selected_game_mode = GAME_MODE_NORMAL
     ScreenState = "MainView"
 
 

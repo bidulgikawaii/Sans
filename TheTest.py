@@ -194,7 +194,7 @@ p_w = IML.Player.get_width()
 p_h = IML.Player.get_height()
 
 def get_fixed_spawn_tiles():
-    """맵 시드마다 고정된 12개 안전 좌표를 만들고 서로 간격을 둡니다."""
+    """맵 전역의 안전 지점에서 서로 멀리 떨어진 스폰 좌표를 고릅니다."""
     def is_clear(x, y):
         return all(
             (tile := TileGene.get_tile_at(x + offset_x, y + offset_y)) is not None
@@ -203,20 +203,13 @@ def get_fixed_spawn_tiles():
             for offset_x in range(3)
         )
 
-    selected = [point for point in SPAWN_POSITION_TILES if is_clear(*point)]
     candidates = [
         (x, y)
-        for y in range(MAP_SAFE_ZONE_MIN, MAP_SAFE_ZONE_MAX - 2)
-        for x in range(MAP_SAFE_ZONE_MIN, MAP_SAFE_ZONE_MAX - 2)
-        if is_clear(x, y) and (x, y) not in selected
+        for y in range(SPAWN_MIN_Y, SPAWN_MAX_Y - 2)
+        for x in range(SPAWN_MIN_X, SPAWN_MAX_X - 2)
+        if is_clear(x, y)
     ]
-    if len(candidates) < MAX_PLAYERS:
-        candidates = [
-            (x, y)
-            for y in range(SPAWN_MIN_Y, SPAWN_MAX_Y - 1)
-            for x in range(SPAWN_MIN_X, SPAWN_MAX_X - 1)
-            if is_clear(x, y)
-        ]
+    selected = []
 
     center_x, center_y = MAP_WIDTH_TILES // 2, MAP_HEIGHT_TILES // 2
     while candidates and len(selected) < MAX_PLAYERS:
@@ -708,7 +701,7 @@ def ModeSelectView():
                 pygame.key.stop_text_input()
                 ScreenState = "MainView"
             elif event.key == pygame.K_F10:
-                debug_mode = True
+                debug_mode = False
                 local_match = False
                 selected_game_mode = GAME_MODE_NORMAL
                 ScreenState = "LoadingView"
@@ -783,8 +776,7 @@ def SpectatorPromptView():
 def LoadingView():
     global running, ScreenState, lobby_status, last_lobby_request_at, local_match, game_start_banner_until, debug_mode, spectator_players
     global match_spawn_index
-    if selected_game_mode == GAME_MODE_DEBUG:
-        debug_mode = True
+    debug_mode = selected_game_mode == GAME_MODE_DEBUG
     if debug_mode:
         owned_skills.update(SKILL_BOOK)
         refresh_skill_inventory()
@@ -849,8 +841,10 @@ def GameOverView():
     _draw_result_screen("패배", (220, 50, 50), pygame.time.get_ticks() - result_started_at)
 
     for event in pygame.event.get():
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-            if not enter_spectator_after_death():
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_SPACE:
+                enter_spectator_after_death()
+            elif event.key == pygame.K_ESCAPE:
                 leave_game_to_main()
 
 
@@ -909,10 +903,15 @@ def _draw_result_screen(title_text, color, elapsed):
         (max(1, round(title.get_width() * pulse)), max(1, round(title.get_height() * pulse))),
     )
     display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
-    guide = result_text_cache.get("guide")
+    guide_text = (
+        "스페이스: 관전하기   ESC: 메인 메뉴"
+        if title_text == "패배"
+        else "스페이스키를 눌러 로비로 이동하세요"
+    )
+    guide = result_text_cache.get(guide_text)
     if guide is None:
-        guide = GuiFont.render("스페이스키를 눌러 로비로 이동하세요", True, (255, 255, 255))
-        result_text_cache["guide"] = guide
+        guide = GuiFont.render(guide_text, True, (255, 255, 255))
+        result_text_cache[guide_text] = guide
     display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 70)))
 
 
@@ -1224,6 +1223,10 @@ def handle_key_event(event, _mouse_pos):
         return
 
     if event.key == pygame.K_F10:
+        if selected_game_mode == GAME_MODE_NORMAL:
+            debug_mode = False
+            system_message = "일반전에서는 디버그 모드를 사용할 수 없습니다."
+            return
         debug_mode = not debug_mode
         if debug_mode:
             owned_skills.update(SKILL_BOOK)
@@ -1565,8 +1568,6 @@ def GameView():
 
     MousePos = pygame.mouse.get_pos()
     if my_player.Hp <= 0 and not use_revive_skill():
-        if not debug_mode and enter_spectator_after_death():
-            return
         ScreenState = "GameOver"
         return
     now = pygame.time.get_ticks()
@@ -2158,8 +2159,6 @@ def GameView():
     remote_bullets = [b for b in remote_bullets if b.is_active]
 
     if my_player.Hp <= 0 and not use_revive_skill():
-        if not debug_mode and enter_spectator_after_death():
-            return
         ScreenState = "GameOver"
         return
 

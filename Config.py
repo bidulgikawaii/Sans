@@ -19,14 +19,21 @@ SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
 FPS = 64
 
-# 플레이어
+# 플레이어 이동 및 생존 설정
 PLAYER_MAX_HP = 100
+# 별도 효과가 없을 때의 걷기 속도입니다. 단위는 프레임당 이동 픽셀입니다.
 PLAYER_NORMAL_SPEED = 5
+# Shift를 누르고 달릴 때 적용되는 기본 속도입니다.
 PLAYER_SPRINT_SPEED = 8
-PLAYER_HASTE_SPEED = 7
+# 신속 효과가 활성화되었을 때의 목표 속도입니다.
+PLAYER_HASTE_SPEED = 10
+# 기본 대시 속도입니다. 칼 대시 보너스는 아래 값에 별도로 더해집니다.
 PLAYER_DASH_SPEED = 15
-KNIFE_DASH_SPEED_BONUS = 10
-KNIFE_DASH_DURATION_BONUS_MS = 100
+# 칼을 들어도 걷기/달리기 속도는 바뀌지 않고, 대시 중에만 이 보너스를 받습니다.
+KNIFE_DASH_SPEED_BONUS = 2
+# 칼 대시도 기본 대시와 같은 시간 동안 지속되도록 추가 시간을 주지 않습니다.
+KNIFE_DASH_DURATION_BONUS_MS = 0
+# 대시 지속 시간과 재사용 대기 시간은 밀리초 단위입니다.
 PLAYER_DASH_DURATION_MS = 200
 PLAYER_DASH_COOLDOWN_MS = 1500
 DEFAULT_WEAPON_ID = "pistol"
@@ -184,6 +191,5 @@ ScreenX = SCREEN_WIDTH
 ScreenY = SCREEN_HEIGHT
 PlayerSpd = PLAYER_NORMAL_SPEED
 Bullet_Size = 30
-
 
 

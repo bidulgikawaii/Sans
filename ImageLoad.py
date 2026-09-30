@@ -27,10 +27,11 @@ class Imageload:
 
     _WEAPON_IMAGE_ATTRIBUTES = {
         "pistol": "Pistol",
-        "rifle": "Gigwan",
+        "rifle": "Liple",
         "smg": "Gigwan",
         "sniper": "Sniper",
         "shotgun": "ShotGun",
+
     }
 
     def __init__(self):
@@ -39,7 +40,9 @@ class Imageload:
         self.player_path = self.root / "Player.png"
         self.backGround = str(self.root / "Back")  # 기존 속성명과 자료형 유지
         self.BackG = self._load_image_file(self.root / "BackG.png")
+        self.KillLog = self._load_kill_log()
 
+        self.Liple = self._load_scaled_image("laiple.png", (128, 64))
         self.Pistol = self._load_scaled_image("pistol_idle_transparent.png", PISTOL_IMAGE_SIZE)
         self.PistolFire = self._load_scaled_image("pistol_fire_transparent.png", PISTOL_IMAGE_SIZE)
         self.PistolSmoke = self._load_scaled_image("pistol_smoke_transparent.png", PISTOL_IMAGE_SIZE)
@@ -87,6 +90,22 @@ class Imageload:
         if image is None:
             return None
         return pygame.transform.smoothscale(image, size)
+
+    def _load_kill_log(self):
+        """킬로그 장식의 투명 여백을 제거해 화면에서 쓰기 좋은 크기로 준비합니다."""
+        image = self._load_image_file(self.root / "KillLog.png")
+        if image is None:
+            return None
+
+        visible_rect = image.get_bounding_rect(min_alpha=1)
+        if visible_rect.width <= 0 or visible_rect.height <= 0:
+            return None
+
+        # 원본은 캔버스가 매우 크고 장식은 중앙에 있으므로 보이는 부분만 캐싱합니다.
+        panel = image.subsurface(visible_rect).copy()
+        panel_width = 520
+        panel_height = round(panel_width * visible_rect.height / visible_rect.width)
+        return pygame.transform.smoothscale(panel, (panel_width, panel_height))
 
     def _load_player_frame(self, filename):
         image = self._load_image_file(self.root / filename)
@@ -137,6 +156,12 @@ class Imageload:
             size = MAIN_SCREEN_IMAGE_SIZES.get(path.stem)
             images[path.stem] = pygame.transform.smoothscale(image, size) if size else image
         return images
+
+    def GetLiple(self):
+        return self.Liple
+
+    def GetKillLog(self):
+        return self.KillLog
 
     def GetTitles(self):
         return self.TitleImages

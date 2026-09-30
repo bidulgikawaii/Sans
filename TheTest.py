@@ -27,6 +27,7 @@ from GameRendering import (
     draw_teleport_anchor,
     draw_visibility_geometry,
     draw_ward,
+    draw_kill_feed,
 )
 from GameAudio import load_effect_sound, play_effect_sound
 from Zone import MagneticZone
@@ -670,8 +671,10 @@ def MainView():
         preview_image = IML.GetSniper()
     elif weapon_state.weapon_id == "smg":
         preview_image = IML.GetGigwan()
-    else:
+    elif weapon_state.weapon_id == "shotgun":
         preview_image = IML.GetShotGun()
+    elif weapon_state.weapon_id == "rifle":
+        preview_image = IML.GetLiple()
     button_rects = main_screen.draw_main(weapon_state.config.name, preview_image)
 
     for event in pygame.event.get():
@@ -833,7 +836,6 @@ def LoadingView():
         lobby_status,
         selected_game_mode,
         MAX_PLAYERS,
-        GAME_MODE_DEBUG,
     )
 
     if lobby_status.get("started") and lobby_status.get("accepted", True):
@@ -1610,10 +1612,15 @@ def GameView():
     haste_bonus = (
         PLAYER_HASTE_SPEED - PLAYER_NORMAL_SPEED if now < haste_until else 0
     )
-    knife_speed_bonus = KNIFE_DASH_SPEED_BONUS if weapon_state.weapon_id == "knife" else 0
-    my_player.normal_speed = PLAYER_NORMAL_SPEED + haste_bonus + knife_speed_bonus
-    my_player.sprint_speed = PLAYER_SPRINT_SPEED + haste_bonus + knife_speed_bonus
-    my_player.dash_speed = PLAYER_DASH_SPEED + haste_bonus + knife_speed_bonus
+    # 칼의 추가 속도는 특수 이동인 대시에만 적용합니다.
+    # 평상시 걷기와 Shift 달리기는 무기 종류와 무관하게 같은 속도를 유지합니다.
+    knife_dash_bonus = (
+        KNIFE_DASH_SPEED_BONUS if weapon_state.weapon_id == "knife" else 0
+    )
+    my_player.normal_speed = PLAYER_NORMAL_SPEED + haste_bonus
+    my_player.sprint_speed = PLAYER_SPRINT_SPEED + haste_bonus
+    my_player.dash_speed = PLAYER_DASH_SPEED + haste_bonus + knife_dash_bonus
+    # 칼 대시는 추가 속도만 적용하며, 지속 시간은 기본 대시와 동일하게 둡니다.
     if now >= local_stun_until:
         my_player.dash_duration = PLAYER_DASH_DURATION_MS + (
             KNIFE_DASH_DURATION_BONUS_MS if weapon_state.weapon_id == "knife" else 0
@@ -2600,11 +2607,15 @@ def GameView():
         event for event in kill_feed
         if now - event.get("started_at", now) < 5000
     ][-5:]
-    for index, event in enumerate(reversed(kill_feed)):
-        killer = player_name or "플레이어" if event.get("killer_id") == my_id else event.get("killer_name", f"플레이어 {event.get('killer_id')}")
-        target = player_name or "플레이어" if event.get("target_id") == my_id else event.get("target_name", str(event.get("target_id")))
-        kill_text = KillFeedFont.render(f"{killer}  >  {target}", True, (255, 225, 150))
-        display.blit(kill_text, (ScreenX - 330, 330 + index * 26))
+    draw_kill_feed(
+        display,
+        kill_feed,
+        KillFeedFont,
+        IML.GetKillLog(),
+        IML.GetWeaponImage,
+        my_id,
+        player_name,
+    )
     if game_start_banner_until > now:
         remaining = game_start_banner_until - now
         game_start_banner.set_alpha(min(255, max(0, remaining * 2)))

@@ -86,7 +86,7 @@ class MainScreenRenderer:
         self.surface.blit(value, value.get_rect(center=box.center))
         self.surface.blit(guide, guide.get_rect(center=(self.screen_width // 2, 540)))
 
-    def draw_loading(self, lobby_status, selected_game_mode, max_players, debug_mode):
+    def draw_loading(self, lobby_status, selected_game_mode, max_players):
         self._draw_background()
         profile, profile_rect = self._center_rect("GameStart", 150)
         self.surface.blit(profile, profile_rect)

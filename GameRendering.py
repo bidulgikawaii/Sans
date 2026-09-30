@@ -17,6 +17,84 @@ _HEALTH_FRAME_COLOR = pygame.Color("gray20")
 _HEALTH_COLORS = (pygame.Color("green"), pygame.Color("yellow"), pygame.Color("red"))
 
 
+def _fit_kill_feed_text(font, text, color, max_width):
+    """긴 닉네임을 카드 안에 맞추고, 잘린 이름에는 말줄임표를 붙입니다."""
+    rendered = font.render(text, True, color)
+    if rendered.get_width() <= max_width:
+        return rendered
+
+    shortened = text
+    while shortened and font.size(shortened + "...")[0] > max_width:
+        shortened = shortened[:-1]
+    return font.render(shortened.rstrip() + "...", True, color)
+
+
+def draw_kill_feed(
+    surface,
+    events,
+    font,
+    panel_image,
+    get_weapon_image,
+    local_player_id,
+    local_player_name,
+):
+    """최근 처치 이벤트를 장식 패널과 무기 아이콘이 포함된 카드로 그립니다."""
+    card_width = panel_image.get_width() if panel_image is not None else 520
+    card_height = panel_image.get_height() if panel_image is not None else 58
+    right_margin = 24
+    top = 250
+    row_gap = 8
+    left = surface.get_width() - card_width - right_margin
+
+    # 최신 이벤트가 위쪽에 오도록 최대 다섯 건을 역순으로 표시합니다.
+    visible_events = list(reversed(events[-5:]))
+    for index, event in enumerate(visible_events):
+        card_rect = pygame.Rect(
+            left,
+            top + index * (card_height + row_gap),
+            card_width,
+            card_height,
+        )
+        if panel_image is not None:
+            surface.blit(panel_image, card_rect)
+        else:
+            pygame.draw.rect(surface, (24, 34, 46), card_rect, border_radius=10)
+            pygame.draw.rect(surface, (100, 190, 220), card_rect, 2, border_radius=10)
+
+        is_local_killer = event.get("killer_id") == local_player_id
+        is_local_target = event.get("target_id") == local_player_id
+        killer = (
+            local_player_name or "플레이어"
+            if is_local_killer
+            else str(event.get("killer_name") or f"플레이어 {event.get('killer_id')}")
+        )
+        target = (
+            local_player_name or "플레이어"
+            if is_local_target
+            else str(event.get("target_name") or event.get("target_id") or "플레이어")
+        )
+        killer_color = (105, 225, 255) if is_local_killer else (245, 240, 225)
+        target_color = (255, 110, 120) if is_local_target else (245, 240, 225)
+        center_y = card_rect.centery
+
+        killer_surface = _fit_kill_feed_text(font, killer, killer_color, 160)
+        surface.blit(killer_surface, (card_rect.left + 34, center_y - killer_surface.get_height() // 2))
+
+        separator = font.render(">", True, (210, 220, 230))
+        surface.blit(separator, separator.get_rect(center=(card_rect.left + 210, center_y)))
+
+        weapon_image = get_weapon_image(event.get("weapon_id", "pistol"))
+        if weapon_image is not None:
+            icon = pygame.transform.smoothscale(weapon_image, (34, 34))
+            surface.blit(icon, icon.get_rect(center=(card_rect.left + 260, center_y)))
+
+        target_surface = _fit_kill_feed_text(font, target, target_color, 160)
+        surface.blit(
+            target_surface,
+            (card_rect.right - 34 - target_surface.get_width(), center_y - target_surface.get_height() // 2),
+        )
+
+
 def draw_visibility_geometry(surface, geometry, camera_x, camera_y, zoom):
     if geometry.is_empty:
         return

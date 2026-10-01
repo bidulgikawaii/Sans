@@ -31,7 +31,6 @@ from GameRendering import (
 )
 from GameAudio import load_effect_sound, play_effect_sound
 from Zone import MagneticZone
-from SpectatorMode import draw_waiting, draw_world, leave_spectator, poll_players
 
 pygame.init()
 pygame.display.set_caption("전설적인 게임")
@@ -154,16 +153,13 @@ def reconnect_to_server():
 
 def leave_lobby():
     """로비에서 나간 뒤 다음 경기에 사용할 클라이언트 상태를 정리합니다."""
-    global lobby_status, spectator_players, spectator_target_id, last_spectator_poll_at, last_lobby_request_at
+    global lobby_status, last_lobby_request_at
     try:
         client.sendall(pickle.dumps({"type": "lobby_leave"}))
         client.recv(NETWORK_BUFFER_SIZE)
     except (OSError, EOFError, pickle.PickleError):
         reconnect_to_server()
     reset_match_state()
-    spectator_players.clear()
-    spectator_target_id = None
-    last_spectator_poll_at = 0
     lobby_status = {
         "count": 0,
         "max_players": MAX_PLAYERS,
@@ -340,11 +336,6 @@ pending_hit_events = []
 screen_shake = 0
 server_players = {}
 kill_feed = []
-spectator_players = {}
-spectator_camera_x = 0
-spectator_camera_y = 0
-last_spectator_poll_at = 0
-spectator_target_id = None
 match_result = None
 result_started_at = 0
 game_start_banner_until = 0
@@ -556,10 +547,9 @@ def reset_match_state(regenerate_world=False):
     global camera_fov, camera_zoom
     global Weapon_Angle, Weapon_Pos, screen_shake, knife_attack_until
     global weapon_fire_until, weapon_smoke_until, aim_lock_until, aim_locked_pos
-    global game_start_banner_until, spectator_camera_x, spectator_camera_y
+    global game_start_banner_until
     global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
     global healing_item_count, mouse_fire_hold
-    global spectator_players, spectator_target_id, last_spectator_poll_at
     global match_spawn_index
     if regenerate_world:
         TileGene.generate_map(
@@ -577,10 +567,6 @@ def reset_match_state(regenerate_world=False):
     processed_damage_event_ids.clear()
     particles.particles.clear()
     server_players.clear()
-    spectator_players.clear()
-    spectator_target_id = None
-    spectator_camera_x = spectator_camera_y = 0
-    last_spectator_poll_at = 0
     skill_cooldowns.clear()
     clear_selected_skill()
     owned_skills.clear()
@@ -781,29 +767,8 @@ def NameInputView():
                 ScreenState = "MainView"
 
 
-def SpectatorPromptView():
-    global running, ScreenState, spectator_players
-    display.fill((10, 15, 24))
-    title = GuiFont.render("게임이 진행 중입니다", True, (255, 225, 140))
-    prompt = GuiFont.render("관전으로 참여하시겠습니까?", True, (240, 245, 255))
-    guide = GuiFont.render("Space: 관전 시작   Esc: 돌아가기", True, (180, 205, 230))
-    display.blit(title, title.get_rect(center=(ScreenX // 2, 360)))
-    display.blit(prompt, prompt.get_rect(center=(ScreenX // 2, 440)))
-    display.blit(guide, guide.get_rect(center=(ScreenX // 2, 530)))
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                leave_lobby()
-                ScreenState = "ModeSelectView"
-            elif event.key == pygame.K_SPACE:
-                spectator_players = {}
-                ScreenState = "SpectatorView"
-
-
 def LoadingView():
-    global running, ScreenState, lobby_status, last_lobby_request_at, local_match, game_start_banner_until, debug_mode, spectator_players
+    global running, ScreenState, lobby_status, last_lobby_request_at, local_match, game_start_banner_until, debug_mode
     global match_spawn_index
     debug_mode = selected_game_mode == GAME_MODE_DEBUG
     if debug_mode:
@@ -823,10 +788,6 @@ def LoadingView():
                 lobby_status = response
                 if response.get("accepted"):
                     match_spawn_index = response.get("spawn_index", 0)
-                elif response.get("started") and response.get("accepted") is False:
-                    spectator_players = {}
-                    ScreenState = "SpectatorPromptView"
-                    return
         except (OSError, EOFError, pickle.PickleError, KeyError):
             reconnect_to_server()
             last_lobby_request_at = 0
@@ -922,97 +883,6 @@ def _draw_result_screen(title_text, color, elapsed):
         guide = GuiFont.render(guide_text, True, (255, 255, 255))
         result_text_cache[guide_text] = guide
     display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 70)))
-
-
-def SpectatorView():
-    global running, ScreenState, spectator_players, spectator_camera_x, spectator_camera_y, last_spectator_poll_at, spectator_target_id
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            try:
-                leave_spectator(client, NETWORK_BUFFER_SIZE)
-            except (OSError, EOFError, pickle.PickleError):
-                pass
-            leave_game_to_main()
-            return
-        elif event.type == pygame.KEYDOWN and event.key == pygame.K_q:
-            alive_ids = sorted(
-                int(player_id)
-                for player_id, player_info in spectator_players.items()
-                if player_info.get("hp", 0) > 0
-            )
-            if alive_ids:
-                if spectator_target_id not in alive_ids:
-                    spectator_target_id = alive_ids[0]
-                else:
-                    current_index = alive_ids.index(spectator_target_id)
-                    spectator_target_id = alive_ids[(current_index + 1) % len(alive_ids)]
-
-    now = pygame.time.get_ticks()
-    if now - last_spectator_poll_at >= 50:
-        spectator_players = poll_players(client, NETWORK_BUFFER_SIZE)
-        last_spectator_poll_at = now
-    result_winner_id = next(
-        (
-            player_info.get("winner_id")
-            for player_info in spectator_players.values()
-            if isinstance(player_info, dict) and player_info.get("winner_id") is not None
-        ),
-        None,
-    )
-    if result_winner_id is not None:
-        try:
-            leave_spectator(client, NETWORK_BUFFER_SIZE)
-        except (OSError, EOFError, pickle.PickleError):
-            pass
-        leave_game_to_main()
-        return
-    if spectator_players.get("error") == "active_player_cannot_spectate":
-        spectator_players = {}
-        ScreenState = "GameView"
-        return
-    spectator_players = {
-        player_id: player_info
-        for player_id, player_info in spectator_players.items()
-        if isinstance(player_info, dict) and player_info.get("hp", 0) > 0
-    }
-    if not spectator_players:
-        draw_waiting(display, GuiFont, ScreenX, ScreenY)
-        return
-
-    alive_ids = sorted(
-        int(player_id)
-        for player_id, player_info in spectator_players.items()
-        if player_info.get("hp", 0) > 0
-    )
-    if not alive_ids:
-        draw_waiting(display, GuiFont, ScreenX, ScreenY)
-        return
-    if spectator_target_id not in alive_ids:
-        spectator_target_id = alive_ids[0]
-    tracked = spectator_players.get(spectator_target_id, spectator_players.get(str(spectator_target_id), {}))
-    target_x = tracked.get("posX", 0) + 36
-    target_y = tracked.get("posY", 0) + 36
-    spectator_camera_x, spectator_camera_y = get_camera_target(
-        target_x, target_y, ScreenX, ScreenY, camera_zoom
-    )
-    spectator_camera_x, spectator_camera_y = TileGene.clamp_camera(
-        spectator_camera_x, spectator_camera_y, ScreenX, ScreenY, camera_zoom
-    )
-    display.fill((0, 0, 0))
-    draw_world(
-        display,
-        TileGene,
-        spectator_players,
-        IML.Player,
-        GuiFont,
-        (spectator_camera_x, spectator_camera_y),
-        camera_zoom,
-        ScreenX,
-        spectator_target_id,
-        IML,
-    )
 
 
 def handle_quit(_event, _mouse_pos):
@@ -2712,10 +2582,6 @@ while running:
         ModeSelectView()
     elif ScreenState == "NameInputView":
         NameInputView()
-    elif ScreenState == "SpectatorPromptView":
-        SpectatorPromptView()
-    elif ScreenState == "SpectatorView":
-        SpectatorView()
     elif ScreenState == "LoadingView":
         LoadingView()
     elif ScreenState == "GameView":

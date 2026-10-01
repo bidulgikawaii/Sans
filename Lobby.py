@@ -105,8 +105,9 @@ class LobbyState:
     def zone_enabled_for(self, player_id):
         return self.mode_for(player_id) == GAME_MODE_NORMAL
 
-    def status(self, player_id=None):
-        mode = self.mode_for(player_id) if player_id is not None else GAME_MODE_NORMAL
+    def status(self, player_id=None, mode=None):
+        if mode is None:
+            mode = self.mode_for(player_id) if player_id is not None else GAME_MODE_NORMAL
         mode = mode or GAME_MODE_NORMAL
         self._update_start_state(mode)
         start_at = self.start_at[mode]

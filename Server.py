@@ -39,22 +39,36 @@ print(f"서버 시작: {bind_ip}:{SERVER_PORT}")
 # 서버가 총괄하는 플레이어들의 실시간 딕셔너리
 players = {}
 player_lock = threading.Lock()
-bullet_events = []
-next_bullet_event_id = 1
-destroyed_treasures = set()
-destroyed_furniture = set()
-rune_alerts = []
-kill_events = []
-next_kill_event_id = 1
-damage_events = []
-spectator_ids = set()
-next_damage_event_id = 1
+
+
+def new_match_events():
+    return {
+        "bullet_events": [],
+        "next_bullet_event_id": 1,
+        "destroyed_treasures": set(),
+        "destroyed_furniture": set(),
+        "rune_alerts": [],
+        "kill_events": [],
+        "next_kill_event_id": 1,
+        "damage_events": [],
+        "next_damage_event_id": 1,
+    }
+
+
+match_events = {
+    GAME_MODE_NORMAL: new_match_events(),
+    GAME_MODE_DEBUG: new_match_events(),
+}
 completed_match_winner_id = None
 result_pending_player_ids = set()
 player_count = 0
 next_player_id = 1
 lobby = LobbyState()
 magnetic_zone = MagneticZone(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, 32)
+
+
+def reset_match_events(mode):
+    match_events[mode] = new_match_events()
 
 
 def update_player_count(delta):
@@ -72,11 +86,13 @@ def get_next_player_id():
 
 
 def handle_client(conn, player_id):
-    global next_bullet_event_id, next_damage_event_id, next_kill_event_id
     global completed_match_winner_id, result_pending_player_ids
     with player_lock:
         # 접속 전에 발생한 총알은 새 플레이어에게 전달하지 않습니다.
-        last_sent_bullet_event_id = next_bullet_event_id - 1
+        last_sent_bullet_event_ids = {
+            mode: events["next_bullet_event_id"] - 1
+            for mode, events in match_events.items()
+        }
 
     # 1. 접속한 클라이언트에게 고유 아이디 부여
     conn.send(pickle.dumps({"init_id": player_id, "seed": SERVER_SEED}))
@@ -118,69 +134,22 @@ def handle_client(conn, player_id):
 
             client_data = pickle.loads(data)
 
-            if client_data.get("type") == "spectator_join":
-                with player_lock:
-                    if not lobby.started:
-                        conn.sendall(pickle.dumps({}))
-                        continue
-                    # 경기 참가자는 관전 요청으로 로비에서 제거하지 않습니다.
-                    if player_id in lobby.modes and players[player_id].get("hp", 0) > 0:
-                        conn.sendall(pickle.dumps({"error": "active_player_cannot_spectate"}))
-                        continue
-                    active_ids = lobby.visible_player_ids(player_id)
-                    if player_id in lobby.modes:
-                        lobby.leave(player_id)
-                    spectator_ids.add(player_id)
-                    result_winner_id = completed_match_winner_id
-                    spectator_snapshot = {
-                        active_id: {
-                            key: players[active_id].get(key)
-                            for key in ("posX", "posY", "angle", "hp", "name", "weapon_id")
-                        }
-                        for active_id in active_ids
-                        if active_id in players
-                    }
-                    pending_bullets = [
-                        bullet for bullet in bullet_events
-                        if bullet["event_id"] > last_sent_bullet_event_id
-                    ]
-                    if pending_bullets:
-                        last_sent_bullet_event_id = pending_bullets[-1]["event_id"]
-                    for player in spectator_snapshot.values():
-                        player["kill_events"] = list(kill_events[-12:])
-                        player["bullets"] = list(pending_bullets)
-                        player["winner_id"] = result_winner_id
-                conn.sendall(pickle.dumps(spectator_snapshot))
-                if result_winner_id is not None:
-                    with player_lock:
-                        result_pending_player_ids.discard(player_id)
-                        if not result_pending_player_ids:
-                            lobby.finish_match()
-                            completed_match_winner_id = None
-                            spectator_ids.clear()
-                            destroyed_treasures.clear()
-                            destroyed_furniture.clear()
-                            bullet_events.clear()
-                            rune_alerts.clear()
-                            kill_events.clear()
-                            damage_events.clear()
-                continue
-
-            if client_data.get("type") == "spectator_leave":
-                with player_lock:
-                    spectator_ids.discard(player_id)
-                conn.sendall(pickle.dumps({}))
-                continue
-
             if client_data.get("type") == "lobby_join":
                 with player_lock:
+                    requested_mode = client_data.get("mode")
+                    if client_data.get("debug_enabled", False):
+                        requested_mode = GAME_MODE_DEBUG
+                    if requested_mode not in (GAME_MODE_NORMAL, GAME_MODE_DEBUG):
+                        requested_mode = GAME_MODE_NORMAL
                     accepted = lobby.join(
                         player_id,
-                        client_data.get("mode"),
+                        requested_mode,
                         debug_enabled=bool(client_data.get("debug_enabled", False)),
                     )
                     if accepted:
-                        spectator_ids.discard(player_id)
+                        last_sent_bullet_event_ids[requested_mode] = (
+                            match_events[requested_mode]["next_bullet_event_id"] - 1
+                        )
                         requested_name = str(client_data.get("name", "")).strip()
                         player = players[player_id]
                         player.update({
@@ -206,14 +175,15 @@ def handle_client(conn, player_id):
                             "zone_last_tick": time.monotonic(),
                             "bullets": [],
                         })
-                    lobby_status = lobby.status(player_id)
+                    lobby_status = lobby.status(player_id, mode=requested_mode)
                     lobby_status["accepted"] = accepted
                     if accepted:
                         lobby_status["spawn_index"] = sorted(lobby.modes).index(player_id)
                     else:
                         lobby_status["message"] = (
                             "게임이 진행 중이라 참가할 수 없습니다."
-                            if lobby.started or lobby.start_at is not None
+                            if lobby.started[requested_mode]
+                            or lobby.start_at[requested_mode] is not None
                             else f"로비가 가득 찼습니다. 최대 {MAX_PLAYERS}명까지 참가할 수 있습니다."
                         )
                 conn.sendall(pickle.dumps(lobby_status))
@@ -221,13 +191,10 @@ def handle_client(conn, player_id):
 
             if client_data.get("type") == "lobby_leave":
                 with player_lock:
+                    mode = lobby.mode_for(player_id)
                     lobby.leave(player_id)
-                    if not lobby.modes:
-                        kill_events.clear()
-                        damage_events.clear()
-                        destroyed_treasures.clear()
-                        destroyed_furniture.clear()
-                        bullet_events.clear()
+                    if mode is not None and not lobby.active_player_ids(mode):
+                        reset_match_events(mode)
                 conn.sendall(pickle.dumps(lobby.status(player_id)))
                 continue
 
@@ -242,12 +209,19 @@ def handle_client(conn, player_id):
                 conn.sendall(pickle.dumps(lobby_status))
                 continue
 
+            with player_lock:
+                mode = lobby.mode_for(player_id)
+                if mode is None:
+                    conn.sendall(pickle.dumps({}))
+                    continue
+                events = match_events[mode]
+
             for treasure in client_data.get("destroyed_treasures", []):
                 if len(treasure) == 2:
-                    destroyed_treasures.add((int(treasure[0]), int(treasure[1])))
+                    events["destroyed_treasures"].add((int(treasure[0]), int(treasure[1])))
             for furniture in client_data.get("destroyed_furniture", []):
                 if len(furniture) == 2:
-                    destroyed_furniture.add((int(furniture[0]), int(furniture[1])))
+                    events["destroyed_furniture"].add((int(furniture[0]), int(furniture[1])))
 
             # 3. 서버에 저장된 해당 유저 데이터 갱신
             players[player_id]["posX"] = client_data["posX"]
@@ -292,9 +266,11 @@ def handle_client(conn, player_id):
                 players[player_id]["revive_armed"] = False
             rune_ping = client_data.get("rune_ping")
             if isinstance(rune_ping, (list, tuple)) and len(rune_ping) == 2:
-                rune_alerts.append((float(rune_ping[0]), float(rune_ping[1]), time.monotonic() + RUNE_ALERT_DURATION_MS / 1000))
+                events["rune_alerts"].append((float(rune_ping[0]), float(rune_ping[1]), time.monotonic() + RUNE_ALERT_DURATION_MS / 1000))
             now_monotonic = time.monotonic()
-            rune_alerts[:] = [alert for alert in rune_alerts if alert[2] > now_monotonic]
+            events["rune_alerts"][:] = [
+                alert for alert in events["rune_alerts"] if alert[2] > now_monotonic
+            ]
             stealth_token = int(client_data.get("stealth_token", 0))
             if stealth_token != players[player_id]["stealth_token"]:
                 players[player_id]["stealth_token"] = stealth_token
@@ -307,7 +283,7 @@ def handle_client(conn, player_id):
                 )
             )
 
-            lobby_state = lobby.status()
+            lobby_state = lobby.status(player_id)
             zone_elapsed_ms = (
                 lobby_state.get("elapsed_ms", 0)
                 if lobby.zone_enabled_for(player_id)
@@ -337,6 +313,8 @@ def handle_client(conn, player_id):
 
             for hit_event in client_data.get("hit_events", []):
                 target_id = int(hit_event.get("target_id", 0))
+                if target_id not in lobby.visible_player_ids(player_id):
+                    continue
                 target = players.get(target_id)
                 if not target or target["hp"] <= 0:
                     continue
@@ -347,28 +325,28 @@ def handle_client(conn, player_id):
                     damage *= HEADSHOT_DAMAGE_MULTIPLIER
                 previous_hp = target["hp"]
                 target["hp"] = max(0, target["hp"] - damage)
-                damage_events.append({
-                    "event_id": next_damage_event_id,
+                events["damage_events"].append({
+                    "event_id": events["next_damage_event_id"],
                     "attacker_id": player_id,
                     "target_id": target_id,
                     "damage": damage,
                     "hit_part": hit_event.get("hit_part", "body"),
                 })
-                next_damage_event_id += 1
+                events["next_damage_event_id"] += 1
                 if (
                     previous_hp > 0
                     and target["hp"] <= 0
                     and not target.get("revive_armed", False)
                 ):
-                    kill_events.append({
-                        "event_id": next_kill_event_id,
+                    events["kill_events"].append({
+                        "event_id": events["next_kill_event_id"],
                         "killer_id": player_id,
                         "target_id": target_id,
                         "killer_name": players[player_id].get("name", "플레이어"),
                         "target_name": target.get("name", "플레이어"),
                         "weapon_id": client_data.get("weapon_id", DEFAULT_WEAPON_ID),
                     })
-                    next_kill_event_id += 1
+                    events["next_kill_event_id"] += 1
                 stun_ms = max(0, int(hit_event.get("stun_ms", 0)))
                 if stun_ms:
                     target["stunned_until"] = max(
@@ -386,7 +364,7 @@ def handle_client(conn, player_id):
                     bullet_event["owner_id"] = player_id
                     bullet_event["event_id"] = next_bullet_event_id
                     next_bullet_event_id += 1
-                    bullet_events.append(bullet_event)
+                    events["bullet_events"].append(bullet_event)
 
 
             # 4. 현재 접속한 모든 유저들의 데이터를 통째로 패킹해서 응답

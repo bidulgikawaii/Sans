@@ -42,7 +42,7 @@ class Imageload:
         self.BackG = self._load_image_file(self.root / "BackG.png")
         self.KillLog = self._load_kill_log()
 
-        self.Liple = self._load_scaled_image("laiple.png", (128, 64))
+        self.Liple = self._load_scaled_image("Liple.png", (128, 64))
         self.Pistol = self._load_scaled_image("pistol_idle_transparent.png", PISTOL_IMAGE_SIZE)
         self.PistolFire = self._load_scaled_image("pistol_fire_transparent.png", PISTOL_IMAGE_SIZE)
         self.PistolSmoke = self._load_scaled_image("pistol_smoke_transparent.png", PISTOL_IMAGE_SIZE)

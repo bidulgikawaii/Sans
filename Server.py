@@ -196,6 +196,7 @@ def handle_client(conn, player_id):
                 with player_lock:
                     mode = lobby.mode_for(player_id)
                     lobby.leave(player_id)
+                    result_pending_player_ids.discard(player_id)
                     if mode is not None and not lobby.active_player_ids(mode):
                         reset_match_events(mode)
                 conn.sendall(pickle.dumps(lobby.status(player_id)))
@@ -402,7 +403,11 @@ def handle_client(conn, player_id):
                 ):
                     winner_id = alive_ids[0]
                     completed_match_winner_id = winner_id
-                    result_pending_player_ids = set(match_player_ids) & players.keys()
+                    result_pending_player_ids = (
+                        set(match_player_ids)
+                        & lobby.active_player_ids(GAME_MODE_NORMAL)
+                        & players.keys()
+                    )
             # 네트워크 직렬화 전 복사본을 만들되, pickle 왕복은 피합니다.
             snapshot = copy.deepcopy(active_players)
             pending_bullets = [

@@ -539,7 +539,7 @@ weapon_state = WeaponState()
 vision_shape_override = None
 
 
-def reset_match_state(regenerate_world=False):
+def reset_match_state(regenerate_world=False, independent_world=False):
     """새 경기에 들어갈 때 이전 경기의 클라이언트 상태를 초기화합니다."""
     global match_result, result_started_at, system_message, revive_token, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
     global pending_heal_amount, vision_skill_until, shield_until, haste_until
@@ -554,12 +554,19 @@ def reset_match_state(regenerate_world=False):
     global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
     global healing_item_count, mouse_fire_hold
     global match_spawn_index
+    global spawn_tiles
     if regenerate_world:
+        world_seed = (
+            random.SystemRandom().getrandbits(32)
+            if independent_world
+            else init_data["seed"]
+        )
         TileGene.generate_map(
             MAP_WIDTH_TILES,
             MAP_HEIGHT_TILES,
-            seed_value=init_data["seed"],
+            seed_value=world_seed,
         )
+        spawn_tiles = get_fixed_spawn_tiles()
     for collection in (
         bullets, remote_bullets, kill_feed, active_bombs, active_explosions,
         supply_drops, pending_treasure_destroys, pending_furniture_destroys,
@@ -713,7 +720,7 @@ def begin_lobby_join(mode):
 def start_practice_match():
     global ScreenState, selected_game_mode, debug_mode, local_match
     global game_start_banner_until
-    reset_match_state(regenerate_world=True)
+    reset_match_state(regenerate_world=True, independent_world=True)
     debug_mode = True
     local_match = True
     selected_game_mode = GAME_MODE_DEBUG
@@ -1511,7 +1518,7 @@ def handle_game_events():
             handler(event, mouse_pos)
 
 
-def GameFrame():
+def GameFrame(practice_mode=False):
     global running, ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, camera_fov, camera_zoom, match_result, local_stun_until, zone_elapsed_ms, game_start_banner_until
     global screen_shake, server_players, bullets, remote_bullets, processed_bullet_events, processed_damage_event_ids, MousePos, system_message, kill_feed, main_weapon_id
     global vision_shape_override, vision_skill_until, shield_until, haste_until, last_lobby_request_at, local_match
@@ -1527,8 +1534,10 @@ def GameFrame():
         return
     now = pygame.time.get_ticks()
     revived_after_server_update = False
-    if debug_mode and training_dummy is None:
+    if (practice_mode or debug_mode) and training_dummy is None:
         respawn_training_dummy()
+    # 연습 프레임은 서버 스냅샷을 읽지 않고 로컬 플레이 상태만 사용합니다.
+    frame_server_players = {} if practice_mode else server_players
     damage_numbers = [
         number for number in damage_numbers
         if now - number["started_at"] < number["lifetime"]
@@ -1649,7 +1658,7 @@ def GameFrame():
             count=24, radius=BOMB_RADIUS, lifetime=500, size=6,
         )
         screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 8)
-        for p_id, p_info in server_players.items():
+        for p_id, p_info in frame_server_players.items():
             if is_hidden_player(p_info):
                 continue
             player_center_x = p_info["posX"] + IML.Player.get_width() / 2
@@ -1661,7 +1670,7 @@ def GameFrame():
                     "damage": BOMB_DAMAGE,
                     "hit_part": "body",
                 })
-        if debug_mode and training_dummy is not None and training_dummy.Hp > 0:
+        if (practice_mode or debug_mode) and training_dummy is not None and training_dummy.Hp > 0:
             dummy_center_x = training_dummy.rect.centerx
             dummy_center_y = training_dummy.rect.centery
             if math.hypot(dummy_center_x - bomb["x"], dummy_center_y - bomb["y"]) <= BOMB_RADIUS:
@@ -1693,8 +1702,9 @@ def GameFrame():
         IML.Player.get_width(),
         IML.Player.get_height(),
     )
+    # 스킬 은신과 지형 은폐를 분리해 서버가 각각의 상태를 전달합니다.
     in_bush = TileGene.is_in_bush(player_world_x, player_world_y)
-    send_data["stealth"] = now < stealth_until or in_bush
+    send_data["stealth"] = now < stealth_until
     send_data["in_bush"] = in_bush
     send_data["stealth_token"] = stealth_token
     send_data["wards"] = list(wards)
@@ -1730,7 +1740,7 @@ def GameFrame():
 
     try:
         server_raw = None
-        if not local_match:
+        if not practice_mode and not local_match:
             client.send(pickle.dumps(send_data))
             server_raw = client.recv(NETWORK_BUFFER_SIZE)
         if server_raw:
@@ -1844,6 +1854,10 @@ def GameFrame():
             ScreenState = "LoadingView"
             return
 
+
+    # 온라인은 이번 프레임의 서버 스냅샷, 연습은 빈 원격 상태만 사용합니다.
+    frame_server_players = {} if practice_mode else server_players
+
     # 카메라 이동
     player_center_x, player_center_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
     target_camera_x, target_camera_y = get_camera_target(player_center_x, player_center_y, ScreenX, ScreenY, camera_zoom)
@@ -1945,12 +1959,12 @@ def GameFrame():
     # ------------------ [게임 월드 그리기] ------------------
     display.fill((0, 0, 200))
     TileGene.draw(display, CameraPosX, CameraPosY, camera_zoom)
-    zone_enabled = not debug_mode and selected_game_mode == GAME_MODE_NORMAL
+    zone_enabled = not (practice_mode or debug_mode) and selected_game_mode == GAME_MODE_NORMAL
     if zone_enabled:
         MagneticZoneState.draw(display, CameraPosX, CameraPosY, camera_zoom, zone_elapsed_ms)
 
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
-    if debug_mode and not easter_egg_found:
+    if (practice_mode or debug_mode) and not easter_egg_found:
         map_center_x = TileGene.map_width * TileGene.tile_size / 2
         map_center_y = TileGene.map_height * TileGene.tile_size / 2
         if math.hypot(player_world_x - map_center_x, player_world_y - map_center_y) <= EASTER_EGG_DISTANCE:
@@ -2007,7 +2021,7 @@ def GameFrame():
                     system_message = "보물상자: 탄창이 최대치로 회복되었습니다."
                 bullet.is_active = False
                 continue
-            for p_id, p_info in server_players.items():
+            for p_id, p_info in frame_server_players.items():
                 if int(p_id) == my_id or is_hidden_player(p_info):
                     continue
                 head, body = Player.hitboxes_for_position(
@@ -2027,7 +2041,7 @@ def GameFrame():
                         count=12, speed=65, lifetime=350, size=4,
                     )
                     break
-            if bullet.is_active and debug_mode and training_dummy is not None:
+            if bullet.is_active and (practice_mode or debug_mode) and training_dummy is not None:
                 hit_part = training_dummy.check_bullet_hit(bullet.rect, bullet.damage)
                 if hit_part:
                     dealt_damage = bullet.damage * (HEADSHOT_DAMAGE_MULTIPLIER if hit_part == "head" else 1)
@@ -2045,13 +2059,14 @@ def GameFrame():
                         training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
                     break
     bullets = [b for b in bullets if b.is_active]
-    if debug_mode and training_dummy is not None and training_dummy.Hp <= 0 and now >= training_dummy.respawn_at:
+    if (practice_mode or debug_mode) and training_dummy is not None and training_dummy.Hp <= 0 and now >= training_dummy.respawn_at:
         respawn_training_dummy()
 
     # 서버 스냅샷에는 같은 발사 이벤트가 모든 플레이어 항목에 포함될 수
     # 있으므로 event_id 기준으로 한 번만 생성합니다.
-    for p_info in server_players.values():
-        if is_hidden_player(p_info):
+    for p_info in frame_server_players.values():
+        # 부쉬에 숨은 플레이어의 발사 이벤트는 기존처럼 다른 플레이어에게 노출하지 않습니다.
+        if is_hidden_player(p_info) or p_info.get("stealth", False) or p_info.get("in_bush", False):
             continue
         for bullet_info in p_info.get("bullets", []):
             event_id = bullet_info.get("event_id")
@@ -2126,7 +2141,7 @@ def GameFrame():
 
     visible_player_ids = set()
     # 다른 플레이어 그리기
-    remote_players = {} if debug_mode else server_players
+    remote_players = {} if practice_mode or debug_mode else frame_server_players
     for p_id, p_info in remote_players.items():
         if int(p_id) == my_id or is_hidden_player(p_info):
             continue
@@ -2137,16 +2152,21 @@ def GameFrame():
             IML.Player.get_width(),
             IML.Player.get_height(),
         )
+        target_in_bush = p_info.get("in_bush", False)
         close_to_bush = math.hypot(
             other_world_x - player_world_x,
             other_world_y - player_world_y,
         ) <= MAP_BUSH_VISIBLE_DISTANCE
+        # 스킬 은신은 관찰자의 위치와 무관하게 유지합니다.
         if p_info.get("stealth", False):
+            continue
+        # 부쉬 은폐는 관찰자도 부쉬 안에 있을 때만 해제됩니다.
+        if target_in_bush and not in_bush:
             continue
 
         bush_fov_bonus = (
             BUSH_VISION_FOV_BONUS
-            if p_info.get("in_bush", False) and close_to_bush
+            if target_in_bush and close_to_bush
             else 0
         )
         if not is_visible(other_world_x, other_world_y, bush_fov_bonus):
@@ -2407,7 +2427,7 @@ def GameFrame():
             camera_zoom,
         )
         for p_id in visible_player_ids:
-            p_info = server_players.get(p_id)
+            p_info = frame_server_players.get(p_id)
             if not p_info:
                 continue
             head, body = Player.hitboxes_for_position(
@@ -2424,7 +2444,7 @@ def GameFrame():
                 CameraPosY,
                 camera_zoom,
             )
-        if debug_mode:
+        if practice_mode or debug_mode:
             practice_view.draw_training_dummy_hitboxes(
                 training_dummy, CameraPosX, CameraPosY, camera_zoom
             )
@@ -2476,7 +2496,7 @@ def GameFrame():
 
     for ward_x, ward_y in wards:
         draw_ward(display, ward_x, ward_y, CameraPosX, CameraPosY, camera_zoom)
-    for player_id, player_info in server_players.items():
+    for player_id, player_info in frame_server_players.items():
         if int(player_id) == my_id or is_hidden_player(player_info):
             continue
         for ward_x, ward_y in player_info.get("wards", []):
@@ -2522,9 +2542,9 @@ def GameFrame():
             my_player.X + my_player.rect.width / 2,
             my_player.Y + my_player.rect.height / 2,
         ),
-        server_players,
+        frame_server_players,
         my_id,
-        training_dummy if debug_mode else None,
+        training_dummy if practice_mode or debug_mode else None,
         rune_alerts,
         MagneticZoneState if zone_enabled else None,
         zone_elapsed_ms,
@@ -2601,7 +2621,7 @@ def GameFrame():
         message_text = GuiFont.render(system_message, True, (255, 255, 255))
         display.blit(message_text, (30, ScreenY - 42))
     
-    if debug_mode: # 스킬 창 상태 표시 (우측 상단)
+    if practice_mode or debug_mode: # 스킬 창 상태 표시 (우측 상단)
         if zone_enabled:
             zone_center_x, zone_center_y = get_player_world_center(
                 my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
@@ -2626,11 +2646,11 @@ def GameFrame():
 
 
 def GameView():
-    GameFrame()
+    GameFrame(practice_mode=False)
 
 
 def PracticeGameView():
-    GameFrame()
+    GameFrame(practice_mode=True)
 
 
 while running: 

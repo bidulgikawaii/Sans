@@ -279,12 +279,10 @@ def handle_client(conn, player_id):
             if stealth_token != players[player_id]["stealth_token"]:
                 players[player_id]["stealth_token"] = stealth_token
                 players[player_id]["stealth_until"] = time.monotonic() + STEALTH_DURATION_MS / 1000
+            # stealth는 스킬 은신만 나타내며, 부쉬 은폐는 in_bush로 별도 전달합니다.
             players[player_id]["stealth"] = (
-                players[player_id]["in_bush"]
-                or (
-                    time.monotonic() < players[player_id]["stealth_until"]
-                    and players[player_id]["stealth_token"] == stealth_token
-                )
+                time.monotonic() < players[player_id]["stealth_until"]
+                and players[player_id]["stealth_token"] == stealth_token
             )
 
             lobby_state = lobby.status(player_id)

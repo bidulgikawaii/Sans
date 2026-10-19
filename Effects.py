@@ -4,6 +4,7 @@ import random
 import pygame
 
 
+# 이동량은 초 단위 경과 시간으로 적분하고, 수명은 밀리초 기준으로 감소시킵니다.
 class Particle:
     def __init__(self, x, y, color, velocity, lifetime, size=4, gravity=0.0):
         self.x = x

@@ -21,6 +21,7 @@ from Config import (
 )
 
 # 글로벌 이미지 로더
+# 보유 스킬 목록과 실제 사용 슬롯을 별도로 관리해, 인벤토리 보유만으로 스킬이 발동하지 않게 합니다.
 image_loader = None
 
 def set_image_loader(loader):

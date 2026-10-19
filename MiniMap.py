@@ -33,6 +33,7 @@ class MiniMap:
         return generator.map_width, generator.map_height, generator.tile_size, len(generator.map_data)
 
     def _build_map_surface(self):
+        # 정적인 타일 지형은 축소 Surface로 한 번 그려 두고, 프레임마다 동적 표식만 덧그립니다.
         generator = self.tile_generator
         map_width = max(1, generator.map_width)
         map_height = max(1, generator.map_height)

@@ -6,6 +6,7 @@ from Config import MAIN_SCREEN_BACKGROUND_COLOR
 class MainScreenRenderer:
     """메인 메뉴와 로비 화면의 배치와 그리기를 담당합니다."""
 
+    # 화면 표현과 입력 처리를 분리해, 버튼 영역을 호출부가 상태 전환에 사용합니다.
     def __init__(self, surface, titles, font, screen_size):
         self.surface = surface
         self.titles = titles

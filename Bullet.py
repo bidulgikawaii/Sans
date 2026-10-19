@@ -15,6 +15,7 @@ _BULLET_IMAGE_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "Image", BULLET_IMAGE_FILE
 )
 
+# 크기별 총알 Surface를 재사용해 발사 때마다 같은 이미지 변환을 반복하지 않습니다.
 
 @lru_cache(maxsize=16)
 def _get_bullet_surface(size):
@@ -31,6 +32,7 @@ def _get_bullet_surface(size):
 def _get_bullet_image():
     return pygame.image.load(_BULLET_IMAGE_PATH).convert_alpha()
 
+# 발사 시점의 원점과 조준 방향으로 궤적을 고정해, 이후 플레이어 이동과 분리합니다.
 class Bullet:
     def __init__(
         self,

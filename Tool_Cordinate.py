@@ -1,3 +1,4 @@
+# 카메라 좌표는 월드 원점, zoom은 월드 픽셀을 화면 픽셀로 바꾸는 배율입니다.
 def world_to_screen(world_x, world_y, camera_x, camera_y, zoom=1.0):
     return (world_x - camera_x) * zoom, (world_y - camera_y) * zoom
 

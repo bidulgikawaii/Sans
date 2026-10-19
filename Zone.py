@@ -9,6 +9,7 @@ class MagneticZone:
         self.world_width = map_width_tiles * tile_size
         self.world_height = map_height_tiles * tile_size
         self.center = pygame.Vector2(self.world_width / 2, self.world_height / 2)
+        # 단계 사이의 크기는 시간에 따라 선형 보간하고, 마지막 단계에서는 최종 비율로 고정합니다.
         self.stages = ((60_000, 0.72), (110_000, 0.42), (180_000, MAGNETIC_ZONE_FINAL_RATIO))
         self._overlay = None
         self._overlay_size = None

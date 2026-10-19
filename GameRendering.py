@@ -4,6 +4,7 @@ from functools import lru_cache
 import pygame
 
 
+# 매 프레임 같은 폰트·크기·텍스트 결과를 재사용해 반복 렌더링 비용을 줄입니다.
 @lru_cache(maxsize=8)
 def _get_font(path, size):
     """경고 표시용 폰트를 프레임마다 다시 만들지 않도록 캐시합니다."""

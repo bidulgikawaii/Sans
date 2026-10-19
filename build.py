@@ -4,6 +4,7 @@ Run from the project directory:
     python build.py
 """
 
+# 클라이언트와 서버를 각각 빌드해 GUI 실행 정책과 콘솔 진단을 분리합니다.
 from __future__ import annotations
 
 import os

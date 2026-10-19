@@ -4,6 +4,7 @@ import pygame
 from Config import *
 from ImageLoad import *
 
+# 이동을 축별로 충돌 검사하면 벽에 대각선으로 닿아도 벽을 따라 미끄러질 수 있습니다.
 class Player:
     def __init__(self, x, y, size, IML: Imageload,tile_Gene = None):
         self.image = IML.GetPlayer()
@@ -145,7 +146,7 @@ class Player:
                 candidate_x = self.X + step_x
                 candidate_y = self.Y + step_y
                 next_head_hitbox, next_body_hitbox = self.hitboxes_for_position(
-                    candidate_x, candidate_y, self.rect.width, self.rect.height
+                    candidate_x, candidate_y, self.rect.width -0.5, self.rect.height -0.5
                 )
                 margin = PLAYER_COLLISION_MARGIN
                 next_head_hitbox = next_head_hitbox.inflate(-margin * 2, -margin * 2)

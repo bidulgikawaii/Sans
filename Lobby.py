@@ -29,6 +29,7 @@ class LobbyState:
             self.started[mode] = True
             self.started_at[mode] = time.monotonic()
             self.start_at[mode] = None
+            # 시작 시점의 인원만 경기 참가자로 고정해 이후 접속자가 진행 중인 경기에 끼지 못하게 합니다.
             self.match_player_ids[mode] = self._player_ids(mode)
 
     def join(self, player_id, mode, debug_enabled=False):

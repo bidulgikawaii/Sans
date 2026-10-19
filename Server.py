@@ -38,6 +38,7 @@ server.listen()
 print(f"서버 시작: {bind_ip}:{SERVER_PORT}")
 
 # 서버가 총괄하는 플레이어들의 실시간 딕셔너리
+# 클라이언트 이벤트를 검증해 HP와 승리 상태를 갱신하고, 결과를 스냅샷으로 돌려줍니다.
 players = {}
 player_lock = threading.Lock()
 

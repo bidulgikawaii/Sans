@@ -26,6 +26,7 @@ class WeaponConfig:
     bullet_color: tuple = (255, 255, 0)
 
 
+# 무기 제원은 불변 설정으로 두고, 탄약·재장전 시각은 경기 중 상태 객체에서 따로 관리합니다.
 WEAPONS = {
     "pistol": WeaponConfig(
         "권총", damage=12, magazine_size=14, reserve_ammo=42, fire_interval=0.22,

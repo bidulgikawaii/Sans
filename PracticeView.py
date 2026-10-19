@@ -7,6 +7,7 @@ from Tool_Cordinate import world_to_screen
 class PracticeView:
     """훈련장 더미와 훈련 전용 상태 표시를 그립니다."""
 
+    # 훈련 상태의 소유권은 호출부에 두고, 이 클래스는 화면 표현만 담당합니다.
     def __init__(self, surface, font, screen_width):
         self.surface = surface
         self.font = font

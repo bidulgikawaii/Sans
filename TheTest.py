@@ -33,6 +33,7 @@ from GameRendering import (
 from GameAudio import load_effect_sound, play_effect_sound
 from Zone import MagneticZone
 
+# 클라이언트는 입력과 화면을 조정하고, 경기의 공유 상태는 서버 응답으로 확정합니다.
 pygame.init()
 pygame.display.set_caption("전설적인 게임")
 display = pygame.display.set_mode((ScreenX, ScreenY), 0, 32)
@@ -483,9 +484,10 @@ def collect_treasure(tile_position):
         system_message = f"보물상자 획득: [{obtained_skill}] 스킬을 얻었습니다."
     else:
         weapon_state.magazine_ammo = weapon_state.config.magazine_size
+        weapon_state.reserve_ammo += weapon_state.config.magazine_size
         weapon_state.reloading = False
         preserve_magazine_after_chest = True
-        system_message = "보물상자 획득: 탄창이 최대치로 회복되었습니다."
+        system_message = f"보물상자 획득: 탄창 회복, 예비 탄약 +{weapon_state.config.magazine_size}"
     return True
 
 
@@ -1205,7 +1207,7 @@ def handle_key_event(event, _mouse_pos):
 
     key_actions = {
         pygame.K_ESCAPE: lambda _key: request_game_exit(),
-        pygame.K_i: lambda _key: toggle_inventory(),
+        pygame.K_b: lambda _key: toggle_inventory(),
         pygame.K_h: lambda _key: use_healing_item(),
         pygame.K_v: lambda _key: cycle_vision_shape(),
         pygame.K_q: lambda _key: activate_quick_slot(_key),
@@ -2016,9 +2018,10 @@ def GameFrame(practice_mode=False):
                     system_message = f"보물상자: [{obtained_skill}] 인벤토리에 저장"
                 else:
                     weapon_state.magazine_ammo = weapon_state.config.magazine_size
+                    weapon_state.reserve_ammo += weapon_state.config.magazine_size
                     weapon_state.reloading = False
                     preserve_magazine_after_chest = True
-                    system_message = "보물상자: 탄창이 최대치로 회복되었습니다."
+                    system_message = f"보물상자: 탄창 회복, 예비 탄약 +{weapon_state.config.magazine_size}"
                 bullet.is_active = False
                 continue
             for p_id, p_info in frame_server_players.items():

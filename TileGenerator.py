@@ -29,6 +29,7 @@ VISION_LINE = "line"            # 전방의 얇은 직선 시야
 # [커스텀 가능] 타일 한 칸의 픽셀 크기입니다. 맵 해상도와 렌더링 비용에 영향을 줍니다.
 DEFAULT_TILE_SIZE = 32
 
+# 지형 생성 결과를 충돌·시야 판정에도 공유해 화면과 게임 규칙이 같은 맵을 참조하게 합니다.
 class Tile:
     def __init__(self, tile_type, is_walkable):
         # [커스텀 가능] 새 타일 종류의 번호와 이동 가능 여부를 설정합니다.

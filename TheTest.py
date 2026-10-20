@@ -1520,42 +1520,8 @@ def handle_game_events():
             handler(event, mouse_pos)
 
 
-def GameFrame(practice_mode=False):
-    global running, ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, camera_fov, camera_zoom, match_result, local_stun_until, zone_elapsed_ms, game_start_banner_until
-    global screen_shake, server_players, bullets, remote_bullets, processed_bullet_events, processed_damage_event_ids, MousePos, system_message, kill_feed, main_weapon_id
-    global vision_shape_override, vision_skill_until, shield_until, haste_until, last_lobby_request_at, local_match
-    global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys, pending_furniture_destroys, pending_hit_events, pending_heal_amount, wards, active_rune_tile, rune_alerts
-    global visibility_polygon_cache, mouse_fire_hold, last_effect_tick, preserve_magazine_after_chest
-    global aim_lock_until, aim_locked_pos, weapon_fire_until
-    global teleport_anchor, teleport_anchor_expires_at
-    global training_dummy, damage_numbers, easter_egg_found, easter_egg_flash_until
-
-    MousePos = pygame.mouse.get_pos()
-    if my_player.Hp <= 0 and not use_revive_skill():
-        ScreenState = "GameOver"
-        return
-    now = pygame.time.get_ticks()
-    revived_after_server_update = False
-    if (practice_mode or debug_mode) and training_dummy is None:
-        respawn_training_dummy()
-    # 연습 프레임은 서버 스냅샷을 읽지 않고 로컬 플레이 상태만 사용합니다.
-    frame_server_players = {} if practice_mode else server_players
-    damage_numbers = [
-        number for number in damage_numbers
-        if now - number["started_at"] < number["lifetime"]
-    ]
-    if teleport_anchor is not None and now >= teleport_anchor_expires_at:
-        teleport_anchor = None
-        teleport_anchor_expires_at = 0
-        skill_cooldowns["텔포"] = now + TELEPORT_COOLDOWN_MS
-        system_message = "텔포석상이 사라졌습니다. 15초 후 다시 사용할 수 있습니다."
-    handle_game_events()
-
-    if mouse_fire_hold and weapon_state.config.automatic and weapon_state.can_fire():
-        fire_bullet()
-
-    Weapon_Pos = pygame.mouse.get_pos()
-
+def _update_player_movement(now):
+    """Apply movement modifiers, input, and weapon reload updates."""
     haste_bonus = (
         PLAYER_HASTE_SPEED - PLAYER_NORMAL_SPEED if now < haste_until else 0
     )
@@ -1579,6 +1545,10 @@ def GameFrame(practice_mode=False):
         my_player.handle_input(dash_requested)
     weapon_state.update_reload()
 
+
+def _update_rune_ping():
+    """Trigger one rune ping when entering a neighboring rune tile."""
+    global active_rune_tile
     current_tile = (
         int((my_player.X + my_player.rect.width / 2) // TileGene.tile_size),
         int((my_player.Y + my_player.rect.height / 2) // TileGene.tile_size),
@@ -1604,6 +1574,10 @@ def GameFrame(practice_mode=False):
     else:
         active_rune_tile = None
 
+
+def _update_frame_particles(now):
+    """Advance particles and expire temporary vision effects."""
+    global last_effect_tick, vision_shape_override, vision_skill_until
     effect_delta = max(0, now - last_effect_tick)
     last_effect_tick = now
     particles.update(effect_delta)
@@ -1616,9 +1590,11 @@ def GameFrame(practice_mode=False):
     if vision_skill_until and now >= vision_skill_until:
         vision_skill_until = 0
         vision_shape_override = None
-    player_center_x, player_center_y = get_player_world_center(
-        my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
-    )
+
+
+def _update_supply_drops(now):
+    """Spawn, expire, and collect supply drops exactly once."""
+    global next_supply_drop_at, supply_drops, system_message
     if now >= next_supply_drop_at:
         spawn_supply_drop(now)
         next_supply_drop_at = now + SUPPLY_DROP_INTERVAL_MS
@@ -1642,6 +1618,10 @@ def GameFrame(practice_mode=False):
         remaining_supply_drops.append(supply)
     supply_drops = remaining_supply_drops
 
+
+def _update_bombs(now, frame_server_players, practice_mode):
+    """Resolve expired bombs and keep active explosions."""
+    global active_bombs, active_explosions, screen_shake
     pending_bombs = []
     for bomb in active_bombs:
         if now < bomb["explode_at"]:
@@ -1690,7 +1670,9 @@ def GameFrame(practice_mode=False):
     active_bombs = pending_bombs
     active_explosions = [explosion for explosion in active_explosions if now < explosion["until"]]
 
-    # ★ [정리] 서버 데이터 동기화 - 필요한 움직임 데이터만 전송
+
+def _prepare_client_snapshot(now):
+    """Prepare this frame snapshot and consume newly fired bullet flags."""
     send_data["posX"] = my_player.X
     send_data["posY"] = my_player.Y
     send_data["hp"] = my_player.Hp
@@ -1739,6 +1721,304 @@ def GameFrame(practice_mode=False):
     for bullet in bullets:
         if hasattr(bullet, 'just_fired'):
             bullet.just_fired = False
+    return in_bush
+
+
+def _update_camera_and_aim():
+    """Update the camera before computing the weapon aim angle."""
+    global AimCameraPosX, AimCameraPosY, CameraPosX, CameraPosY, Weapon_Angle, screen_shake
+    player_center_x, player_center_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
+    target_camera_x, target_camera_y = get_camera_target(player_center_x, player_center_y, ScreenX, ScreenY, camera_zoom)
+    CameraPosX += (target_camera_x - CameraPosX) * lerp
+    CameraPosY += (target_camera_y - CameraPosY) * lerp
+    AimCameraPosX, AimCameraPosY = CameraPosX, CameraPosY
+
+    if screen_shake > 0:
+        CameraPosX += random.randint(-screen_shake, screen_shake)
+        CameraPosY += random.randint(-screen_shake, screen_shake)
+        screen_shake -= 1
+
+    CameraPosX, CameraPosY = TileGene.clamp_camera(
+        CameraPosX, CameraPosY, ScreenX, ScreenY, camera_zoom
+    )
+
+    player_screen_x, player_screen_y = world_to_screen(my_player.X, my_player.Y, CameraPosX, CameraPosY, camera_zoom)
+    player_center_screen_x, player_center_screen_y = get_player_screen_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height(), CameraPosX, CameraPosY, camera_zoom)
+
+    aim_player_center = get_player_screen_center(
+        my_player.X,
+        my_player.Y,
+        IML.Player.get_width(),
+        IML.Player.get_height(),
+        AimCameraPosX,
+        AimCameraPosY,
+        camera_zoom,
+    )
+    Weapon_Angle = Tool.GetAtn2Angle_Degrees(aim_player_center, Weapon_Pos)
+    return player_screen_y, player_center_screen_x, player_center_screen_y
+
+
+def _draw_vision_overlays(player_world_x, player_world_y, current_vision_radius, current_vision_shape, current_vision, current_vision_width):
+    """Compose base vision, weapon vision, and ward visibility layers."""
+    base_overlay = base_vision_overlay
+    base_overlay.fill((8, 24, 42, PLAYER_BASE_VISION_ALPHA))
+    base_vision_polygon = TileGene.get_visibility_polygon(
+        player_world_x,
+        player_world_y,
+        PLAYER_BASE_VISION_RADIUS,
+        vision_shape=VISION_CIRCLE,
+    )
+    if base_vision_polygon:
+        draw_visibility_geometry(
+            base_overlay,
+            base_vision_polygon,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+        )
+    display.blit(base_overlay, (0, 0))
+
+    # 화면 전체를 어둡게 한 뒤, 아래에서 무기 시야 폴리곤만 투명하게 뚫습니다.
+    dark_overlay = vision_overlay
+    # 완전한 검정이 아니라 뒤의 맵이 살짝 보이는 반투명 검정입니다.
+    dark_overlay.fill((0, 0, 0, VISION_OVERLAY_ALPHA))
+
+    # 맵 바깥은 월드 타일이 없으므로 항상 검게 처리합니다.
+    map_screen_left = -CameraPosX * camera_zoom
+    map_screen_top = -CameraPosY * camera_zoom
+    map_screen_right = (TileGene.map_width * TileGene.tile_size - CameraPosX) * camera_zoom
+    map_screen_bottom = (TileGene.map_height * TileGene.tile_size - CameraPosY) * camera_zoom
+    pygame.draw.rect(dark_overlay, (0, 0, 0, 255), (0, 0, ScreenX, max(0, map_screen_top)))
+    pygame.draw.rect(dark_overlay, (0, 0, 0, 255), (0, min(ScreenY, map_screen_bottom), ScreenX, max(0, ScreenY - map_screen_bottom)))
+    pygame.draw.rect(dark_overlay, (0, 0, 0, 255), (0, 0, max(0, map_screen_left), ScreenY))
+    pygame.draw.rect(dark_overlay, (0, 0, 0, 255), (min(ScreenX, map_screen_right), 0, max(0, ScreenX - map_screen_right), ScreenY))
+
+    # 기본 시야는 무기 시야 밖에서도 밝은 원형 영역으로 유지합니다.
+    if base_vision_polygon:
+        draw_visibility_geometry(
+            dark_overlay,
+            base_vision_polygon,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+        )
+
+    # 위치 8픽셀, 방향 4도 단위로 묶어 마우스 이동 중 재계산을 줄입니다.
+    polygon_cache_key = (
+        round(player_world_x / 8),
+        round(player_world_y / 8),
+        round(Weapon_Angle / 4),
+        current_vision_shape,
+        current_vision_radius,
+        current_vision.vision_fov,
+        current_vision_width,
+    )
+    if polygon_cache_key not in visibility_polygon_cache:
+        # 캐시가 없을 때만 벽과 광선이 포함된 폴리곤을 계산합니다.
+        visibility_polygon_cache[polygon_cache_key] = TileGene.get_visibility_polygon(
+            player_world_x,
+            player_world_y,
+            current_vision_radius,
+            vision_shape=current_vision_shape,
+            direction_angle=Weapon_Angle,
+            fov_angle=current_vision.vision_fov,
+            vision_width=current_vision_width,
+            ray_samples=None,  # 자동 최적화 (저격총 직선은 8, 기타는 12)
+        )
+        # [최적화] 캐시 크기를 128로 증대 (저격총 직선은 각도 변화가 많음)
+        if len(visibility_polygon_cache) > 128:
+            visibility_polygon_cache.pop(next(iter(visibility_polygon_cache)))
+    visibility_polygon = visibility_polygon_cache[polygon_cache_key]
+    if visibility_polygon:
+        # 월드 폴리곤을 현재 카메라 좌표로 변환해 어두운 레이어를 뚫습니다.
+        draw_visibility_geometry(dark_overlay, visibility_polygon, CameraPosX, CameraPosY, camera_zoom)
+
+    for ward_x, ward_y in wards:
+        ward_key = (
+            "ward",
+            round(ward_x / 8),
+            round(ward_y / 8),
+            WARD_VISION_RADIUS,
+        )
+        if ward_key not in visibility_polygon_cache:
+            visibility_polygon_cache[ward_key] = TileGene.get_visibility_polygon(
+                ward_x,
+                ward_y,
+                WARD_VISION_RADIUS,
+                vision_shape=VISION_CIRCLE,
+            )
+        draw_visibility_geometry(
+            dark_overlay,
+            visibility_polygon_cache[ward_key],
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+        )
+
+    display.blit(dark_overlay, (0, 0))
+
+
+def _draw_frame_hud(now, frame_server_players, practice_mode, zone_enabled, current_vision_shape):
+    """Draw the fixed HUD after world and visibility layers."""
+    global kill_feed
+    MiniMapRenderer.draw(
+        display,
+        (
+            my_player.X + my_player.rect.width / 2,
+            my_player.Y + my_player.rect.height / 2,
+        ),
+        frame_server_players,
+        my_id,
+        training_dummy if practice_mode or debug_mode else None,
+        rune_alerts,
+        MagneticZoneState if zone_enabled else None,
+        zone_elapsed_ms,
+    )
+    kill_feed = [
+        event for event in kill_feed
+        if now - event.get("started_at", now) < 5000
+    ][-5:]
+    draw_kill_feed(
+        display,
+        kill_feed,
+        KillFeedFont,
+        IML.GetKillLog(),
+        IML.GetWeaponImage,
+        my_id,
+        player_name,
+    )
+    if game_start_banner_until > now:
+        remaining = game_start_banner_until - now
+        game_start_banner.set_alpha(min(255, max(0, remaining * 2)))
+        display.blit(game_start_banner, game_start_banner.get_rect(center=(ScreenX // 2, 150)))
+    ui_x = 30
+    ui_y = 80  
+    draw_health_bar(
+        display,
+        ui_x,
+        ui_y,
+        my_player.Hp,
+        my_player.MaxHp,
+        HpBarFrame,
+        HP_FRAME_SIZE,
+        (HEALTH_GREEN_THRESHOLD, HEALTH_YELLOW_THRESHOLD),
+    )
+    
+    # [커스텀 가능] HP 텍스트 표시 폰트 (GuiFont 사용)
+    hp_text = GuiFont.render(f"HP: {my_player.Hp} / {my_player.MaxHp}", True, (255, 255, 255))
+    display.blit(hp_text, (ui_x + HP_FRAME_SIZE[0] + 15, ui_y + 30))
+
+    # [커스텀 가능] 플레이어 ID 표시 폰트 (GuiFont 사용)
+    id_text = GuiFont.render(f"ID: {my_id}", True, (255, 255, 255))
+    display.blit(id_text, (20, 20))
+    
+    # --- [퀵슬롯 배경과 스킬 소스창] ---
+    draw_skill_panel(display)
+    hovered_skill = draw_skill_inventory(display, MousePos, inventory_open)
+    draw_healing_inventory(display)
+
+    # 하단 퀵슬롯 (�익슬롯은 항상 보임)
+    for slot in quick_slots:
+        slot.update(MousePos)  # 호버 상태 업데이트
+        slot.draw(display)
+
+    draw_quick_slot_cooldowns(display, quick_slots, skill_cooldowns, GuiFont)
+    draw_ammo_status(
+        display,
+        weapon_state,
+        GuiFont,
+        ScreenX,
+        ScreenY,
+        AMMO_PANEL_SIZE,
+        AMMO_PANEL_MARGIN,
+    )
+    
+    # ★ [추가] 스킬 툴팁 그리기 (마우스 raycast 무시 - 드래그 중이 아닐 때만)
+    if hovered_skill:
+        draw_skill_tooltip(display, MousePos, hovered_skill)
+
+    player_name_text = GuiFont.render(player_name or "플레이어", True, (255, 230, 160))
+    display.blit(player_name_text, (30, ScreenY - 78))
+
+    # 시스템 메시지
+    if system_message:
+        # [커스텀 가능] 시스템 메시지 텍스트 폰트 (GuiFont 사용)
+        message_text = GuiFont.render(system_message, True, (255, 255, 255))
+        display.blit(message_text, (30, ScreenY - 42))
+    
+    if practice_mode or debug_mode: # 스킬 창 상태 표시 (우측 상단)
+        if zone_enabled:
+            zone_center_x, zone_center_y = get_player_world_center(
+                my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
+            )
+            zone_status = MagneticZoneState.stage_text(zone_elapsed_ms)
+            if not MagneticZoneState.is_inside(zone_center_x, zone_center_y, zone_elapsed_ms):
+                zone_status = "자기장 밖: 3초 후 피해 증가"
+                zone_color = (255, 100, 100)
+            else:
+                zone_color = (255, 180, 180)
+        else:
+            zone_status = "훈련장: 자기장 비활성화"
+            zone_color = (180, 220, 255)
+        practice_view.draw_training_status(
+            current_vision_shape,
+            camera_fov,
+            CAMERA_FOV_MAX,
+            zone_status,
+            zone_color,
+        )
+
+
+def GameFrame(practice_mode=False):
+    global running, ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, camera_fov, camera_zoom, match_result, local_stun_until, zone_elapsed_ms, game_start_banner_until
+    global screen_shake, server_players, bullets, remote_bullets, processed_bullet_events, processed_damage_event_ids, MousePos, system_message, kill_feed, main_weapon_id
+    global vision_shape_override, vision_skill_until, shield_until, haste_until, last_lobby_request_at, local_match
+    global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys, pending_furniture_destroys, pending_hit_events, pending_heal_amount, wards, active_rune_tile, rune_alerts
+    global visibility_polygon_cache, mouse_fire_hold, last_effect_tick, preserve_magazine_after_chest
+    global aim_lock_until, aim_locked_pos, weapon_fire_until
+    global teleport_anchor, teleport_anchor_expires_at
+    global training_dummy, damage_numbers, easter_egg_found, easter_egg_flash_until
+
+    MousePos = pygame.mouse.get_pos()
+    if my_player.Hp <= 0 and not use_revive_skill():
+        ScreenState = "GameOver"
+        return
+    now = pygame.time.get_ticks()
+    revived_after_server_update = False
+    if (practice_mode or debug_mode) and training_dummy is None:
+        respawn_training_dummy()
+    # 연습 프레임은 서버 스냅샷을 읽지 않고 로컬 플레이 상태만 사용합니다.
+    frame_server_players = {} if practice_mode else server_players
+    damage_numbers = [
+        number for number in damage_numbers
+        if now - number["started_at"] < number["lifetime"]
+    ]
+    if teleport_anchor is not None and now >= teleport_anchor_expires_at:
+        teleport_anchor = None
+        teleport_anchor_expires_at = 0
+        skill_cooldowns["텔포"] = now + TELEPORT_COOLDOWN_MS
+        system_message = "텔포석상이 사라졌습니다. 15초 후 다시 사용할 수 있습니다."
+    handle_game_events()
+
+    if mouse_fire_hold and weapon_state.config.automatic and weapon_state.can_fire():
+        fire_bullet()
+
+    Weapon_Pos = pygame.mouse.get_pos()
+
+    _update_player_movement(now)
+
+    _update_rune_ping()
+
+    _update_frame_particles(now)
+    player_center_x, player_center_y = get_player_world_center(
+        my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
+    )
+    _update_supply_drops(now)
+
+    _update_bombs(now, frame_server_players, practice_mode)
+
+    # ★ [정리] 서버 데이터 동기화 - 필요한 움직임 데이터만 전송
+    in_bush = _prepare_client_snapshot(now)
 
     try:
         server_raw = None
@@ -1861,34 +2141,7 @@ def GameFrame(practice_mode=False):
     frame_server_players = {} if practice_mode else server_players
 
     # 카메라 이동
-    player_center_x, player_center_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
-    target_camera_x, target_camera_y = get_camera_target(player_center_x, player_center_y, ScreenX, ScreenY, camera_zoom)
-    CameraPosX += (target_camera_x - CameraPosX) * lerp
-    CameraPosY += (target_camera_y - CameraPosY) * lerp
-    AimCameraPosX, AimCameraPosY = CameraPosX, CameraPosY
-
-    if screen_shake > 0:
-        CameraPosX += random.randint(-screen_shake, screen_shake)
-        CameraPosY += random.randint(-screen_shake, screen_shake)
-        screen_shake -= 1
-
-    CameraPosX, CameraPosY = TileGene.clamp_camera(
-        CameraPosX, CameraPosY, ScreenX, ScreenY, camera_zoom
-    )
-
-    player_screen_x, player_screen_y = world_to_screen(my_player.X, my_player.Y, CameraPosX, CameraPosY, camera_zoom)
-    player_center_screen_x, player_center_screen_y = get_player_screen_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height(), CameraPosX, CameraPosY, camera_zoom)
-
-    aim_player_center = get_player_screen_center(
-        my_player.X,
-        my_player.Y,
-        IML.Player.get_width(),
-        IML.Player.get_height(),
-        AimCameraPosX,
-        AimCameraPosY,
-        camera_zoom,
-    )
-    Weapon_Angle = Tool.GetAtn2Angle_Degrees(aim_player_center, Weapon_Pos)
+    player_screen_y, player_center_screen_x, player_center_screen_y = _update_camera_and_aim()
     if weapon_state.weapon_id == "pistol" and now < weapon_fire_until and IML.GetPistolFire():
         weapon_image = IML.GetPistolFire()
     elif weapon_state.weapon_id == "pistol" and now < weapon_smoke_until and IML.GetPistolSmoke():
@@ -2249,102 +2502,7 @@ def GameFrame(practice_mode=False):
 
     
     # 기본 시야는 무기 시야와 구분되는 어두운 청색 영역으로 표시합니다.
-    base_overlay = base_vision_overlay
-    base_overlay.fill((8, 24, 42, PLAYER_BASE_VISION_ALPHA))
-    base_vision_polygon = TileGene.get_visibility_polygon(
-        player_world_x,
-        player_world_y,
-        PLAYER_BASE_VISION_RADIUS,
-        vision_shape=VISION_CIRCLE,
-    )
-    if base_vision_polygon:
-        draw_visibility_geometry(
-            base_overlay,
-            base_vision_polygon,
-            CameraPosX,
-            CameraPosY,
-            camera_zoom,
-        )
-    display.blit(base_overlay, (0, 0))
-
-    # 화면 전체를 어둡게 한 뒤, 아래에서 무기 시야 폴리곤만 투명하게 뚫습니다.
-    dark_overlay = vision_overlay
-    # 완전한 검정이 아니라 뒤의 맵이 살짝 보이는 반투명 검정입니다.
-    dark_overlay.fill((0, 0, 0, VISION_OVERLAY_ALPHA))
-
-    # 맵 바깥은 월드 타일이 없으므로 항상 검게 처리합니다.
-    map_screen_left = -CameraPosX * camera_zoom
-    map_screen_top = -CameraPosY * camera_zoom
-    map_screen_right = (TileGene.map_width * TileGene.tile_size - CameraPosX) * camera_zoom
-    map_screen_bottom = (TileGene.map_height * TileGene.tile_size - CameraPosY) * camera_zoom
-    pygame.draw.rect(dark_overlay, (0, 0, 0, 255), (0, 0, ScreenX, max(0, map_screen_top)))
-    pygame.draw.rect(dark_overlay, (0, 0, 0, 255), (0, min(ScreenY, map_screen_bottom), ScreenX, max(0, ScreenY - map_screen_bottom)))
-    pygame.draw.rect(dark_overlay, (0, 0, 0, 255), (0, 0, max(0, map_screen_left), ScreenY))
-    pygame.draw.rect(dark_overlay, (0, 0, 0, 255), (min(ScreenX, map_screen_right), 0, max(0, ScreenX - map_screen_right), ScreenY))
-
-    # 기본 시야는 무기 시야 밖에서도 밝은 원형 영역으로 유지합니다.
-    if base_vision_polygon:
-        draw_visibility_geometry(
-            dark_overlay,
-            base_vision_polygon,
-            CameraPosX,
-            CameraPosY,
-            camera_zoom,
-        )
-
-    # 위치 8픽셀, 방향 4도 단위로 묶어 마우스 이동 중 재계산을 줄입니다.
-    polygon_cache_key = (
-        round(player_world_x / 8),
-        round(player_world_y / 8),
-        round(Weapon_Angle / 4),
-        current_vision_shape,
-        current_vision_radius,
-        current_vision.vision_fov,
-        current_vision_width,
-    )
-    if polygon_cache_key not in visibility_polygon_cache:
-        # 캐시가 없을 때만 벽과 광선이 포함된 폴리곤을 계산합니다.
-        visibility_polygon_cache[polygon_cache_key] = TileGene.get_visibility_polygon(
-            player_world_x,
-            player_world_y,
-            current_vision_radius,
-            vision_shape=current_vision_shape,
-            direction_angle=Weapon_Angle,
-            fov_angle=current_vision.vision_fov,
-            vision_width=current_vision_width,
-            ray_samples=None,  # 자동 최적화 (저격총 직선은 8, 기타는 12)
-        )
-        # [최적화] 캐시 크기를 128로 증대 (저격총 직선은 각도 변화가 많음)
-        if len(visibility_polygon_cache) > 128:
-            visibility_polygon_cache.pop(next(iter(visibility_polygon_cache)))
-    visibility_polygon = visibility_polygon_cache[polygon_cache_key]
-    if visibility_polygon:
-        # 월드 폴리곤을 현재 카메라 좌표로 변환해 어두운 레이어를 뚫습니다.
-        draw_visibility_geometry(dark_overlay, visibility_polygon, CameraPosX, CameraPosY, camera_zoom)
-
-    for ward_x, ward_y in wards:
-        ward_key = (
-            "ward",
-            round(ward_x / 8),
-            round(ward_y / 8),
-            WARD_VISION_RADIUS,
-        )
-        if ward_key not in visibility_polygon_cache:
-            visibility_polygon_cache[ward_key] = TileGene.get_visibility_polygon(
-                ward_x,
-                ward_y,
-                WARD_VISION_RADIUS,
-                vision_shape=VISION_CIRCLE,
-            )
-        draw_visibility_geometry(
-            dark_overlay,
-            visibility_polygon_cache[ward_key],
-            CameraPosX,
-            CameraPosY,
-            camera_zoom,
-        )
-
-    display.blit(dark_overlay, (0, 0))
+    _draw_vision_overlays(player_world_x, player_world_y, current_vision_radius, current_vision_shape, current_vision, current_vision_width)
 
     # 시야 오버레이 위에 로컬 플레이어를 다시 그려 기본 시야에서도 항상 보이게 합니다.
     if now < stealth_until or in_bush:
@@ -2539,112 +2697,7 @@ def GameFrame(practice_mode=False):
     # =================================================================
     # 📊 고정 UI 그리기 영역 (시야 레이어보다 위에 그려야 선명하게 보입니다)
     # =================================================================
-    MiniMapRenderer.draw(
-        display,
-        (
-            my_player.X + my_player.rect.width / 2,
-            my_player.Y + my_player.rect.height / 2,
-        ),
-        frame_server_players,
-        my_id,
-        training_dummy if practice_mode or debug_mode else None,
-        rune_alerts,
-        MagneticZoneState if zone_enabled else None,
-        zone_elapsed_ms,
-    )
-    kill_feed = [
-        event for event in kill_feed
-        if now - event.get("started_at", now) < 5000
-    ][-5:]
-    draw_kill_feed(
-        display,
-        kill_feed,
-        KillFeedFont,
-        IML.GetKillLog(),
-        IML.GetWeaponImage,
-        my_id,
-        player_name,
-    )
-    if game_start_banner_until > now:
-        remaining = game_start_banner_until - now
-        game_start_banner.set_alpha(min(255, max(0, remaining * 2)))
-        display.blit(game_start_banner, game_start_banner.get_rect(center=(ScreenX // 2, 150)))
-    ui_x = 30
-    ui_y = 80  
-    draw_health_bar(
-        display,
-        ui_x,
-        ui_y,
-        my_player.Hp,
-        my_player.MaxHp,
-        HpBarFrame,
-        HP_FRAME_SIZE,
-        (HEALTH_GREEN_THRESHOLD, HEALTH_YELLOW_THRESHOLD),
-    )
-    
-    # [커스텀 가능] HP 텍스트 표시 폰트 (GuiFont 사용)
-    hp_text = GuiFont.render(f"HP: {my_player.Hp} / {my_player.MaxHp}", True, (255, 255, 255))
-    display.blit(hp_text, (ui_x + HP_FRAME_SIZE[0] + 15, ui_y + 30))
-
-    # [커스텀 가능] 플레이어 ID 표시 폰트 (GuiFont 사용)
-    id_text = GuiFont.render(f"ID: {my_id}", True, (255, 255, 255))
-    display.blit(id_text, (20, 20))
-    
-    # --- [퀵슬롯 배경과 스킬 소스창] ---
-    draw_skill_panel(display)
-    hovered_skill = draw_skill_inventory(display, MousePos, inventory_open)
-    draw_healing_inventory(display)
-
-    # 하단 퀵슬롯 (�익슬롯은 항상 보임)
-    for slot in quick_slots:
-        slot.update(MousePos)  # 호버 상태 업데이트
-        slot.draw(display)
-
-    draw_quick_slot_cooldowns(display, quick_slots, skill_cooldowns, GuiFont)
-    draw_ammo_status(
-        display,
-        weapon_state,
-        GuiFont,
-        ScreenX,
-        ScreenY,
-        AMMO_PANEL_SIZE,
-        AMMO_PANEL_MARGIN,
-    )
-    
-    # ★ [추가] 스킬 툴팁 그리기 (마우스 raycast 무시 - 드래그 중이 아닐 때만)
-    if hovered_skill:
-        draw_skill_tooltip(display, MousePos, hovered_skill)
-
-    player_name_text = GuiFont.render(player_name or "플레이어", True, (255, 230, 160))
-    display.blit(player_name_text, (30, ScreenY - 78))
-
-    # 시스템 메시지
-    if system_message:
-        # [커스텀 가능] 시스템 메시지 텍스트 폰트 (GuiFont 사용)
-        message_text = GuiFont.render(system_message, True, (255, 255, 255))
-        display.blit(message_text, (30, ScreenY - 42))
-    
-    if practice_mode or debug_mode: # 스킬 창 상태 표시 (우측 상단)
-        if zone_enabled:
-            zone_center_x, zone_center_y = get_player_world_center(
-                my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
-            )
-            zone_status = MagneticZoneState.stage_text(zone_elapsed_ms)
-            if not MagneticZoneState.is_inside(zone_center_x, zone_center_y, zone_elapsed_ms):
-                zone_status = "자기장 밖: 3초 후 피해 증가"
-                zone_color = (255, 100, 100)
-            else:
-                zone_color = (255, 180, 180)
-        else:
-            zone_status = "훈련장: 자기장 비활성화"
-            zone_color = (180, 220, 255)
-        practice_view.draw_training_status(
-            current_vision_shape,
-            camera_fov,
-            CAMERA_FOV_MAX,
-            zone_status,
-            zone_color,
-        )
+    _draw_frame_hud(now, frame_server_players, practice_mode, zone_enabled, current_vision_shape)
     # ------------------ [그리기 끝] ------------------
 
 

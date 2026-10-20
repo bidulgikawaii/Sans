@@ -57,7 +57,7 @@ class PracticeView:
         self, vision_shape, camera_fov, max_camera_fov, zone_status, zone_color
     ):
         inventory_text = self.font.render(
-            "🎒 인벤토리: [I]", True, (170, 220, 180)
+            "🎒 인벤토리: [B]", True, (170, 220, 180)
         )
         self.surface.blit(inventory_text, (self.screen_width - 300, 20))
 

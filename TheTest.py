@@ -9,6 +9,8 @@ import random
 import os
 import socket
 import pickle
+import uuid
+from dataclasses import dataclass, field
 from PlayerClass import Player
 from Tool_Cordinate import *
 from SkillAndSlot import *
@@ -44,14 +46,6 @@ selected_game_mode = GAME_MODE_NORMAL
 local_match = False
 main_weapon_id = DEFAULT_WEAPON_ID
 player_name = ""
-lobby_status = {
-    "count": 0,
-    "max_players": MAX_PLAYERS,
-    "mode": GAME_MODE_NORMAL,
-    "started": False,
-    "confirmed": False,
-}
-last_lobby_request_at = 0
 # [커스텀 가능] 게임 전체에서 사용할 기본 폰트입니다. 서체와 크기를 여기서 조정합니다.
 GuiFont = pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__)
         ),"Font","HeirofLightRegular.ttf"
@@ -84,6 +78,7 @@ def _scale_cached(image, size, smooth=True):
 class OfflineClient:
     def __init__(self):
         self.initialized = False
+        self.player_id = str(uuid.uuid4())
 
     def send(self, _data):
         return None
@@ -94,11 +89,26 @@ class OfflineClient:
     def recv(self, _size):
         if not self.initialized:
             self.initialized = True
-            return pickle.dumps({"init_id": 1, "seed": SERVER_SEED})
+            return pickle.dumps({"init_id": self.player_id, "seed": SERVER_SEED})
         return pickle.dumps({})
 
     def close(self):
         return None
+
+
+@dataclass
+class NetworkState:
+    client: object
+    init_data: dict = field(default_factory=dict)
+    player_id: str = ""
+    lobby_status: dict = field(default_factory=lambda: {
+        "count": 0,
+        "max_players": MAX_PLAYERS,
+        "mode": GAME_MODE_NORMAL,
+        "started": False,
+        "confirmed": False,
+    })
+    last_lobby_request_at: int = 0
 
 
 
@@ -118,37 +128,36 @@ def connect_to_server():
     print(f"서버 연결 실패, 로컬 모드로 실행합니다: {last_error}")
     return OfflineClient()
 
-client = connect_to_server()
+network = NetworkState(connect_to_server())
 
-init_data = pickle.loads(client.recv(1024))
-my_id = init_data["init_id"]
-print(f"내 아이디:{my_id}번 입니다.")
+network.init_data = pickle.loads(network.client.recv(1024))
+network.player_id = network.init_data["init_id"]
+print(f"내 아이디: {network.player_id} 입니다.")
 
 
 def default_player_name(player_id=None):
     """닉네임을 입력하지 않았을 때 사용할 안정적인 기본 이름입니다."""
-    return f"유저_{my_id if player_id is None else player_id}"
+    return f"유저_{network.player_id if player_id is None else player_id}"
 
 
 def reconnect_to_server():
     """서버가 재시작되어도 새 연결과 플레이어 ID를 다시 확보합니다."""
-    global client, my_id, init_data, lobby_status, last_lobby_request_at
     try:
-        client.close()
+        network.client.close()
     except OSError:
         pass
     try:
-        client = connect_to_server()
-        init_data = pickle.loads(client.recv(NETWORK_BUFFER_SIZE))
-        my_id = init_data["init_id"]
-        lobby_status = {
+        network.client = connect_to_server()
+        network.init_data = pickle.loads(network.client.recv(NETWORK_BUFFER_SIZE))
+        network.player_id = network.init_data["init_id"]
+        network.lobby_status = {
             "count": 0,
             "max_players": MAX_PLAYERS,
             "mode": GAME_MODE_NORMAL,
             "started": False,
             "confirmed": False,
         }
-        last_lobby_request_at = 0
+        network.last_lobby_request_at = 0
         return True
     except (OSError, EOFError, pickle.PickleError, KeyError):
         return False
@@ -156,23 +165,22 @@ def reconnect_to_server():
 
 def leave_lobby():
     """로비에서 나간 뒤 다음 경기에 사용할 클라이언트 상태를 정리합니다."""
-    global lobby_status, last_lobby_request_at
     try:
-        client.sendall(pickle.dumps({"type": "lobby_leave"}))
-        client.recv(NETWORK_BUFFER_SIZE)
+        network.client.sendall(pickle.dumps({"type": "lobby_leave"}))
+        network.client.recv(NETWORK_BUFFER_SIZE)
     except (OSError, EOFError, pickle.PickleError):
         reconnect_to_server()
     reset_match_state()
-    lobby_status = {
+    network.lobby_status = {
         "count": 0,
         "max_players": MAX_PLAYERS,
         "mode": GAME_MODE_NORMAL,
         "started": False,
     }
-    last_lobby_request_at = 0
+    network.last_lobby_request_at = 0
 
 
-random.seed(init_data["seed"])
+random.seed(network.init_data["seed"])
 IML = Imageload()
 main_screen = MainScreenRenderer(display, IML.GetTitles(), GuiFont, (ScreenX, ScreenY))
 practice_view = PracticeView(display, GuiFont, ScreenX)
@@ -180,7 +188,7 @@ set_ui_assets(IML.SkillWindow, IML.QuickSlot)
 set_image_loader(IML)  # SkillAndSlot에 이미지 로더 전달
 TileGene = TileGenerator()
 # [커스텀 가능] 맵 가로/세로 타일 수입니다. 타일 크기와 곱해 전체 월드 크기가 결정됩니다.
-TileGene.generate_map(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, seed_value=init_data["seed"])
+TileGene.generate_map(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, seed_value=network.init_data["seed"])
 MiniMapFont = pygame.font.Font(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"),
     18,
@@ -194,6 +202,13 @@ HpBarFrame = pygame.transform.smoothscale(IML.HpBar, HP_FRAME_SIZE)
 # 🕹️ [Player 클래스 인스턴스 생성 - 랜덤 스폰]
 p_w = IML.Player.get_width()
 p_h = IML.Player.get_height()
+WEAPON_PREVIEW_GETTERS = (
+    ("pistol", IML.GetPistol),
+    ("sniper", IML.GetSniper),
+    ("smg", IML.GetGigwan),
+    ("shotgun", IML.GetShotGun),
+    ("rifle", IML.GetLiple),
+)
 
 def get_fixed_spawn_tiles():
     """맵 전역의 안전 지점에서 서로 멀리 떨어진 스폰 좌표를 고릅니다."""
@@ -472,7 +487,7 @@ def draw_healing_inventory(surface):
 
 
 def collect_treasure(tile_position):
-    global preserve_magazine_after_chest, system_message, pending_treasure_destroys
+    global preserve_magazine_after_chest, system_message
     if not tile_position or not TileGene.destroy_treasure(*tile_position):
         return False
     pending_treasure_destroys.append(tile_position)
@@ -493,7 +508,7 @@ def collect_treasure(tile_position):
 
 def use_revive_skill():
     """퀵슬롯에 장착된 부활의 차 스킬을 사망 순간 한 번 소모합니다."""
-    global revive_token, system_message, send_data
+    global revive_token, system_message
     revive_slot = next(
         (slot for slot in quick_slots if slot.assigned_skill == "부활의 차"),
         None,
@@ -546,7 +561,7 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     global match_result, result_started_at, system_message, revive_token, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
     global pending_heal_amount, vision_skill_until, shield_until, haste_until
     global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
-    global training_dummy, server_players, preserve_magazine_after_chest
+    global training_dummy, preserve_magazine_after_chest
     global local_stun_until, zone_elapsed_ms, next_supply_drop_at
     global CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY
     global camera_fov, camera_zoom
@@ -555,13 +570,12 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     global game_start_banner_until
     global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
     global healing_item_count, mouse_fire_hold
-    global match_spawn_index
     global spawn_tiles
     if regenerate_world:
         world_seed = (
             random.SystemRandom().getrandbits(32)
             if independent_world
-            else init_data["seed"]
+            else network.init_data["seed"]
         )
         TileGene.generate_map(
             MAP_WIDTH_TILES,
@@ -662,17 +676,11 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     })
 
 def MainView():
-    global running, ScreenState, selected_game_mode, debug_mode, local_match, game_start_banner_until
-    if weapon_state.weapon_id == "pistol":
-        preview_image = IML.GetPistol()
-    elif weapon_state.weapon_id == "sniper":
-        preview_image = IML.GetSniper()
-    elif weapon_state.weapon_id == "smg":
-        preview_image = IML.GetGigwan()
-    elif weapon_state.weapon_id == "shotgun":
-        preview_image = IML.GetShotGun()
-    elif weapon_state.weapon_id == "rifle":
-        preview_image = IML.GetLiple()
+    global running, ScreenState
+    for weapon_id, get_preview_image in WEAPON_PREVIEW_GETTERS:
+        if weapon_state.weapon_id == weapon_id:
+            preview_image = get_preview_image()
+            break
     button_rects = main_screen.draw_main(weapon_state.config.name, preview_image)
 
     for event in pygame.event.get():
@@ -685,8 +693,8 @@ def MainView():
                 start_practice_match()
             elif event.key == pygame.K_SPACE:
                 ScreenState = "NameInputView"
-            elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_7):
-                if event.key == pygame.K_7:
+            elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6):
+                if event.key == pygame.K_6:
                     select_weapon(random.choice(WEAPON_KEYS[:-1]))
                     continue
                 select_weapon(dict(zip(
@@ -703,11 +711,10 @@ def MainView():
 
 def begin_lobby_join(mode):
     global ScreenState, selected_game_mode, debug_mode, local_match
-    global lobby_status, last_lobby_request_at
     selected_game_mode = mode
     debug_mode = mode == GAME_MODE_DEBUG
     local_match = False
-    lobby_status = {
+    network.lobby_status = {
         "count": 0,
         "max_players": MAX_PLAYERS,
         "mode": mode,
@@ -715,7 +722,7 @@ def begin_lobby_join(mode):
         "accepted": False,
         "confirmed": False,
     }
-    last_lobby_request_at = 0
+    network.last_lobby_request_at = 0
     ScreenState = "LoadingView"
 
 
@@ -733,7 +740,7 @@ def start_practice_match():
 
 
 def ModeSelectView():
-    global running, ScreenState, selected_game_mode, debug_mode, local_match, game_start_banner_until
+    global running, ScreenState
     button_rects = main_screen.draw_mode_select()
 
     for event in pygame.event.get():
@@ -778,38 +785,38 @@ def NameInputView():
 
 
 def LoadingView():
-    global running, ScreenState, lobby_status, last_lobby_request_at, local_match, game_start_banner_until, debug_mode
+    global running, ScreenState, game_start_banner_until, debug_mode
     global match_spawn_index
     debug_mode = selected_game_mode == GAME_MODE_DEBUG
     if debug_mode:
         owned_skills.update(SKILL_BOOK)
         refresh_skill_inventory()
     now = pygame.time.get_ticks()
-    if now - last_lobby_request_at >= 100:
+    if now - network.last_lobby_request_at >= 100:
         try:
-            client.sendall(pickle.dumps({
+            network.client.sendall(pickle.dumps({
                 "type": "lobby_join",
                 "mode": selected_game_mode,
                 "debug_enabled": debug_mode,
                 "name": player_name.strip() or default_player_name(),
             }))
-            response = pickle.loads(client.recv(4096))
+            response = pickle.loads(network.client.recv(4096))
             if response.get("type") == "lobby_status":
-                lobby_status = response
+                network.lobby_status = response
                 if response.get("accepted"):
                     match_spawn_index = response.get("spawn_index", 0)
         except (OSError, EOFError, pickle.PickleError, KeyError):
             reconnect_to_server()
-            last_lobby_request_at = 0
-        last_lobby_request_at = now
+            network.last_lobby_request_at = 0
+        network.last_lobby_request_at = now
 
     main_screen.draw_loading(
-        lobby_status,
+        network.lobby_status,
         selected_game_mode,
         MAX_PLAYERS,
     )
 
-    if lobby_status.get("started") and lobby_status.get("accepted", True):
+    if network.lobby_status.get("started") and network.lobby_status.get("accepted", True):
         reset_match_state(regenerate_world=True)
         if debug_mode:
             owned_skills.update(SKILL_BOOK)
@@ -823,18 +830,18 @@ def LoadingView():
             if event.key == pygame.K_ESCAPE:
                 leave_lobby()
                 ScreenState = "ModeSelectView"
-            elif event.key == pygame.K_SPACE and not lobby_status.get("started"):
-                client.sendall(pickle.dumps({
+            elif event.key == pygame.K_SPACE and not network.lobby_status.get("started"):
+                network.client.sendall(pickle.dumps({
                     "type": "lobby_ready",
-                    "ready": not lobby_status.get("confirmed", False),
+                    "ready": not network.lobby_status.get("confirmed", False),
                 }))
-                response = pickle.loads(client.recv(NETWORK_BUFFER_SIZE))
+                response = pickle.loads(network.client.recv(NETWORK_BUFFER_SIZE))
                 if response.get("type") == "lobby_status":
-                    lobby_status = response
+                    network.lobby_status = response
 
 
 def GameOverView():
-    global running, ScreenState, result_started_at
+    global result_started_at
     if not local_match and selected_game_mode == GAME_MODE_NORMAL:
         return_to_normal_lobby()
         return
@@ -851,7 +858,7 @@ def GameOverView():
 
 
 def VictoryView():
-    global running, ScreenState, result_started_at
+    global result_started_at
     if not local_match and selected_game_mode == GAME_MODE_NORMAL:
         return_to_normal_lobby()
         return
@@ -943,8 +950,7 @@ def handle_quit(_event, _mouse_pos):
 
 
 def activate_quick_slot(key):
-    global system_message, vision_shape_override, vision_skill_until, shield_until, haste_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, wards
-    global pending_hit_events
+    global system_message, vision_shape_override, vision_skill_until, shield_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
     key_name = pygame.key.name(key).upper()
     slot = next((slot for slot in quick_slots if slot.key_name == key_name), None)
     if not slot or not slot.assigned_skill:
@@ -1150,7 +1156,7 @@ def remove_ward_at_cursor():
 
 def handle_key_event(event, _mouse_pos):
     global inventory_open, debug_mode, system_message, show_hitboxes
-    global ScreenState, local_match, healing_inventory_open
+    global healing_inventory_open
     weapon_id = None
     if event.key == pygame.K_1:
         weapon_id = main_weapon_id
@@ -1235,12 +1241,11 @@ def leave_game_to_main():
 
 def return_to_normal_lobby():
     global ScreenState, local_match, debug_mode, selected_game_mode
-    global last_lobby_request_at
     leave_lobby()
     local_match = False
     debug_mode = False
     selected_game_mode = GAME_MODE_NORMAL
-    last_lobby_request_at = 0
+    network.last_lobby_request_at = 0
     ScreenState = "LoadingView"
 
 
@@ -1277,7 +1282,6 @@ def cycle_vision_shape():
 def fire_knife():
     """칼 공격: 근거리 범위 내의 모든 적에게 데미지를 주고, 보물상자도 파괴합니다."""
     global screen_shake, system_message, knife_attack_until
-    global training_dummy, damage_numbers
     config = weapon_state.config
     knife_attack_until = pygame.time.get_ticks() + MELEE_ATTACK_DURATION_MS
 
@@ -1302,7 +1306,7 @@ def fire_knife():
 
     attacked_count = 0
     for p_id, p_info in server_players.items():
-        if int(p_id) == my_id or is_hidden_player(p_info):
+        if str(p_id) == str(network.player_id) or is_hidden_player(p_info):
             continue
 
         enemy_center_x = p_info["posX"] + IML.Player.get_width() / 2
@@ -1312,7 +1316,7 @@ def fire_knife():
         if distance_squared <= knife_range ** 2:
             attacked_count += 1
             pending_hit_events.append({
-                "target_id": int(p_id),
+                "target_id": p_id,
                 "damage": config.damage,
                 "hit_part": "body",
             })
@@ -1368,7 +1372,7 @@ def fire_knife():
 
 
 def fire_stun_bullet():
-    global bullets, screen_shake, system_message
+    global system_message
     if not weapon_state.can_fire():
         system_message = "기절탄을 발사할 수 없습니다."
         return False
@@ -1384,7 +1388,7 @@ def fire_stun_bullet():
         CameraPosX, CameraPosY, camera_zoom,
     )
     angle = math.atan2(target_world_y - center_y, target_world_x - center_x)
-    bullet = Bullet(4, damage=DEFAULT_BULLET_DAMAGE, owner_id=my_id, weapon_id=weapon_state.weapon_id, stun_ms=STUN_DURATION_MS)
+    bullet = Bullet(4, damage=DEFAULT_BULLET_DAMAGE, owner_id=network.player_id, weapon_id=weapon_state.weapon_id, stun_ms=STUN_DURATION_MS)
     bullet.launch(
         center_x, center_y,
         center_x + math.cos(angle) * BULLET_TARGET_DISTANCE,
@@ -1400,7 +1404,7 @@ def fire_stun_bullet():
 
 
 def fire_bullet():
-    global bullets, screen_shake, system_message, aim_lock_until, aim_locked_pos
+    global system_message
     global weapon_fire_until, weapon_smoke_until
     config = weapon_state.config
 
@@ -1460,7 +1464,7 @@ def fire_bullet():
         new_bullet = Bullet(
             bullet_size_Up,
             damage=config.damage,
-            owner_id=my_id,
+            owner_id=network.player_id,
             weapon_id=weapon_state.weapon_id,
         )
         new_bullet.launch(
@@ -1521,14 +1525,13 @@ def handle_game_events():
 
 
 def GameFrame(practice_mode=False):
-    global running, ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, camera_fov, camera_zoom, match_result, local_stun_until, zone_elapsed_ms, game_start_banner_until
-    global screen_shake, server_players, bullets, remote_bullets, processed_bullet_events, processed_damage_event_ids, MousePos, system_message, kill_feed, main_weapon_id
-    global vision_shape_override, vision_skill_until, shield_until, haste_until, last_lobby_request_at, local_match
-    global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_treasure_destroys, pending_furniture_destroys, pending_hit_events, pending_heal_amount, wards, active_rune_tile, rune_alerts
-    global visibility_polygon_cache, mouse_fire_hold, last_effect_tick, preserve_magazine_after_chest
-    global aim_lock_until, aim_locked_pos, weapon_fire_until
+    global ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, match_result, local_stun_until, zone_elapsed_ms
+    global screen_shake, server_players, bullets, remote_bullets, MousePos, system_message, kill_feed
+    global vision_shape_override, vision_skill_until, local_match
+    global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_heal_amount, active_rune_tile, rune_alerts
+    global last_effect_tick, preserve_magazine_after_chest
     global teleport_anchor, teleport_anchor_expires_at
-    global training_dummy, damage_numbers, easter_egg_found, easter_egg_flash_until
+    global damage_numbers, easter_egg_found, easter_egg_flash_until
 
     MousePos = pygame.mouse.get_pos()
     if my_player.Hp <= 0 and not use_revive_skill():
@@ -1668,7 +1671,7 @@ def GameFrame(practice_mode=False):
             distance = math.hypot(player_center_x - bomb["x"], player_center_y - bomb["y"])
             if distance <= BOMB_RADIUS:
                 pending_hit_events.append({
-                    "target_id": int(p_id),
+                    "target_id": p_id,
                     "damage": BOMB_DAMAGE,
                     "hit_part": "body",
                 })
@@ -1743,11 +1746,11 @@ def GameFrame(practice_mode=False):
     try:
         server_raw = None
         if not practice_mode and not local_match:
-            client.send(pickle.dumps(send_data))
-            server_raw = client.recv(NETWORK_BUFFER_SIZE)
+            network.client.send(pickle.dumps(send_data))
+            server_raw = network.client.recv(NETWORK_BUFFER_SIZE)
         if server_raw:
             server_players = pickle.loads(server_raw)
-            own_snapshot = server_players.get(my_id)
+            own_snapshot = server_players.get(network.player_id)
             event_snapshot = own_snapshot or {}
             seen_kills = {
                 item.get("event_id")
@@ -1765,7 +1768,7 @@ def GameFrame(practice_mode=False):
                 processed_damage_event_ids.add(event_id)
                 target_id = damage_event.get("target_id")
                 target = server_players.get(target_id)
-                if target is None and str(target_id) == str(my_id):
+                if target is None and str(target_id) == str(network.player_id):
                     target = {
                         "posX": my_player.X,
                         "posY": my_player.Y,
@@ -1779,7 +1782,7 @@ def GameFrame(practice_mode=False):
                         "started_at": now,
                         "lifetime": DAMAGE_TEXT_LIFETIME_MS,
                     })
-                if int(target_id) == my_id:
+                if str(target_id) == str(network.player_id):
                     screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 7)
                     particles.emit(
                         my_player.rect.centerx,
@@ -1815,7 +1818,7 @@ def GameFrame(practice_mode=False):
             send_data["revive_request"] = False
             zone_elapsed_ms = max(
                 zone_elapsed_ms,
-                max(0, int(server_players.get(my_id, {}).get("zone_elapsed_ms", 0))),
+                max(0, int(server_players.get(network.player_id, {}).get("zone_elapsed_ms", 0))),
             )
             if own_snapshot:
                 my_player.Hp = own_snapshot.get("hp", my_player.Hp)
@@ -1836,7 +1839,7 @@ def GameFrame(practice_mode=False):
             own_winner_id = own_snapshot.get("winner_id") if own_snapshot else None
             if own_winner_id is not None and not revived_after_server_update:
                 winner_id = own_winner_id
-                match_result = "victory" if int(winner_id) == my_id else "defeat"
+                match_result = "victory" if str(winner_id) == str(network.player_id) else "defeat"
                 ScreenState = "Victory" if match_result == "victory" else "GameOver"
                 return
             # ★ [정리] 서버에서 받은 플레이어 데이터 구조:
@@ -1852,7 +1855,7 @@ def GameFrame(practice_mode=False):
         if reconnect_to_server():
             reset_match_state()
             local_match = False
-            last_lobby_request_at = 0
+            network.last_lobby_request_at = 0
             ScreenState = "LoadingView"
             return
 
@@ -2025,7 +2028,7 @@ def GameFrame(practice_mode=False):
                 bullet.is_active = False
                 continue
             for p_id, p_info in frame_server_players.items():
-                if int(p_id) == my_id or is_hidden_player(p_info):
+                if str(p_id) == str(network.player_id) or is_hidden_player(p_info):
                     continue
                 head, body = Player.hitboxes_for_position(
                     p_info["posX"], p_info["posY"], IML.Player.get_width(), IML.Player.get_height()
@@ -2033,7 +2036,7 @@ def GameFrame(practice_mode=False):
                 if head.colliderect(bullet.rect) or body.colliderect(bullet.rect):
                     hit_part = "head" if head.colliderect(bullet.rect) else "body"
                     pending_hit_events.append({
-                        "target_id": int(p_id),
+                        "target_id": p_id,
                         "damage": bullet.damage,
                         "hit_part": hit_part,
                         "stun_ms": bullet.stun_ms,
@@ -2062,7 +2065,7 @@ def GameFrame(practice_mode=False):
                         training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
                     break
     bullets = [b for b in bullets if b.is_active]
-    if (practice_mode or debug_mode) and training_dummy is not None and training_dummy.Hp <= 0 and now >= training_dummy.respawn_at:
+    if (practice_mode) and training_dummy is not None and training_dummy.Hp <= 0 and now >= training_dummy.respawn_at:
         respawn_training_dummy()
 
     # 서버 스냅샷에는 같은 발사 이벤트가 모든 플레이어 항목에 포함될 수
@@ -2076,7 +2079,7 @@ def GameFrame(practice_mode=False):
             if event_id in processed_bullet_events:
                 continue
             processed_bullet_events.add(event_id)
-            if bullet_info.get("owner_id") == my_id:
+            if bullet_info.get("owner_id") == network.player_id:
                 continue
             weapon_id = bullet_info.get("weapon_id", DEFAULT_WEAPON_ID)
             config = WEAPONS.get(weapon_id, WEAPONS[DEFAULT_WEAPON_ID])
@@ -2130,7 +2133,7 @@ def GameFrame(practice_mode=False):
                 hit_part = None
             if hit_part:
                 pending_hit_events.append({
-                    "target_id": my_id,
+                    "target_id": network.player_id,
                     "damage": bullet.damage,
                     "hit_part": hit_part,
                     "stun_ms": bullet.stun_ms,
@@ -2146,7 +2149,7 @@ def GameFrame(practice_mode=False):
     # 다른 플레이어 그리기
     remote_players = {} if practice_mode or debug_mode else frame_server_players
     for p_id, p_info in remote_players.items():
-        if int(p_id) == my_id or is_hidden_player(p_info):
+        if str(p_id) == str(network.player_id) or is_hidden_player(p_info):
             continue
 
         other_world_x, other_world_y = get_player_world_center(
@@ -2174,7 +2177,7 @@ def GameFrame(practice_mode=False):
         )
         if not is_visible(other_world_x, other_world_y, bush_fov_bonus):
             continue
-        visible_player_ids.add(int(p_id))
+        visible_player_ids.add(p_id)
 
         other_screen_x, other_screen_y = world_to_screen(p_info["posX"], p_info["posY"], CameraPosX, CameraPosY, camera_zoom)
         stun_offset_x = round(math.sin(now * 0.08) * 8) if p_info.get("stun_ms_remaining", 0) > 0 else 0
@@ -2500,7 +2503,7 @@ def GameFrame(practice_mode=False):
     for ward_x, ward_y in wards:
         draw_ward(display, ward_x, ward_y, CameraPosX, CameraPosY, camera_zoom)
     for player_id, player_info in frame_server_players.items():
-        if int(player_id) == my_id or is_hidden_player(player_info):
+        if str(player_id) == str(network.player_id) or is_hidden_player(player_info):
             continue
         for ward_x, ward_y in player_info.get("wards", []):
             if TileGene.is_point_visible_from(
@@ -2546,7 +2549,7 @@ def GameFrame(practice_mode=False):
             my_player.Y + my_player.rect.height / 2,
         ),
         frame_server_players,
-        my_id,
+        network.player_id,
         training_dummy if practice_mode or debug_mode else None,
         rune_alerts,
         MagneticZoneState if zone_enabled else None,
@@ -2562,7 +2565,7 @@ def GameFrame(practice_mode=False):
         KillFeedFont,
         IML.GetKillLog(),
         IML.GetWeaponImage,
-        my_id,
+        network.player_id,
         player_name,
     )
     if game_start_banner_until > now:
@@ -2587,7 +2590,7 @@ def GameFrame(practice_mode=False):
     display.blit(hp_text, (ui_x + HP_FRAME_SIZE[0] + 15, ui_y + 30))
 
     # [커스텀 가능] 플레이어 ID 표시 폰트 (GuiFont 사용)
-    id_text = GuiFont.render(f"ID: {my_id}", True, (255, 255, 255))
+    id_text = GuiFont.render(f"ID: {network.player_id}", True, (255, 255, 255))
     display.blit(id_text, (20, 20))
     
     # --- [퀵슬롯 배경과 스킬 소스창] ---

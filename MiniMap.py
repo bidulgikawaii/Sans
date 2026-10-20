@@ -125,7 +125,7 @@ class MiniMap:
         alert_positions = [(alert_x, alert_y) for alert_x, alert_y, _remaining_ms in rune_alerts or ()]
         alert_distance_squared = (self.tile_generator.tile_size * 1.5) ** 2
         for player_id, player_info in (players or {}).items():
-            if local_player_id is not None and int(player_id) == int(local_player_id):
+            if local_player_id is not None and str(player_id) == str(local_player_id):
                 continue
             if player_info.get("hidden", False) or player_info.get("hp", 1) <= 0:
                 continue

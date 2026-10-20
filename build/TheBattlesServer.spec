@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['D:/20217정진욱/Sans/Server.py'],
-    pathex=['D:/20217정진욱/Sans'],
+    ['C:\\Users\\orior\\OneDrive\\Documents\\Sans\\Server.py'],
+    pathex=['C:\\Users\\orior\\OneDrive\\Documents\\Sans'],
     binaries=[],
-    datas=[('D:/20217정진욱/Sans/Image', 'Image'), ('D:/20217정진욱/Sans/Font', 'Font'), ('D:/20217정진욱/Sans/Sound', 'Sound')],
+    datas=[('C:\\Users\\orior\\OneDrive\\Documents\\Sans\\Image', 'Image'), ('C:\\Users\\orior\\OneDrive\\Documents\\Sans\\Font', 'Font'), ('C:\\Users\\orior\\OneDrive\\Documents\\Sans\\Sound', 'Sound')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

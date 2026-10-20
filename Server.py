@@ -3,6 +3,7 @@ import socket
 import threading
 import pickle
 import time
+import uuid
 from Config import (
     DEFAULT_WEAPON_ID,
     GAME_MODE_DEBUG,
@@ -64,7 +65,6 @@ match_events = {
 completed_match_winner_id = None
 result_pending_player_ids = set()
 player_count = 0
-next_player_id = 1
 lobby = LobbyState()
 magnetic_zone = MagneticZone(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, 32)
 
@@ -79,12 +79,8 @@ def update_player_count(delta):
         player_count += delta
         return player_count
 
-def get_next_player_id():
-    global next_player_id
-    with player_lock:
-        player_id = next_player_id
-        next_player_id += 1
-        return player_id
+def generate_player_id():
+    return str(uuid.uuid4())
 
 
 def handle_client(conn, player_id):
@@ -315,8 +311,8 @@ def handle_client(conn, player_id):
             players[player_id]["zone_last_tick"] = zone_now
 
             for hit_event in client_data.get("hit_events", []):
-                target_id = int(hit_event.get("target_id", 0))
-                if target_id not in lobby.visible_player_ids(player_id):
+                target_id = hit_event.get("target_id")
+                if not isinstance(target_id, str) or target_id not in lobby.visible_player_ids(player_id):
                     continue
                 target = players.get(target_id)
                 if not target or target["hp"] <= 0:
@@ -465,7 +461,7 @@ print("[서버 켜짐] 클라이언트 연결을 기다리는 중...")
 
 while True:
     conn, addr = server.accept()
-    player_id = get_next_player_id()
+    player_id = generate_player_id()
     current_count = update_player_count(1)
     print(f"[접속] 새로운 플레이어 (ID: {player_id})")
     print(f"[카운트] 현재 접속 인원: {current_count}")

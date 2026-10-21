@@ -1,6 +1,7 @@
 import pygame
 import os
 from Config import MAIN_SCREEN_BACKGROUND_COLOR
+from GameModes import get_game_modes
 
 
 class MainScreenRenderer:
@@ -66,13 +67,28 @@ class MainScreenRenderer:
 
     def draw_mode_select(self):
         self._draw_background()
-        normal, normal_rect = self._center_rect("GameStart", 330)
-        debug, debug_rect = self._center_rect("Practice", 520)
-        back, back_rect = self._center_rect("Exit", 710)
-        self.surface.blit(normal, normal_rect)
-        self.surface.blit(debug, debug_rect)
-        self.surface.blit(back, back_rect)
-        return {"normal": normal_rect, "debug": debug_rect, "back": back_rect}
+        modes = get_game_modes()
+        button_height = 88
+        button_gap = 22
+        total_height = len(modes) * button_height + max(0, len(modes) - 1) * button_gap
+        first_y = (self.screen_height - total_height) // 2
+        buttons = {}
+        for index, mode in enumerate(modes):
+            button_rect = pygame.Rect(0, 0, min(620, self.screen_width - 80), button_height)
+            button_rect.center = (
+                self.screen_width // 2,
+                first_y + index * (button_height + button_gap) + button_height // 2,
+            )
+            pygame.draw.rect(self.surface, (22, 34, 52), button_rect, border_radius=8)
+            pygame.draw.rect(self.surface, (255, 220, 120), button_rect, 2, border_radius=8)
+            mode_text = self.font.render(mode.label, True, (255, 235, 170))
+            self.surface.blit(mode_text, mode_text.get_rect(center=button_rect.center))
+            buttons[mode.mode_id] = button_rect
+
+        back_image, back_rect = self._center_rect("Exit", self.screen_height - 72)
+        self.surface.blit(back_image, back_rect)
+        buttons["back"] = back_rect
+        return buttons
 
     def draw_name_input(self, nickname, default_name="플레이어"):
         self._draw_background()

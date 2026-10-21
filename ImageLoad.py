@@ -48,7 +48,7 @@ class Imageload:
         self.PistolFire = self._load_scaled_image("pistol_fire_transparent.png", PISTOL_IMAGE_SIZE)
         self.PistolSmoke = self._load_scaled_image("pistol_smoke_transparent.png", PISTOL_IMAGE_SIZE)
         self.Gigwan = self._load_scaled_image("Gigwan.png", (128, 64))
-        self.HBlade = self._load_animation("H_blade")
+        self.HBlade = self._load_animation("karambit")
         self.Expo = self._load_animation("Expo", (128, 128))
         self.Sniper = self._load_scaled_image("Sniper.png", (192, 64))
         shotgun = self._load_scaled_image("ShotGun_3.png", (128, 64))

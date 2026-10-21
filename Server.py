@@ -18,13 +18,14 @@ from Config import (
     MAP_HEIGHT_TILES,
     MAP_WIDTH_TILES,
     MAX_PLAYERS,
-    NORMAL_MATCH_MIN_PLAYERS,
     RUNE_ALERT_DURATION_MS,
     REVIVE_HP_RATIO,
 )
 from Weapon import WEAPONS
 from Lobby import LobbyState
 from Zone import MagneticZone
+from GameModes import get_game_mode, get_game_modes, is_game_mode_registered
+from NetworkProtocol import FramedSocket
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 bind_ip = SERVER_IP
@@ -58,12 +59,9 @@ def new_match_events():
     }
 
 
-match_events = {
-    GAME_MODE_NORMAL: new_match_events(),
-    GAME_MODE_DEBUG: new_match_events(),
-}
-completed_match_winner_id = None
-result_pending_player_ids = set()
+match_events = {mode.mode_id: new_match_events() for mode in get_game_modes()}
+completed_match_winner_ids = {}
+result_pending_player_ids = {}
 player_count = 0
 lobby = LobbyState()
 magnetic_zone = MagneticZone(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, 32)
@@ -84,7 +82,7 @@ def generate_player_id():
 
 
 def handle_client(conn, player_id):
-    global completed_match_winner_id, result_pending_player_ids
+    conn = FramedSocket(conn)
     with player_lock:
         # 접속 전에 발생한 총알은 새 플레이어에게 전달하지 않습니다.
         last_sent_bullet_event_ids = {
@@ -137,7 +135,7 @@ def handle_client(conn, player_id):
                     requested_mode = client_data.get("mode")
                     if client_data.get("debug_enabled", False):
                         requested_mode = GAME_MODE_DEBUG
-                    if requested_mode not in (GAME_MODE_NORMAL, GAME_MODE_DEBUG):
+                    if not is_game_mode_registered(requested_mode):
                         requested_mode = GAME_MODE_NORMAL
                     accepted = lobby.join(
                         player_id,
@@ -193,7 +191,13 @@ def handle_client(conn, player_id):
                 with player_lock:
                     mode = lobby.mode_for(player_id)
                     lobby.leave(player_id)
-                    result_pending_player_ids.discard(player_id)
+                    for pending_mode, pending_ids in tuple(result_pending_player_ids.items()):
+                        pending_ids.discard(player_id)
+                        if not pending_ids and pending_mode in completed_match_winner_ids:
+                            lobby.finish_match(pending_mode)
+                            completed_match_winner_ids.pop(pending_mode, None)
+                            result_pending_player_ids.pop(pending_mode, None)
+                            reset_match_events(pending_mode)
                     if mode is not None and not lobby.active_player_ids(mode):
                         reset_match_events(mode)
                 conn.sendall(pickle.dumps(lobby.status(player_id)))
@@ -374,7 +378,7 @@ def handle_client(conn, player_id):
                     for active_id in active_ids
                     if active_id in players
                 }
-                match_player_ids = lobby.match_player_ids[GAME_MODE_NORMAL]
+                match_player_ids = lobby.match_player_ids[mode]
                 alive_ids = [
                     active_id for active_id in match_player_ids
                     if active_id in players and players[active_id]["hp"] > 0
@@ -385,22 +389,18 @@ def handle_client(conn, player_id):
                     and players[active_id]["hp"] <= 0
                     and players[active_id].get("revive_armed", False)
                 ]
-                winner_id = (
-                    completed_match_winner_id
-                    if mode == GAME_MODE_NORMAL
-                    else None
-                )
-                if winner_id is None and mode == GAME_MODE_NORMAL and (
-                    lobby.started[GAME_MODE_NORMAL]
-                        and len(match_player_ids) >= NORMAL_MATCH_MIN_PLAYERS
+                winner_id = completed_match_winner_ids.get(mode)
+                if winner_id is None and get_game_mode(mode).elimination and (
+                    lobby.started[mode]
+                        and len(match_player_ids) >= get_game_mode(mode).min_players
                         and len(alive_ids) == 1
                         and not revive_waiting_ids
                 ):
                     winner_id = alive_ids[0]
-                    completed_match_winner_id = winner_id
-                    result_pending_player_ids = (
+                    completed_match_winner_ids[mode] = winner_id
+                    result_pending_player_ids[mode] = (
                         set(match_player_ids)
-                        & lobby.active_player_ids(GAME_MODE_NORMAL)
+                        & lobby.active_player_ids(mode)
                         & players.keys()
                     )
             # 네트워크 직렬화 전 복사본을 만들되, pickle 왕복은 피합니다.
@@ -430,11 +430,13 @@ def handle_client(conn, player_id):
             conn.sendall(pickle.dumps(snapshot))
             if winner_id is not None:
                 with player_lock:
-                    result_pending_player_ids.discard(player_id)
-                    if not result_pending_player_ids:
-                        lobby.finish_match(GAME_MODE_NORMAL)
-                        completed_match_winner_id = None
-                        reset_match_events(GAME_MODE_NORMAL)
+                    pending_ids = result_pending_player_ids.get(mode, set())
+                    pending_ids.discard(player_id)
+                    if not pending_ids:
+                        lobby.finish_match(mode)
+                        completed_match_winner_ids.pop(mode, None)
+                        result_pending_player_ids.pop(mode, None)
+                        reset_match_events(mode)
     except Exception as e:
         print(f"[네트워크 오류] 플레이어 {player_id}번: {e}")
     finally:
@@ -446,11 +448,13 @@ def handle_client(conn, player_id):
             lobby.leave(player_id)
             if mode is not None and not lobby.active_player_ids(mode):
                 reset_match_events(mode)
-            result_pending_player_ids.discard(player_id)
-            if completed_match_winner_id is not None and not result_pending_player_ids:
-                lobby.finish_match(GAME_MODE_NORMAL)
-                completed_match_winner_id = None
-                reset_match_events(GAME_MODE_NORMAL)
+            for pending_mode, pending_ids in tuple(result_pending_player_ids.items()):
+                pending_ids.discard(player_id)
+                if not pending_ids and pending_mode in completed_match_winner_ids:
+                    lobby.finish_match(pending_mode)
+                    completed_match_winner_ids.pop(pending_mode, None)
+                    result_pending_player_ids.pop(pending_mode, None)
+                    reset_match_events(pending_mode)
 
         current_count = update_player_count(-1)
         print(f"[카운트] 현재 접속 인원: {current_count}")

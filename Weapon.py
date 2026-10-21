@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import time
-from Config import DEFAULT_WEAPON_ID
+from Config import DEFAULT_WEAPON_ID, WEAPON_VISION_RADIUS
 
 
 @dataclass(frozen=True)
@@ -20,7 +20,7 @@ class WeaponConfig:
     bullet_lifetime: float = 2.5
     projectile: bool = True
     vision_shape: str = "cone"
-    vision_radius: float = 450.0
+    vision_radius: float = WEAPON_VISION_RADIUS
     vision_fov: float = 90.0
     vision_width: float = 220.0
     bullet_color: tuple = (255, 255, 0)
@@ -31,35 +31,35 @@ WEAPONS = {
     "pistol": WeaponConfig(
         "권총", damage=12, magazine_size=14, reserve_ammo=42, fire_interval=0.22,
         reload_time=1.3, bullet_size=5, bullet_speed=20.0, recoil=2.0,
-        bullet_lifetime=2.4, vision_radius=500, vision_fov=95, vision_width=240,
+        bullet_lifetime=2.4, vision_radius=WEAPON_VISION_RADIUS, vision_fov=95, vision_width=240,
     ),
     "rifle": WeaponConfig(
         "라이플", damage=10, magazine_size=24, reserve_ammo=72, fire_interval=0.16,
         automatic=True,
         reload_time=2.1, bullet_size=4, bullet_speed=23.0, recoil=1.6,
-        bullet_lifetime=2.6, vision_radius=700, vision_fov=75, vision_width=180,
+        bullet_lifetime=2.6, vision_radius=WEAPON_VISION_RADIUS, vision_fov=75, vision_width=180,
     ),
     "shotgun": WeaponConfig(
         "샷건", damage=7.0, magazine_size=5, reserve_ammo=15,
         fire_interval=0.85, reload_time=3, bullet_size=4, bullet_speed=16.0,
         pellets=10, spread_degrees=40.0, recoil=6.0, bullet_lifetime=1.4,
-        vision_radius=300, vision_fov=120, vision_width=300,
+        vision_radius=WEAPON_VISION_RADIUS, vision_fov=120, vision_width=300,
     ),
     "sniper": WeaponConfig(
     "저격총", damage=70, magazine_size=10, reserve_ammo=15, fire_interval=1.0,
         reload_time=3.1, bullet_size=3, bullet_speed=32.0, recoil=8.0,
-        bullet_lifetime=3.8, vision_shape="cone", vision_radius=1400.0, vision_fov=180.0, vision_width=420.0,
+        bullet_lifetime=3.8, vision_shape="cone", vision_radius=WEAPON_VISION_RADIUS, vision_fov=180.0, vision_width=420.0,
     ),
     "smg": WeaponConfig(
         "기관단총", damage=5, magazine_size=50, reserve_ammo=100, fire_interval=0.08,
         automatic=True,
         reload_time=1.8, bullet_size=4, bullet_speed=17.0, recoil=1.2,
-        bullet_lifetime=1.8, vision_radius=400, vision_fov=130, vision_width=260,
+        bullet_lifetime=1.8, vision_radius=WEAPON_VISION_RADIUS, vision_fov=130, vision_width=260,
     ),
     "knife": WeaponConfig(
         "칼", damage=20, magazine_size=0, reserve_ammo=0, fire_interval=0.5,
         reload_time=0.0, projectile=False, recoil=0.0, bullet_lifetime=0.2,
-        vision_radius=180, vision_fov=180, vision_width=420,
+        vision_radius=WEAPON_VISION_RADIUS, vision_fov=180, vision_width=420,
     ),
 }
 

@@ -14,6 +14,7 @@ def _get_font(path, size):
 _scaled_images = {}
 _cooldown_overlays = {}
 _damage_text_surfaces = {}
+_skill_range_surfaces = {}
 _HEALTH_FRAME_COLOR = pygame.Color("gray20")
 _HEALTH_COLORS = (pygame.Color("green"), pygame.Color("yellow"), pygame.Color("red"))
 
@@ -268,6 +269,38 @@ def draw_ward(surface, ward_x, ward_y, camera_x, camera_y, zoom):
     pygame.draw.circle(surface, (120, 240, 255), (screen_x, screen_y), radius, 2)
     pygame.draw.line(surface, (120, 240, 255), (screen_x - radius, screen_y), (screen_x + radius, screen_y), 1)
     pygame.draw.line(surface, (120, 240, 255), (screen_x, screen_y - radius), (screen_x, screen_y + radius), 1)
+
+
+def draw_skill_range(surface, world_x, world_y, world_radius, camera_x, camera_y, zoom, color, pulse=1.0):
+    """스킬의 월드 범위를 반투명 면, 외곽선, 눈금으로 표시합니다."""
+    center_x = round((world_x - camera_x) * zoom)
+    center_y = round((world_y - camera_y) * zoom)
+    radius = max(2, round(world_radius * zoom * pulse))
+    line_width = max(1, round(2 * zoom))
+    cache_key = (radius, tuple(color[:3]), line_width)
+    overlay = _skill_range_surfaces.get(cache_key)
+    if overlay is None:
+        diameter = radius * 2 + 2
+        overlay = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+        center = (radius + 1, radius + 1)
+        pygame.draw.circle(overlay, (*color[:3], 24), center, radius)
+        pygame.draw.circle(overlay, (*color[:3], 210), center, radius, line_width)
+        tick_inner = max(1, round(radius * 0.9))
+        for index in range(16):
+            angle = math.tau * index / 16
+            start = (
+                round(center[0] + math.cos(angle) * tick_inner),
+                round(center[1] + math.sin(angle) * tick_inner),
+            )
+            end = (
+                round(center[0] + math.cos(angle) * radius),
+                round(center[1] + math.sin(angle) * radius),
+            )
+            pygame.draw.line(overlay, (*color[:3], 150), start, end, line_width)
+        if len(_skill_range_surfaces) >= 6:
+            _skill_range_surfaces.clear()
+        _skill_range_surfaces[cache_key] = overlay
+    surface.blit(overlay, (center_x - radius - 1, center_y - radius - 1))
 
 
 def draw_quick_slot_cooldowns(surface, slots, cooldowns, font):

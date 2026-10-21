@@ -23,9 +23,9 @@ FPS = 64
 # 플레이어 이동 및 생존 설정
 PLAYER_MAX_HP = 100
 # 별도 효과가 없을 때의 걷기 속도입니다. 단위는 프레임당 이동 픽셀입니다.
-PLAYER_NORMAL_SPEED = 5
+PLAYER_NORMAL_SPEED = 3.75
 # Shift를 누르고 달릴 때 적용되는 기본 속도입니다.
-PLAYER_SPRINT_SPEED = 8
+PLAYER_SPRINT_SPEED = 5.25
 # 신속 효과가 활성화되었을 때의 목표 속도입니다.
 PLAYER_HASTE_SPEED = 10
 # 기본 대시 속도입니다. 칼 대시 보너스는 아래 값에 별도로 더해집니다.
@@ -92,6 +92,7 @@ CAMERA_FOV_SMOOTH = 0.12
 # 전투와 스킬
 MELEE_RANGE = 150
 BULLET_TARGET_DISTANCE = 1000
+WEAPON_VISION_RADIUS = 1400.0
 BOMB_DELAY_MS = 600
 BOMB_RADIUS = 120
 BOMB_DAMAGE = 30

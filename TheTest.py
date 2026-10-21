@@ -7,10 +7,7 @@ from Bullet import *
 import Tool
 import random
 import os
-import socket
 import pickle
-import uuid
-from dataclasses import dataclass, field
 from PlayerClass import Player
 from Tool_Cordinate import *
 from SkillAndSlot import *
@@ -31,9 +28,18 @@ from GameRendering import (
     draw_visibility_geometry,
     draw_ward,
     draw_kill_feed,
+    draw_skill_range,
 )
 from GameAudio import load_effect_sound, play_effect_sound
 from Zone import MagneticZone
+from GameModes import get_game_mode, get_game_modes
+from WorldEffects import world_effects
+from Animation import FrameAnimation
+from NetworkClient import (
+    default_player_name,
+    network,
+    reconnect_to_server,
+)
 
 # 클라이언트는 입력과 화면을 조정하고, 경기의 공유 상태는 서버 응답으로 확정합니다.
 pygame.init()
@@ -75,94 +81,6 @@ def _scale_cached(image, size, smooth=True):
     return scaled
 
 
-class OfflineClient:
-    def __init__(self):
-        self.initialized = False
-        self.player_id = str(uuid.uuid4())
-
-    def send(self, _data):
-        return None
-
-    def sendall(self, _data):
-        return None
-
-    def recv(self, _size):
-        if not self.initialized:
-            self.initialized = True
-            return pickle.dumps({"init_id": self.player_id, "seed": SERVER_SEED})
-        return pickle.dumps({})
-
-    def close(self):
-        return None
-
-
-@dataclass
-class NetworkState:
-    client: object
-    init_data: dict = field(default_factory=dict)
-    player_id: str = ""
-    lobby_status: dict = field(default_factory=lambda: {
-        "count": 0,
-        "max_players": MAX_PLAYERS,
-        "mode": GAME_MODE_NORMAL,
-        "started": False,
-        "confirmed": False,
-    })
-    last_lobby_request_at: int = 0
-
-
-
-
-# --- [네트워크 초기화] ---
-def connect_to_server():
-    last_error = None
-    for host in (ServerIp, ServerIp2):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2.0)
-        try:
-            sock.connect((host, ServerPort))
-            return sock
-        except (OSError, socket.timeout) as exc:
-            last_error = exc
-            sock.close()
-    print(f"서버 연결 실패, 로컬 모드로 실행합니다: {last_error}")
-    return OfflineClient()
-
-network = NetworkState(connect_to_server())
-
-network.init_data = pickle.loads(network.client.recv(1024))
-network.player_id = network.init_data["init_id"]
-print(f"내 아이디: {network.player_id} 입니다.")
-
-
-def default_player_name(player_id=None):
-    """닉네임을 입력하지 않았을 때 사용할 안정적인 기본 이름입니다."""
-    return f"유저_{network.player_id if player_id is None else player_id}"
-
-
-def reconnect_to_server():
-    """서버가 재시작되어도 새 연결과 플레이어 ID를 다시 확보합니다."""
-    try:
-        network.client.close()
-    except OSError:
-        pass
-    try:
-        network.client = connect_to_server()
-        network.init_data = pickle.loads(network.client.recv(NETWORK_BUFFER_SIZE))
-        network.player_id = network.init_data["init_id"]
-        network.lobby_status = {
-            "count": 0,
-            "max_players": MAX_PLAYERS,
-            "mode": GAME_MODE_NORMAL,
-            "started": False,
-            "confirmed": False,
-        }
-        network.last_lobby_request_at = 0
-        return True
-    except (OSError, EOFError, pickle.PickleError, KeyError):
-        return False
-
-
 def leave_lobby():
     """로비에서 나간 뒤 다음 경기에 사용할 클라이언트 상태를 정리합니다."""
     try:
@@ -182,6 +100,11 @@ def leave_lobby():
 
 random.seed(network.init_data["seed"])
 IML = Imageload()
+blade_animation = FrameAnimation(
+    IML.GetBladeFrames(),
+    max(1, MELEE_ATTACK_DURATION_MS // max(1, len(IML.GetBladeFrames()))),
+    loop=False,
+)
 main_screen = MainScreenRenderer(display, IML.GetTitles(), GuiFont, (ScreenX, ScreenY))
 practice_view = PracticeView(display, GuiFont, ScreenX)
 set_ui_assets(IML.SkillWindow, IML.QuickSlot)
@@ -331,6 +254,7 @@ bullets = []
 remote_bullets = []
 processed_bullet_events = set()
 processed_damage_event_ids = set()
+processed_kill_event_ids = set()
 skill_cooldowns = {}
 vision_skill_until = 0
 shield_until = 0
@@ -433,14 +357,7 @@ def apply_supply_reward(reward_type):
         healing_item_count += 1
         message = f"회복 아이템 획득: 보유 {healing_item_count}개"
         color = (100, 255, 130)
-    elif reward_type == "haste":
-        haste_until = max(haste_until, pygame.time.get_ticks()) + SUPPLY_BUFF_DURATION_MS
-        message = "보급품 획득: 이동 속도가 증가했습니다."
-        color = (255, 240, 100)
-    elif reward_type == "shield":
-        shield_until = max(shield_until, pygame.time.get_ticks()) + SUPPLY_BUFF_DURATION_MS
-        message = "보급품 획득: 보호막이 활성화됐습니다."
-        color = (100, 220, 255)
+   
     elif reward_type == "skill" and available:
         obtained_skill = random.choice(available)
         add_skill_to_inventory(obtained_skill)
@@ -591,6 +508,7 @@ def reset_match_state(regenerate_world=False, independent_world=False):
         collection.clear()
     processed_bullet_events.clear()
     processed_damage_event_ids.clear()
+    processed_kill_event_ids.clear()
     particles.particles.clear()
     server_players.clear()
     skill_cooldowns.clear()
@@ -714,6 +632,11 @@ def begin_lobby_join(mode):
     selected_game_mode = mode
     debug_mode = mode == GAME_MODE_DEBUG
     local_match = False
+    world_effects.activate(
+        mode,
+        (MAP_WIDTH_TILES * TileGene.tile_size, MAP_HEIGHT_TILES * TileGene.tile_size),
+        force=True,
+    )
     network.lobby_status = {
         "count": 0,
         "max_players": MAX_PLAYERS,
@@ -733,6 +656,11 @@ def start_practice_match():
     debug_mode = True
     local_match = True
     selected_game_mode = GAME_MODE_DEBUG
+    world_effects.activate(
+        GAME_MODE_DEBUG,
+        (MAP_WIDTH_TILES * TileGene.tile_size, MAP_HEIGHT_TILES * TileGene.tile_size),
+        force=True,
+    )
     owned_skills.update(SKILL_BOOK)
     refresh_skill_inventory()
     game_start_banner_until = pygame.time.get_ticks() + 2000
@@ -757,10 +685,20 @@ def ModeSelectView():
             elif event.key == pygame.K_2:
                 begin_lobby_join(GAME_MODE_DEBUG)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if button_rects["normal"].collidepoint(event.pos):
-                begin_lobby_join(GAME_MODE_NORMAL)
-            elif button_rects["debug"].collidepoint(event.pos):
+            selected_mode = next(
+                (
+                    mode.mode_id
+                    for mode in get_game_modes()
+                    if button_rects[mode.mode_id].collidepoint(event.pos)
+                ),
+                None,
+            )
+            if selected_mode == GAME_MODE_DEBUG:
                 start_practice_match()
+            elif selected_mode is not None:
+                begin_lobby_join(selected_mode)
+            elif button_rects["back"].collidepoint(event.pos):
+                ScreenState = "MainView"
 
 
 def NameInputView():
@@ -840,11 +778,26 @@ def LoadingView():
                     network.lobby_status = response
 
 
+def show_victory():
+    """승리 결과를 기록하고 승리 화면으로 전환합니다."""
+    global match_result, result_started_at, ScreenState
+    if match_result != "victory":
+        match_result = "victory"
+        result_started_at = pygame.time.get_ticks()
+    ScreenState = "Victory"
+
+
+def show_defeat():
+    """패배 결과를 기록하고 패배 화면으로 전환합니다."""
+    global match_result, result_started_at, ScreenState
+    if match_result != "defeat":
+        match_result = "defeat"
+        result_started_at = pygame.time.get_ticks()
+    ScreenState = "GameOver"
+
+
 def GameOverView():
     global result_started_at
-    if not local_match and selected_game_mode == GAME_MODE_NORMAL:
-        return_to_normal_lobby()
-        return
     if not result_started_at:
         result_started_at = pygame.time.get_ticks()
     _draw_result_screen("패배", (220, 50, 50), pygame.time.get_ticks() - result_started_at)
@@ -852,23 +805,23 @@ def GameOverView():
     for event in pygame.event.get():
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_SPACE:
-                request_game_exit()
+                requeue_after_match()
             elif event.key == pygame.K_ESCAPE:
                 request_game_exit()
 
 
 def VictoryView():
     global result_started_at
-    if not local_match and selected_game_mode == GAME_MODE_NORMAL:
-        return_to_normal_lobby()
-        return
     if not result_started_at:
         result_started_at = pygame.time.get_ticks()
     _draw_result_screen("승리", (255, 220, 80), pygame.time.get_ticks() - result_started_at)
 
     for event in pygame.event.get():
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-            request_game_exit()
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_SPACE:
+                requeue_after_match()
+            elif event.key == pygame.K_ESCAPE:
+                request_game_exit()
 
 
 def ExitConfirmView():
@@ -929,11 +882,7 @@ def _draw_result_screen(title_text, color, elapsed):
         (max(1, round(title.get_width() * pulse)), max(1, round(title.get_height() * pulse))),
     )
     display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
-    guide_text = (
-        "Space / ESC: 메인 메뉴"
-        if title_text == "패배"
-        else "스페이스키를 눌러 로비로 이동하세요"
-    )
+    guide_text = "Space: 다시 대기열 참가   ESC: 메인 메뉴"
     guide = result_text_cache.get(guide_text)
     if guide is None:
         guide = GuiFont.render(guide_text, True, (255, 255, 255))
@@ -1019,10 +968,13 @@ def activate_quick_slot(key):
     elif skill_name == "매의 눈":
         vision_shape_override = VISION_CIRCLE
         vision_skill_until = now + VISION_DURATION_MS
+        vision_center_x, vision_center_y = get_player_world_center(
+            my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
+        )
         particles.ring(
-            my_player.X + my_player.rect.width / 2,
-            my_player.Y + my_player.rect.height / 2,
-            (120, 220, 255), count=24, radius=90, lifetime=650, size=4,
+            vision_center_x,
+            vision_center_y,
+            (120, 220, 255), count=32, radius=140, lifetime=850, size=5,
         )
         system_message = "3초 동안 원형으로 넓게 봅니다."
     elif skill_name == "보호막":
@@ -1044,6 +996,16 @@ def activate_quick_slot(key):
             speed=70,
             lifetime=650,
             size=5,
+        )
+        particles.ring(
+            my_player.X + my_player.rect.width / 2,
+            my_player.Y + my_player.rect.height / 2,
+            (210, 220, 255), count=32, radius=72, lifetime=800, size=4,
+        )
+        particles.emit(
+            my_player.X + my_player.rect.width / 2,
+            my_player.Y + my_player.rect.height / 2,
+            (225, 235, 255), count=18, speed=115, lifetime=900, size=3, gravity=-35,
         )
         system_message = "4.5초 동안 적에게 완전히 보이지 않습니다."
     elif skill_name == "와드":
@@ -1190,7 +1152,7 @@ def handle_key_event(event, _mouse_pos):
         system_message = f"히트박스 표시: {'켜짐' if show_hitboxes else '꺼짐'}"
         return
 
-    if event.key == pygame.K_b:
+    if event.key == pygame.K_z:
         healing_inventory_open = not healing_inventory_open
         if healing_inventory_open:
             inventory_open = False
@@ -1249,6 +1211,16 @@ def return_to_normal_lobby():
     ScreenState = "LoadingView"
 
 
+def requeue_after_match():
+    """경기 상태를 초기화하고 같은 모드의 로비 대기열로 다시 보냅니다."""
+    if local_match:
+        start_practice_match()
+        return
+    selected_mode = selected_game_mode
+    leave_lobby()
+    begin_lobby_join(selected_mode)
+
+
 def request_game_exit():
     global ScreenState, exit_confirm_return_state
     if local_match:
@@ -1283,7 +1255,9 @@ def fire_knife():
     """칼 공격: 근거리 범위 내의 모든 적에게 데미지를 주고, 보물상자도 파괴합니다."""
     global screen_shake, system_message, knife_attack_until
     config = weapon_state.config
-    knife_attack_until = pygame.time.get_ticks() + MELEE_ATTACK_DURATION_MS
+    attack_started_at = pygame.time.get_ticks()
+    knife_attack_until = attack_started_at + MELEE_ATTACK_DURATION_MS
+    blade_animation.start(attack_started_at)
 
     center_x, center_y = get_player_world_center(
         my_player.X,
@@ -1535,7 +1509,7 @@ def GameFrame(practice_mode=False):
 
     MousePos = pygame.mouse.get_pos()
     if my_player.Hp <= 0 and not use_revive_skill():
-        ScreenState = "GameOver"
+        show_defeat()
         return
     now = pygame.time.get_ticks()
     revived_after_server_update = False
@@ -1653,6 +1627,11 @@ def GameFrame(practice_mode=False):
         active_explosions.append({
             "x": bomb["x"], "y": bomb["y"],
             "started_at": now, "until": now + EXPLOSION_DURATION_MS,
+            "animation": FrameAnimation(
+                IML.GetExplosionFrames(),
+                max(1, EXPLOSION_DURATION_MS // max(1, len(IML.GetExplosionFrames()))),
+                loop=False,
+            ),
         })
         particles.emit(
             bomb["x"], bomb["y"], (255, 100, 30),
@@ -1746,19 +1725,18 @@ def GameFrame(practice_mode=False):
     try:
         server_raw = None
         if not practice_mode and not local_match:
-            network.client.send(pickle.dumps(send_data))
+            network.client.sendall(pickle.dumps(send_data))
             server_raw = network.client.recv(NETWORK_BUFFER_SIZE)
+            if not server_raw:
+                raise ConnectionError("서버가 동기화 연결을 종료했습니다.")
         if server_raw:
             server_players = pickle.loads(server_raw)
             own_snapshot = server_players.get(network.player_id)
             event_snapshot = own_snapshot or {}
-            seen_kills = {
-                item.get("event_id")
-                for item in kill_feed
-            }
             for kill_event in event_snapshot.get("kill_events", []):
                 event_id = kill_event.get("event_id")
-                if event_id not in seen_kills:
+                if event_id not in processed_kill_event_ids:
+                    processed_kill_event_ids.add(event_id)
                     kill_feed.append({**kill_event, "started_at": now})
             kill_feed = [event for event in kill_feed if now - event["started_at"] < 5000][-5:]
             for damage_event in event_snapshot.get("damage_events", []):
@@ -1839,8 +1817,10 @@ def GameFrame(practice_mode=False):
             own_winner_id = own_snapshot.get("winner_id") if own_snapshot else None
             if own_winner_id is not None and not revived_after_server_update:
                 winner_id = own_winner_id
-                match_result = "victory" if str(winner_id) == str(network.player_id) else "defeat"
-                ScreenState = "Victory" if match_result == "victory" else "GameOver"
+                if str(winner_id) == str(network.player_id):
+                    show_victory()
+                else:
+                    show_defeat()
                 return
             # ★ [정리] 서버에서 받은 플레이어 데이터 구조:
             # server_players[id] = {
@@ -1964,11 +1944,25 @@ def GameFrame(practice_mode=False):
     # ------------------ [게임 월드 그리기] ------------------
     display.fill((0, 0, 200))
     TileGene.draw(display, CameraPosX, CameraPosY, camera_zoom)
-    zone_enabled = not (practice_mode or debug_mode) and selected_game_mode == GAME_MODE_NORMAL
+    zone_enabled = not (practice_mode or local_match) and get_game_mode(selected_game_mode).zone_enabled
     if zone_enabled:
         MagneticZoneState.draw(display, CameraPosX, CameraPosY, camera_zoom, zone_elapsed_ms)
+    world_effects.update(effect_delta, (TileGene.map_width * TileGene.tile_size, TileGene.map_height * TileGene.tile_size))
+    world_effects.draw(display, CameraPosX, CameraPosY, camera_zoom)
 
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
+    if vision_skill_until > now:
+        draw_skill_range(
+            display,
+            player_world_x,
+            player_world_y,
+            VISION_SKILL_RADIUS,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+            (100, 210, 255),
+            1.0 + 0.015 * math.sin(now * 0.006),
+        )
     if (practice_mode or debug_mode) and not easter_egg_found:
         map_center_x = TileGene.map_width * TileGene.tile_size / 2
         map_center_y = TileGene.map_height * TileGene.tile_size / 2
@@ -2142,12 +2136,12 @@ def GameFrame(practice_mode=False):
     remote_bullets = [b for b in remote_bullets if b.is_active]
 
     if my_player.Hp <= 0 and not use_revive_skill():
-        ScreenState = "GameOver"
+        show_defeat()
         return
 
     visible_player_ids = set()
     # 다른 플레이어 그리기
-    remote_players = {} if practice_mode or debug_mode else frame_server_players
+    remote_players = {} if practice_mode or local_match else frame_server_players
     for p_id, p_info in remote_players.items():
         if str(p_id) == str(network.player_id) or is_hidden_player(p_info):
             continue
@@ -2229,12 +2223,7 @@ def GameFrame(practice_mode=False):
     else:
         my_player.draw(display, CameraPosX, CameraPosY, camera_zoom, local_stun_offset_x)
         if weapon_state.weapon_id == "knife" and knife_attack_until > now and IML.GetBladeFrames():
-            elapsed = MELEE_ATTACK_DURATION_MS - max(0, knife_attack_until - now)
-            frame_index = min(
-                len(IML.GetBladeFrames()) - 1,
-                max(0, int(elapsed / MELEE_ATTACK_DURATION_MS * len(IML.GetBladeFrames()))),
-            )
-            blade = IML.GetBladeFrames()[frame_index]
+            blade = blade_animation.frame_at(now)
             blade = _scale_cached(
                 blade,
                 (
@@ -2461,16 +2450,52 @@ def GameFrame(practice_mode=False):
 
     for bomb in active_bombs:
         bomb_screen = world_to_screen(bomb["x"], bomb["y"], CameraPosX, CameraPosY, camera_zoom)
+        remaining_ratio = max(0.0, (bomb["explode_at"] - now) / BOMB_DELAY_MS)
+        pulse = 1.0 + 0.06 * math.sin(now * 0.025)
+        draw_skill_range(
+            display,
+            bomb["x"],
+            bomb["y"],
+            BOMB_RADIUS,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+            (255, 150, 35),
+            pulse,
+        )
+        pygame.draw.arc(
+            display,
+            (255, 245, 180),
+            pygame.Rect(
+                round(bomb_screen[0] - 20 * camera_zoom),
+                round(bomb_screen[1] - 20 * camera_zoom),
+                max(1, round(40 * camera_zoom)),
+                max(1, round(40 * camera_zoom)),
+            ),
+            -math.pi / 2,
+            -math.pi / 2 + math.tau * (1 - remaining_ratio),
+            max(2, round(3 * camera_zoom)),
+        )
         pygame.draw.circle(display, (255, 170, 40), (round(bomb_screen[0]), round(bomb_screen[1])),
                            max(5, round(12 * camera_zoom)), 3)
     for explosion in active_explosions:
         explosion_screen = world_to_screen(
             explosion["x"], explosion["y"], CameraPosX, CameraPosY, camera_zoom
         )
+        progress = (now - explosion["started_at"]) / EXPLOSION_DURATION_MS
+        draw_skill_range(
+            display,
+            explosion["x"],
+            explosion["y"],
+            BOMB_RADIUS * min(1.0, max(0.15, progress)),
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+            (255, 105, 35),
+        )
         if IML.GetExplosionFrames():
-            progress = (pygame.time.get_ticks() - explosion["started_at"]) / EXPLOSION_DURATION_MS
-            frame_index = min(len(IML.GetExplosionFrames()) - 1, max(0, int(progress * len(IML.GetExplosionFrames()))))
-            explosion_image = IML.GetExplosionFrames()[frame_index]
+            explosion["animation"].start(explosion["started_at"])
+            explosion_image = explosion["animation"].frame_at(now)
             explosion_image = pygame.transform.smoothscale(
                 explosion_image,
                 (max(1, round(explosion_image.get_width() * camera_zoom)), max(1, round(explosion_image.get_height() * camera_zoom))),
@@ -2501,6 +2526,16 @@ def GameFrame(practice_mode=False):
         )
 
     for ward_x, ward_y in wards:
+        draw_skill_range(
+            display,
+            ward_x,
+            ward_y,
+            WARD_VISION_RADIUS,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+            (80, 220, 255),
+        )
         draw_ward(display, ward_x, ward_y, CameraPosX, CameraPosY, camera_zoom)
     for player_id, player_info in frame_server_players.items():
         if str(player_id) == str(network.player_id) or is_hidden_player(player_info):

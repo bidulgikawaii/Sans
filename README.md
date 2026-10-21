@@ -150,15 +150,66 @@ python build.py
 | 파일 | 역할 |
 |---|---|
 | `TheTest.py` | 클라이언트 게임 루프와 화면 전환 |
+| `NetworkClient.py` | 서버 연결, 재연결, 오프라인 클라이언트 |
+| `NetworkProtocol.py` | TCP 메시지 경계와 대용량 스냅샷 처리 |
 | `Server.py` | 멀티플레이 서버와 플레이어 상태 동기화 |
 | `Lobby.py` | 로비 인원, 카운트다운, 참가 제한 |
 | `TileGenerator.py` | 맵, 타일, 상호작용 오브젝트 생성 |
+| `TileRendering.py` | 타일 Surface와 월드 렌더링 |
 | `Zone.py` | 자기장 크기, 외곽 피해, 자기장 렌더링 |
 | `PlayerClass.py` | 플레이어 이동과 히트박스 |
 | `Weapon.py` | 무기 설정과 탄약 처리 |
 | `SkillAndSlot.py` | 스킬 도감, 인벤토리, 퀵슬롯 |
 | `ImageLoad.py` | 이미지와 애니메이션 로딩 |
 | `Config.py` | 공통 설정값 |
+| `GameModes.py` | 게임 모드 정의와 등록 |
+| `WorldEffects.py` | 모드별 이벤트와 날씨 효과 훅 |
+| `Animation.py` | 시간 기반 프레임 애니메이션 재생기 |
+
+## 모드·날씨·애니메이션 확장
+
+새 모드는 `GameModes.py`의 기본 등록 예시를 복사해 추가합니다. `mode_id`는 클라이언트와 서버가 공유하므로 두 프로그램이 함께 읽는 이 파일에 등록해야 합니다.
+
+```python
+register_game_mode(GameModeDefinition(
+	mode_id="storm",
+	label="폭풍 모드",
+	min_players=2,
+	zone_enabled=True,
+	elimination=True,
+))
+```
+
+날씨나 라운드 이벤트는 `WorldEffect`를 상속해 필요한 훅만 구현하고 `register_weather` 또는 `register_event`로 연결합니다. 등록된 모드만 선택 메뉴에 표시되며, 기존 로비·서버 흐름을 사용합니다.
+
+```python
+from GameModes import GAME_MODE_NORMAL
+from WorldEffects import WorldEffect, register_weather
+
+
+class RainWeather(WorldEffect):
+	def start(self, world_size):
+		self.world_size = world_size
+		self.elapsed_ms = 0
+
+	def update(self, delta_ms, world_size):
+		self.elapsed_ms += delta_ms
+
+	def draw(self, surface, camera_x, camera_y, zoom):
+		# 이곳에서 날씨 파티클을 월드 좌표에서 화면 좌표로 변환해 그립니다.
+		pass
+
+
+register_weather(GAME_MODE_NORMAL, RainWeather)
+```
+
+효과 등록 코드는 클라이언트 시작 전에 실행되어야 합니다. 별도 파일로 작성했다면 `TheTest.py`에서 `world_effects`를 가져온 뒤 해당 플러그인 모듈을 import합니다. 애니메이션은 미리 로드한 프레임과 재생 간격을 지정하고 시작 시각을 전달합니다.
+
+```python
+animation = FrameAnimation(image_loader.GetExplosionFrames(), frame_duration_ms=35, loop=False)
+animation.start(pygame.time.get_ticks())
+frame = animation.frame_at(pygame.time.get_ticks())
+```
 
 ## 업데이트 기록
 

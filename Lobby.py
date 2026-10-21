@@ -7,6 +7,7 @@ from Config import (
     MAX_PLAYERS,
     NORMAL_MATCH_MIN_PLAYERS,
 )
+from GameModes import get_game_mode, get_game_modes, is_game_mode_registered
 
 
 class LobbyState:
@@ -15,10 +16,11 @@ class LobbyState:
     def __init__(self):
         self.modes = {}
         self.ready_players = set()
-        self.started = {GAME_MODE_NORMAL: False, GAME_MODE_DEBUG: False}
-        self.start_at = {GAME_MODE_NORMAL: None, GAME_MODE_DEBUG: None}
-        self.started_at = {GAME_MODE_NORMAL: None, GAME_MODE_DEBUG: None}
-        self.match_player_ids = {GAME_MODE_NORMAL: set(), GAME_MODE_DEBUG: set()}
+        mode_ids = (mode.mode_id for mode in get_game_modes())
+        self.started = {mode_id: False for mode_id in mode_ids}
+        self.start_at = {mode_id: None for mode_id in self.started}
+        self.started_at = {mode_id: None for mode_id in self.started}
+        self.match_player_ids = {mode_id: set() for mode_id in self.started}
 
     def _player_ids(self, mode):
         return {player_id for player_id, player_mode in self.modes.items() if player_mode == mode}
@@ -33,7 +35,7 @@ class LobbyState:
             self.match_player_ids[mode] = self._player_ids(mode)
 
     def join(self, player_id, mode, debug_enabled=False):
-        if mode not in (GAME_MODE_NORMAL, GAME_MODE_DEBUG):
+        if not is_game_mode_registered(mode):
             mode = GAME_MODE_NORMAL
         if debug_enabled:
             mode = GAME_MODE_DEBUG
@@ -61,7 +63,7 @@ class LobbyState:
         else:
             self.ready_players.discard(player_id)
 
-        min_required = 1 if mode == GAME_MODE_DEBUG else NORMAL_MATCH_MIN_PLAYERS
+        min_required = get_game_mode(mode).min_players
         player_ids = self._player_ids(mode)
         ready_count = len(player_ids & self.ready_players)
         all_ready = bool(player_ids) and ready_count == len(player_ids)
@@ -104,12 +106,13 @@ class LobbyState:
         return self._player_ids(mode) if mode is not None else set()
 
     def zone_enabled_for(self, player_id):
-        return self.mode_for(player_id) == GAME_MODE_NORMAL
+        mode_id = self.mode_for(player_id)
+        return bool(mode_id and get_game_mode(mode_id).zone_enabled)
 
     def status(self, player_id=None, mode=None):
         if mode is None:
             mode = self.mode_for(player_id) if player_id is not None else GAME_MODE_NORMAL
-        mode = mode or GAME_MODE_NORMAL
+        mode = mode if is_game_mode_registered(mode) else GAME_MODE_NORMAL
         self._update_start_state(mode)
         start_at = self.start_at[mode]
         started_at = self.started_at[mode]
@@ -121,7 +124,7 @@ class LobbyState:
         player_ids = self._player_ids(mode)
         ready_count = len(player_ids & self.ready_players)
         total_players = len(player_ids)
-        min_required = 1 if mode == GAME_MODE_DEBUG else NORMAL_MATCH_MIN_PLAYERS
+        min_required = get_game_mode(mode).min_players
         all_ready = bool(total_players) and ready_count == total_players and total_players >= min_required
         return {
             "type": "lobby_status",

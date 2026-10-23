@@ -1,6 +1,7 @@
 """게임 클라이언트의 서버 연결과 오프라인 대체 상태를 관리합니다."""
 
 import pickle
+import random
 import socket
 import uuid
 from dataclasses import dataclass, field
@@ -83,8 +84,16 @@ network.player_id = network.init_data["init_id"]
 print(f"내 아이디: {network.player_id} 입니다.")
 
 
+def generate_random_player_name():
+    """여러 단어 목록을 조합해 입력 화면에 넣을 기본 닉네임을 만듭니다."""
+    moods = ("용감한", "느긋한", "반짝이는", "고요한", "날렵한", "엉뚱한", "든든한", "신비한")
+    creatures = ("여우", "고래", "토끼", "늑대", "수달", "매", "고양이", "거북이")
+    titles = ("별", "번개", "구름", "달빛", "숲", "파도", "불꽃", "바람")
+    return f"{random.choice(moods)}{random.choice(titles)}{random.choice(creatures)}{random.randint(10, 99)}"
+
+
 def default_player_name(player_id=None):
-    """닉네임을 입력하지 않았을 때 사용할 안정적인 기본 이름입니다."""
+    """닉네임을 입력하지 않았을 때 사용할 기본 이름입니다."""
     selected_player_id = network.player_id if player_id is None else player_id
     return f"유저_{selected_player_id}"
 

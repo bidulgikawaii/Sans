@@ -37,6 +37,7 @@ from WorldEffects import world_effects
 from Animation import FrameAnimation
 from NetworkClient import (
     default_player_name,
+    generate_random_player_name,
     network,
     reconnect_to_server,
 )
@@ -46,12 +47,12 @@ pygame.init()
 pygame.display.set_caption("전설적인 게임")
 display = pygame.display.set_mode((ScreenX, ScreenY), 0, 32)
 clock = pygame.time.Clock()
-ScreenState = "MainView"
+ScreenState = "NameInputView"
 exit_confirm_return_state = "GameView"
 selected_game_mode = GAME_MODE_NORMAL
 local_match = False
 main_weapon_id = DEFAULT_WEAPON_ID
-player_name = ""
+player_name = generate_random_player_name()
 # [커스텀 가능] 게임 전체에서 사용할 기본 폰트입니다. 서체와 크기를 여기서 조정합니다.
 GuiFont = pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__)
         ),"Font","HeirofLightRegular.ttf"
@@ -229,6 +230,7 @@ send_data = {
     "wards": [],
     "destroyed_furniture": [],
     "rune_ping": None,
+    "kill_count": 0,
     "revive_token": 0,
     "revive_request": False,
     "revive_armed": False,
@@ -285,6 +287,9 @@ game_start_banner_until = 0
 show_hitboxes = True
 local_stun_until = 0
 zone_elapsed_ms = 0
+local_kill_count = 0
+match_elapsed_ms = 0
+respawn_ms_remaining = 0
 particles = ParticleSystem()
 last_effect_tick = pygame.time.get_ticks()
 # 시야 밖을 검게 덮을 때 재사용하는 투명 레이어입니다.
@@ -487,6 +492,7 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     global game_start_banner_until
     global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
     global healing_item_count, mouse_fire_hold
+    global local_kill_count, match_elapsed_ms, respawn_ms_remaining
     global spawn_tiles
     if regenerate_world:
         world_seed = (
@@ -532,6 +538,10 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     last_effect_tick = pygame.time.get_ticks()
     match_result = None
     result_started_at = 0
+    local_kill_count = 0
+    match_elapsed_ms = 0
+    respawn_ms_remaining = 0
+    send_data["kill_count"] = 0
     game_start_banner_until = 0
     system_message = ""
     weapon_state.reset(main_weapon_id)
@@ -684,6 +694,8 @@ def ModeSelectView():
                 begin_lobby_join(GAME_MODE_NORMAL)
             elif event.key == pygame.K_2:
                 begin_lobby_join(GAME_MODE_DEBUG)
+            elif event.key == pygame.K_3:
+                begin_lobby_join(GAME_MODE_DEATHMATCH)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             selected_mode = next(
                 (
@@ -716,8 +728,10 @@ def NameInputView():
                 ScreenState = "MainView"
             elif event.key == pygame.K_BACKSPACE:
                 player_name = player_name[:-1]
+            elif event.key == pygame.K_r:
+                player_name = generate_random_player_name()
             elif event.key == pygame.K_RETURN:
-                player_name = player_name.strip() or default_player_name()
+                player_name = player_name.strip() or generate_random_player_name()
                 pygame.key.stop_text_input()
                 ScreenState = "MainView"
 
@@ -882,12 +896,61 @@ def _draw_result_screen(title_text, color, elapsed):
         (max(1, round(title.get_width() * pulse)), max(1, round(title.get_height() * pulse))),
     )
     display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
+    is_deathmatch_result = selected_game_mode == GAME_MODE_DEATHMATCH
+    if is_deathmatch_result:
+        score_table = next(
+            (info.get("kill_scores", {}) for info in server_players.values() if info.get("kill_scores") is not None),
+            {},
+        )
+        rows = sorted(
+            (
+                (player_id, int(score_table.get(player_id, info.get("kill_count", 0))), info.get("name", "플레이어"))
+                for player_id, info in server_players.items()
+            ),
+            key=lambda row: (-row[1], str(row[0])),
+        )
+        winner_ids = next(
+            (info.get("winner_ids", []) for info in server_players.values() if info.get("winner_ids")),
+            [],
+        )
+        table_left = ScreenX // 2 - 310
+        header_y = ScreenY // 2 + 16
+        for label, x in (("순위", table_left + 34), ("닉네임", table_left + 150), ("킬", table_left + 545)):
+            header = KillFeedFont.render(label, True, (255, 235, 160))
+            display.blit(header, (x, header_y - header.get_height() // 2))
+        previous_score = None
+        displayed_rank = 0
+        for index, (player_id, score, name) in enumerate(rows[:MAX_PLAYERS]):
+            if score != previous_score:
+                displayed_rank = index + 1
+                previous_score = score
+            row_y = ScreenY // 2 + 48 + index * 31
+            row_rect = pygame.Rect(table_left, row_y - 13, 620, 28)
+            local_row = str(player_id) == str(network.player_id)
+            winner_row = str(player_id) in {str(winner_id) for winner_id in winner_ids}
+            row_color = (
+                (90, 70, 25, 210) if local_row
+                else (20, 40, 36, 170) if winner_row
+                else (12, 20, 28, 135)
+            )
+            row_surface = pygame.Surface(row_rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(row_surface, row_color, row_surface.get_rect(), border_radius=4)
+            display.blit(row_surface, row_rect)
+            text_color = (255, 245, 190) if local_row or winner_row else (245, 245, 245)
+            rank_text = KillFeedFont.render(f"{displayed_rank:>2}", True, text_color)
+            name_text = KillFeedFont.render(str(name), True, text_color)
+            score_text = KillFeedFont.render(str(score), True, text_color)
+            display.blit(rank_text, (row_rect.left + 34, row_y - rank_text.get_height() // 2))
+            display.blit(name_text, (row_rect.left + 150, row_y - name_text.get_height() // 2))
+            display.blit(score_text, (row_rect.right - 75, row_y - score_text.get_height() // 2))
+
     guide_text = "Space: 다시 대기열 참가   ESC: 메인 메뉴"
     guide = result_text_cache.get(guide_text)
     if guide is None:
         guide = GuiFont.render(guide_text, True, (255, 255, 255))
         result_text_cache[guide_text] = guide
-    display.blit(guide, guide.get_rect(center=(ScreenX // 2, ScreenY // 2 + 70)))
+    guide_y = ScreenY - 36 if is_deathmatch_result else ScreenY // 2 + 70
+    display.blit(guide, guide.get_rect(center=(ScreenX // 2, guide_y)))
 
 
 def handle_quit(_event, _mouse_pos):
@@ -1119,6 +1182,12 @@ def remove_ward_at_cursor():
 def handle_key_event(event, _mouse_pos):
     global inventory_open, debug_mode, system_message, show_hitboxes
     global healing_inventory_open
+    if (
+        my_player.Hp <= 0
+        and selected_game_mode == GAME_MODE_DEATHMATCH
+        and event.key != pygame.K_ESCAPE
+    ):
+        return
     weapon_id = None
     if event.key == pygame.K_1:
         weapon_id = main_weapon_id
@@ -1380,6 +1449,8 @@ def fire_stun_bullet():
 def fire_bullet():
     global system_message
     global weapon_fire_until, weapon_smoke_until
+    if my_player.Hp <= 0:
+        return
     config = weapon_state.config
 
     if weapon_state.is_reloading_now():
@@ -1506,9 +1577,11 @@ def GameFrame(practice_mode=False):
     global last_effect_tick, preserve_magazine_after_chest
     global teleport_anchor, teleport_anchor_expires_at
     global damage_numbers, easter_egg_found, easter_egg_flash_until
+    global local_kill_count, match_elapsed_ms, respawn_ms_remaining
 
     MousePos = pygame.mouse.get_pos()
-    if my_player.Hp <= 0 and not use_revive_skill():
+    deathmatch = selected_game_mode == GAME_MODE_DEATHMATCH and not (practice_mode or local_match)
+    if my_player.Hp <= 0 and not deathmatch and not use_revive_skill():
         show_defeat()
         return
     now = pygame.time.get_ticks()
@@ -1528,7 +1601,7 @@ def GameFrame(practice_mode=False):
         system_message = "텔포석상이 사라졌습니다. 15초 후 다시 사용할 수 있습니다."
     handle_game_events()
 
-    if mouse_fire_hold and weapon_state.config.automatic and weapon_state.can_fire():
+    if my_player.Hp > 0 and mouse_fire_hold and weapon_state.config.automatic and weapon_state.can_fire():
         fire_bullet()
 
     Weapon_Pos = pygame.mouse.get_pos()
@@ -1545,7 +1618,7 @@ def GameFrame(practice_mode=False):
     my_player.sprint_speed = PLAYER_SPRINT_SPEED + haste_bonus
     my_player.dash_speed = PLAYER_DASH_SPEED + haste_bonus + knife_dash_bonus
     # 칼 대시는 추가 속도만 적용하며, 지속 시간은 기본 대시와 동일하게 둡니다.
-    if now >= local_stun_until:
+    if my_player.Hp > 0 and now >= local_stun_until:
         my_player.dash_duration = PLAYER_DASH_DURATION_MS + (
             KNIFE_DASH_DURATION_BONUS_MS if weapon_state.weapon_id == "knife" else 0
         )
@@ -1676,6 +1749,7 @@ def GameFrame(practice_mode=False):
     send_data["posX"] = my_player.X
     send_data["posY"] = my_player.Y
     send_data["hp"] = my_player.Hp
+    send_data["kill_count"] = local_kill_count
     send_data["angle"] = Weapon_Angle
     send_data["weapon_id"] = weapon_state.weapon_id
     send_data["magazine_ammo"] = weapon_state.magazine_ammo
@@ -1702,7 +1776,7 @@ def GameFrame(practice_mode=False):
         slot.assigned_skill == "부활의 차"
         for slot in quick_slots
     )
-    send_data["hit_events"] = list(pending_hit_events)
+    send_data["hit_events"] = list(pending_hit_events) if my_player.Hp > 0 else []
     
     # ★ [정리] 총알 정보 - 이번 프레임에서 새로 발사된 총알만 전송
     send_data["bullets"] = [
@@ -1737,7 +1811,22 @@ def GameFrame(practice_mode=False):
                 event_id = kill_event.get("event_id")
                 if event_id not in processed_kill_event_ids:
                     processed_kill_event_ids.add(event_id)
-                    kill_feed.append({**kill_event, "started_at": now})
+                    killer_id = str(kill_event.get("killer_id"))
+                    target_id = str(kill_event.get("target_id"))
+                    killer_info = next(
+                        (info for player_id, info in server_players.items() if str(player_id) == killer_id),
+                        {},
+                    )
+                    target_info = next(
+                        (info for player_id, info in server_players.items() if str(player_id) == target_id),
+                        {},
+                    )
+                    kill_feed.append({
+                        **kill_event,
+                        "killer_name": killer_info.get("name") or kill_event.get("killer_name"),
+                        "target_name": target_info.get("name") or kill_event.get("target_name"),
+                        "started_at": now,
+                    })
             kill_feed = [event for event in kill_feed if now - event["started_at"] < 5000][-5:]
             for damage_event in event_snapshot.get("damage_events", []):
                 event_id = damage_event.get("event_id")
@@ -1799,7 +1888,17 @@ def GameFrame(practice_mode=False):
                 max(0, int(server_players.get(network.player_id, {}).get("zone_elapsed_ms", 0))),
             )
             if own_snapshot:
+                score_snapshot = own_snapshot.get("kill_scores", {})
+                local_kill_count = int(score_snapshot.get(network.player_id, local_kill_count))
+                match_elapsed_ms = int(own_snapshot.get("match_elapsed_ms", match_elapsed_ms))
+                respawn_ms_remaining = int(own_snapshot.get("respawn_ms_remaining", 0))
+                was_dead = my_player.Hp <= 0
                 my_player.Hp = own_snapshot.get("hp", my_player.Hp)
+                if deathmatch and was_dead and my_player.Hp > 0:
+                    my_player.X = own_snapshot.get("posX", my_player.X)
+                    my_player.Y = own_snapshot.get("posY", my_player.Y)
+                    my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
+                    my_player._update_hitboxes()
                 local_stun_until = now + own_snapshot.get("stun_ms_remaining", 0)
                 weapon_id = own_snapshot.get("weapon_id", weapon_state.weapon_id)
                 if weapon_id == weapon_state.weapon_id:
@@ -1812,12 +1911,11 @@ def GameFrame(practice_mode=False):
                         weapon_state.reserve_ammo = own_snapshot.get(
                             "reserve_ammo", weapon_state.reserve_ammo
                         )
-                if my_player.Hp <= 0:
+                if my_player.Hp <= 0 and not deathmatch:
                     revived_after_server_update = use_revive_skill()
-            own_winner_id = own_snapshot.get("winner_id") if own_snapshot else None
-            if own_winner_id is not None and not revived_after_server_update:
-                winner_id = own_winner_id
-                if str(winner_id) == str(network.player_id):
+            own_winner_ids = own_snapshot.get("winner_ids", []) if own_snapshot else []
+            if own_winner_ids and not revived_after_server_update:
+                if str(network.player_id) in {str(winner_id) for winner_id in own_winner_ids}:
                     show_victory()
                 else:
                     show_defeat()
@@ -2135,7 +2233,7 @@ def GameFrame(practice_mode=False):
                 bullet.is_active = False
     remote_bullets = [b for b in remote_bullets if b.is_active]
 
-    if my_player.Hp <= 0 and not use_revive_skill():
+    if my_player.Hp <= 0 and not deathmatch and not use_revive_skill():
         show_defeat()
         return
 
@@ -2603,6 +2701,33 @@ def GameFrame(practice_mode=False):
         network.player_id,
         player_name,
     )
+    if deathmatch:
+        remaining_ms = max(0, DEATHMATCH_DURATION_MS - match_elapsed_ms)
+        timer_text = KillFeedFont.render(
+            f"데스매치  {remaining_ms // 60000:02d}:{(remaining_ms // 1000) % 60:02d}",
+            True,
+            (255, 235, 160),
+        )
+        display.blit(timer_text, timer_text.get_rect(midtop=(ScreenX // 2, 20)))
+        score_text = KillFeedFont.render(f"내 킬 수: {local_kill_count}", True, (255, 255, 255))
+        display.blit(score_text, score_text.get_rect(midtop=(ScreenX // 2, 48)))
+        if my_player.Hp <= 0:
+            respawn_text = KillFeedFont.render(
+                f"부활까지 {respawn_ms_remaining / 1000:.1f}초",
+                True,
+                (255, 150, 150),
+            )
+            display.blit(respawn_text, respawn_text.get_rect(center=(ScreenX // 2, 76)))
+        scores = server_players.get(network.player_id, {}).get("kill_scores", {})
+        ranked_players = sorted(
+            scores.items(), key=lambda item: (-item[1], str(item[0]))
+        )[:MAX_PLAYERS]
+        for rank, (score_player_id, score) in enumerate(ranked_players):
+            score_player = server_players.get(score_player_id, {})
+            score_name = score_player.get("name", str(score_player_id)[:8])
+            score_color = (255, 235, 160) if str(score_player_id) == str(network.player_id) else (240, 240, 240)
+            score_text = KillFeedFont.render(f"{rank + 1}. {score_name}: {score}", True, score_color)
+            display.blit(score_text, (ScreenX - 300, 94 + rank * 24))
     if game_start_banner_until > now:
         remaining = game_start_banner_until - now
         game_start_banner.set_alpha(min(255, max(0, remaining * 2)))

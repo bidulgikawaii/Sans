@@ -1,7 +1,7 @@
 import pygame
 import os
 from Config import MAIN_SCREEN_BACKGROUND_COLOR
-from GameModes import get_game_modes
+from GameModes import get_game_mode, get_game_modes
 
 
 class MainScreenRenderer:
@@ -94,7 +94,7 @@ class MainScreenRenderer:
         self._draw_background()
         title = self.font.render("닉네임을 입력하세요", True, (255, 235, 150))
         value = self.font.render(nickname or default_name, True, (240, 245, 255) if nickname else (140, 155, 180))
-        guide = self.font.render("Enter: 확인   Esc: 뒤로", True, (190, 205, 225))
+        guide = self.font.render("Enter: 확인   R: 랜덤 이름   Esc: 뒤로", True, (190, 205, 225))
         self.surface.blit(title, title.get_rect(center=(self.screen_width // 2, 330)))
         box = pygame.Rect(0, 0, 520, 70)
         box.center = (self.screen_width // 2, 450)
@@ -128,7 +128,7 @@ class MainScreenRenderer:
             (120, 255, 160) if lobby_status.get("confirmed", False) else (220, 220, 220),
         )
         self.surface.blit(confirm_text, confirm_text.get_rect(center=(self.screen_width // 2, 480)))
-        mode_name = "디버그 모드" if selected_game_mode == "debug" else "일반 모드"
+        mode_name = get_game_mode(selected_game_mode).label
         countdown_ms = lobby_status.get("countdown_ms", 0)
         if lobby_status.get("accepted") is False:
             status_name = lobby_status.get("message", "게임이 진행 중이라 참가할 수 없습니다.")

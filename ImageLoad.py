@@ -48,7 +48,7 @@ class Imageload:
         self.PistolFire = self._load_scaled_image("pistol_fire_transparent.png", PISTOL_IMAGE_SIZE)
         self.PistolSmoke = self._load_scaled_image("pistol_smoke_transparent.png", PISTOL_IMAGE_SIZE)
         self.Gigwan = self._load_scaled_image("Gigwan.png", (128, 64))
-        self.HBlade = self._load_animation("karambit", (128, 128))
+        self.HBlade = self._load_animation("karambit", (64, 64))
         self.Expo = self._load_animation("Expo", (128, 128))
         self.Sniper = self._load_scaled_image("Sniper.png", (192, 64))
         shotgun = self._load_scaled_image("ShotGun_3.png", (128, 64))
@@ -67,6 +67,7 @@ class Imageload:
         self.SkillWindow = self._load_image_file(self.root / "SkillWindow.png")
         self.QuickSlot = self._load_image_file(self.root / "QuickSlot.png")
         self.TpStatue = self._load_scaled_image("TpStatue.png", (64, 96))
+        self.WardSet = self._load_image_file(self.root / "ward_Set.PNG",(64,64))
 
         self.TitleImages = self._load_title_images()
         if self.BackG is not None:
@@ -216,6 +217,9 @@ class Imageload:
 
     def GetProtectImage(self):
         return self.Protect
+
+    def GetWardImage(self):
+        return self.WardSet
 
     def GetGrassTile(self):
         return self.GrassTile

@@ -136,6 +136,16 @@ class Bullet:
 
             center_x = (self.x - camera_x + self.surface.get_width() / 2) * zoom
             center_y = (self.y - camera_y + self.surface.get_height() / 2) * zoom
+            if self.stun_ms:
+                pulse = 1.0 + 0.15 * math.sin(pygame.time.get_ticks() * 0.025)
+                glow_radius = max(4, round(7 * zoom * pulse))
+                pygame.draw.circle(
+                    display,
+                    (120, 225, 255),
+                    (round(center_x), round(center_y)),
+                    glow_radius,
+                    max(1, round(2 * zoom)),
+                )
             display.blit(image, image.get_rect(center=(round(center_x), round(center_y))))
             return
 

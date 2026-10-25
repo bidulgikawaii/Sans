@@ -72,17 +72,24 @@ def draw_kill_feed(
             pygame.draw.rect(card, (24, 34, 46), card.get_rect(), border_radius=10)
             pygame.draw.rect(card, (100, 190, 220), card.get_rect(), 2, border_radius=10)
 
-        is_local_killer = str(event.get("killer_id")) == str(local_player_id)
-        is_local_target = str(event.get("target_id")) == str(local_player_id)
-        killer = (
-            str(event.get("killer_name") or local_player_name or "플레이어")
-            if is_local_killer
-            else str(event.get("killer_name") or f"플레이어 {event.get('killer_id')}")
-        )
-        target = (
-            str(event.get("target_name") or local_player_name or "플레이어")
-            if is_local_target
-            else str(event.get("target_name") or event.get("target_id") or "플레이어")
+        killer_id = event.get("killer_id")
+        target_id = event.get("target_id")
+        has_local_id = local_player_id is not None and str(local_player_id) != ""
+        is_local_killer = has_local_id and killer_id is not None and str(killer_id) == str(local_player_id)
+        is_local_target = has_local_id and target_id is not None and str(target_id) == str(local_player_id)
+        cause = event.get("cause")
+        if cause == "magnetic_zone":
+            killer = "자기장"
+        elif cause == "self_inflicted":
+            killer = "자폭"
+        else:
+            killer = str(
+                event.get("killer_name")
+                or (local_player_name if is_local_killer else f"플레이어 {killer_id or ''}")
+            )
+        target = str(
+            event.get("target_name")
+            or (local_player_name if is_local_target else target_id or "플레이어")
         )
         killer_color = (105, 225, 255) if is_local_killer else (245, 240, 225)
         target_color = (255, 110, 120) if is_local_target else (245, 240, 225)
@@ -94,7 +101,8 @@ def draw_kill_feed(
         separator = font.render(">", True, (210, 220, 230))
         card.blit(separator, separator.get_rect(center=(210, card_height // 2)))
 
-        weapon_image = get_weapon_image(event.get("weapon_id", "pistol"))
+        weapon_id = event.get("weapon_id")
+        weapon_image = get_weapon_image(weapon_id) if weapon_id else None
         if weapon_image is not None:
             icon = pygame.transform.smoothscale(weapon_image, (34, 34))
             card.blit(icon, icon.get_rect(center=(260, card_height // 2)))
@@ -273,13 +281,44 @@ def draw_ammo_status(
     surface.blit(reserve_text, reserve_rect)
 
 
-def draw_ward(surface, ward_x, ward_y, camera_x, camera_y, zoom):
+def draw_ward(surface, ward_x, ward_y, camera_x, camera_y, zoom, image=None):
     screen_x = round((ward_x - camera_x) * zoom)
     screen_y = round((ward_y - camera_y) * zoom)
     radius = max(6, round(12 * zoom))
     pygame.draw.circle(surface, (120, 240, 255), (screen_x, screen_y), radius, 2)
-    pygame.draw.line(surface, (120, 240, 255), (screen_x - radius, screen_y), (screen_x + radius, screen_y), 1)
-    pygame.draw.line(surface, (120, 240, 255), (screen_x, screen_y - radius), (screen_x, screen_y + radius), 1)
+    if image is not None:
+        size = max(1, round(radius * 1.5))
+        image_size = (size, size)
+        cache_key = (id(image), image_size)
+        scaled_image = _scaled_images.get(cache_key)
+        if scaled_image is None:
+            scaled_image = pygame.transform.smoothscale(image, image_size)
+            if len(_scaled_images) >= 64:
+                _scaled_images.clear()
+            _scaled_images[cache_key] = scaled_image
+        surface.blit(scaled_image, scaled_image.get_rect(center=(screen_x, screen_y)))
+    else:
+        pygame.draw.line(surface, (120, 240, 255), (screen_x - radius, screen_y), (screen_x + radius, screen_y), 1)
+        pygame.draw.line(surface, (120, 240, 255), (screen_x, screen_y - radius), (screen_x, screen_y + radius), 1)
+
+
+def draw_stun_effect(surface, center_x, center_y, zoom, now):
+    """기절 중인 플레이어 주변에 맥동하는 전기 효과를 표시합니다."""
+    pulse = 1.0 + 0.12 * math.sin(now * 0.025)
+    radius = max(12, round(27 * zoom * pulse))
+    center = (round(center_x), round(center_y))
+    pygame.draw.circle(surface, (100, 225, 255), center, radius, max(1, round(2 * zoom)))
+    pygame.draw.circle(surface, (210, 250, 255), center, max(2, round(radius * 0.18)), 1)
+    for index in range(4):
+        angle = math.tau * index / 4 + now * 0.002
+        points = []
+        for step, distance in enumerate((radius + 4, radius + 11, radius + 17, radius + 24)):
+            offset = (step % 2) * 5 * zoom
+            points.append((
+                round(center_x + math.cos(angle) * (distance + offset)),
+                round(center_y + math.sin(angle) * (distance + offset)),
+            ))
+        pygame.draw.lines(surface, (150, 235, 255), False, points, max(1, round(2 * zoom)))
 
 
 def draw_skill_range(surface, world_x, world_y, world_radius, camera_x, camera_y, zoom, color, pulse=1.0):

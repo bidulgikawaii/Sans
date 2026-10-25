@@ -13,6 +13,7 @@ from Config import (
     MAP_BUSH_CLUSTER_RADIUS_MIN,
     MAP_BUSH_CLUSTER_RADIUS_MAX,
     MAP_TREASURE_CHANCE,
+    MAP_SPECIAL_TREASURE_COUNT,
     MAP_RUNE_COUNT,
     MAP_FURNITURE_CHANCE,
     MAP_STONE_COUNT,
@@ -150,6 +151,16 @@ class TileGenerator(TileRenderingMixin):
                 treasure_x = random.randint(house_x + 1, house_x + house_w - 2)
                 treasure_y = random.randint(house_y + 1, house_y + house_h - 2)
                 self.map_data[(treasure_x, treasure_y)] = Tile(tile_type=3, is_walkable=True)  # 보물상자
+
+        treasure_positions = [
+            position for position, tile in self.map_data.items()
+            if tile.tile_type == 3
+        ]
+        for position in random.sample(
+            treasure_positions,
+            min(MAP_SPECIAL_TREASURE_COUNT, len(treasure_positions)),
+        ):
+            self.map_data[position] = Tile(tile_type=10, is_walkable=True)
 
         self._place_bushes()
         self._place_runes()
@@ -673,7 +684,7 @@ class TileGenerator(TileRenderingMixin):
         for tile_y in range(start_y, end_y + 1):
             for tile_x in range(start_x, end_x + 1):
                 tile = self.map_data.get((tile_x, tile_y))
-                if tile and tile.tile_type == 3:
+                if tile and tile.tile_type in (3, 10):
                     self.destroy_treasure(tile_x, tile_y)
                     return tile_x, tile_y
         return None
@@ -686,14 +697,18 @@ class TileGenerator(TileRenderingMixin):
         for tile_y in range(start_y, end_y + 1):
             for tile_x in range(start_x, end_x + 1):
                 tile = self.map_data.get((tile_x, tile_y))
-                if tile and tile.tile_type == 3:
+                if tile and tile.tile_type in (3, 10):
                     return tile_x, tile_y
         return None
+
+    def is_special_treasure(self, tile_x, tile_y):
+        tile = self.map_data.get((tile_x, tile_y))
+        return bool(tile and tile.tile_type == 10)
 
     def destroy_treasure(self, tile_x, tile_y):
         """지정한 좌표의 보물상자를 제거합니다."""
         tile = self.map_data.get((tile_x, tile_y))
-        if not tile or tile.tile_type != 3:
+        if not tile or tile.tile_type not in (3, 10):
             return False
 
         self.map_data[(tile_x, tile_y)] = Tile(tile_type=0, is_walkable=True)

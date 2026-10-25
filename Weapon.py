@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import random
 import time
 from Config import DEFAULT_WEAPON_ID, WEAPON_VISION_RADIUS
 
@@ -63,7 +64,33 @@ WEAPONS = {
     ),
 }
 
+# 노란 특수상자에서 지급할 무기를 여기에 추가하면 일반 무기 목록에도 등록됩니다.
+SPECIAL_CRATE_WEAPONS = {
+    # "third_weapon": WeaponConfig("새 무기", damage=20, magazine_size=8, reserve_ammo=24, fire_interval=0.5),
+}
+WEAPONS.update(SPECIAL_CRATE_WEAPONS)
+
 WEAPON_KEYS = ("pistol", "rifle", "shotgun", "sniper", "smg", "knife")
+
+
+class SpecialWeaponCrate:
+    """특수상자를 열 때마다 등록된 무기 중 하나를 선택합니다."""
+
+    def __init__(self):
+        self.last_weapon_id = None
+
+    def open(self):
+        WEAPONS.update(SPECIAL_CRATE_WEAPONS)
+        weapon_ids = tuple(SPECIAL_CRATE_WEAPONS)
+        if not weapon_ids:
+            return None
+        if len(weapon_ids) > 1:
+            weapon_ids = tuple(
+                weapon_id for weapon_id in weapon_ids
+                if weapon_id != self.last_weapon_id
+            )
+        self.last_weapon_id = random.choice(weapon_ids)
+        return self.last_weapon_id
 
 
 class WeaponState:

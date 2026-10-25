@@ -11,7 +11,13 @@ import pickle
 from PlayerClass import Player
 from Tool_Cordinate import *
 from SkillAndSlot import *
-from Weapon import WeaponState, WEAPONS, WEAPON_KEYS
+from Weapon import (
+    SPECIAL_CRATE_WEAPONS,
+    SpecialWeaponCrate,
+    WeaponState,
+    WEAPONS,
+    WEAPON_KEYS,
+)
 from Effects import ParticleSystem
 from MainScreen import MainScreenRenderer
 from PracticeView import PracticeView
@@ -29,6 +35,7 @@ from GameRendering import (
     draw_ward,
     draw_kill_feed,
     draw_skill_range,
+    draw_stun_effect,
 )
 from GameAudio import load_effect_sound, play_effect_sound
 from Zone import MagneticZone
@@ -314,6 +321,9 @@ weapon_smoke_until = 0
 preserve_magazine_after_chest = False
 teleport_anchor = None
 teleport_anchor_expires_at = 0
+teleport_placements_remaining = TELEPORT_MAX_PLACEMENTS
+third_weapon_id = None
+special_weapon_crate = SpecialWeaponCrate()
 
 
 def is_hidden_player(player_info):
@@ -408,23 +418,44 @@ def draw_healing_inventory(surface):
     surface.blit(hint, (HEAL_ITEM_RECT.right + 12, HEAL_ITEM_RECT.y + 54))
 
 
-def collect_treasure(tile_position):
-    global preserve_magazine_after_chest, system_message
-    if not tile_position or not TileGene.destroy_treasure(*tile_position):
+def collect_treasure(tile_position, from_bullet=False):
+    global preserve_magazine_after_chest, system_message, third_weapon_id
+    if not tile_position:
         return False
+    is_special = TileGene.is_special_treasure(*tile_position)
+    if is_special and not SPECIAL_CRATE_WEAPONS:
+        message = "특수상자 무기를 Weapon.py의 SPECIAL_CRATE_WEAPONS에 등록해 주세요."
+        if system_message != message:
+            system_message = message
+        return False
+    if not TileGene.destroy_treasure(*tile_position):
+        return False
+
     pending_treasure_destroys.append(tile_position)
     play_effect_sound(chest_sound, "chest_open.wav")
+    if is_special:
+        weapon_id = special_weapon_crate.open()
+        if weapon_id is None:
+            raise RuntimeError("특수상자 무기 목록이 비어 있습니다.")
+        third_weapon_id = weapon_id
+        weapon_state.select(weapon_id)
+        system_message = f"특수상자 획득: [{WEAPONS[weapon_id].name}] 3번 무기로 교체"
+        return True
+
     available = [name for name in SKILL_BOOK if name not in owned_skills]
+    chest_label = "보물상자:" if from_bullet else "보물상자 획득:"
     if random.random() < CHEST_SKILL_REWARD_CHANCE and available:
         obtained_skill = random.choice(available)
         add_skill_to_inventory(obtained_skill)
-        system_message = f"보물상자 획득: [{obtained_skill}] 스킬을 얻었습니다."
+        system_message = f"{chest_label} [{obtained_skill}] 스킬을 얻었습니다."
     else:
         weapon_state.magazine_ammo = weapon_state.config.magazine_size
         weapon_state.reserve_ammo += weapon_state.config.magazine_size
         weapon_state.reloading = False
         preserve_magazine_after_chest = True
-        system_message = f"보물상자 획득: 탄창 회복, 예비 탄약 +{weapon_state.config.magazine_size}"
+        system_message = (
+            f"{chest_label} 탄창 회복, 예비 탄약 +{weapon_state.config.magazine_size}"
+        )
     return True
 
 
@@ -483,6 +514,7 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     global match_result, result_started_at, system_message, revive_token, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
     global pending_heal_amount, vision_skill_until, shield_until, haste_until
     global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
+    global teleport_placements_remaining, third_weapon_id, special_weapon_crate
     global training_dummy, preserve_magazine_after_chest
     global local_stun_until, zone_elapsed_ms, next_supply_drop_at
     global CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY
@@ -530,6 +562,9 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     active_rune_tile = None
     teleport_anchor = None
     teleport_anchor_expires_at = 0
+    teleport_placements_remaining = TELEPORT_MAX_PLACEMENTS
+    third_weapon_id = None
+    special_weapon_crate = SpecialWeaponCrate()
     training_dummy = None
     preserve_magazine_after_chest = False
     local_stun_until = 0
@@ -961,8 +996,20 @@ def handle_quit(_event, _mouse_pos):
     running = False
 
 
-def activate_quick_slot(key):
-    global system_message, vision_shape_override, vision_skill_until, shield_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
+def break_stealth_on_attack():
+    global stealth_until
+    if stealth_until > pygame.time.get_ticks():
+        stealth_until = 0
+
+
+def _finish_teleport_cycle(now):
+    global teleport_placements_remaining
+    skill_cooldowns["텔포"] = now + TELEPORT_COOLDOWN_MS
+    teleport_placements_remaining = 0
+
+
+def activate_quick_slot(key, reinstall=False):
+    global system_message, vision_shape_override, vision_skill_until, shield_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining
     key_name = pygame.key.name(key).upper()
     slot = next((slot for slot in quick_slots if slot.key_name == key_name), None)
     if not slot or not slot.assigned_skill:
@@ -974,6 +1021,13 @@ def activate_quick_slot(key):
         system_message = "부활의 차는 장착 중 사망하면 자동 발동합니다."
         return
     now = pygame.time.get_ticks()
+    if (
+        skill_name == "텔포"
+        and teleport_anchor is None
+        and now >= skill_cooldowns.get(skill_name, 0)
+        and teleport_placements_remaining == 0
+    ):
+        teleport_placements_remaining = TELEPORT_MAX_PLACEMENTS
     if skill_name == "텔포" and teleport_anchor is None and now < skill_cooldowns.get(skill_name, 0):
         remain = (skill_cooldowns[skill_name] - now) / 1000
         system_message = f"텔포 재사용 대기: {remain:.1f}초"
@@ -1024,6 +1078,7 @@ def activate_quick_slot(key):
             skill_cooldowns.pop(skill_name, None)
             system_message = "밝은 시야 안에만 폭탄을 던질 수 있습니다."
             return
+        break_stealth_on_attack()
         active_bombs.append({"x": target_x, "y": target_y, "explode_at": now + BOMB_DELAY_MS})
         particles.emit(target_x, target_y, (255, 190, 40), count=18, speed=55, lifetime=500, size=6)
         particles.ring(target_x, target_y, (255, 220, 80), radius=35, lifetime=450)
@@ -1085,7 +1140,10 @@ def activate_quick_slot(key):
         particles.ring(target_x, target_y, (120, 240, 255), count=18, radius=28, lifetime=650, size=4)
         system_message = f"와드를 설치했습니다. 현재 {len(wards)}/{WARD_MAX_COUNT}개"
     elif skill_name == "텔포":
-        if teleport_anchor is None:
+        if teleport_anchor is None or reinstall:
+            if teleport_placements_remaining <= 0:
+                system_message = "텔포 설치 횟수를 모두 사용했습니다."
+                return
             target_x, target_y = get_player_world_center(
                 my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
             )
@@ -1096,9 +1154,13 @@ def activate_quick_slot(key):
                 return
             teleport_anchor = (target_x, target_y)
             teleport_anchor_expires_at = now + TELEPORT_DURATION_MS
+            teleport_placements_remaining -= 1
             particles.emit(target_x, target_y, (180, 255, 180), count=30, speed=90, lifetime=700, size=6)
             particles.ring(target_x, target_y, (180, 255, 180), count=20, radius=38, lifetime=900, size=5)
-            system_message = "시전자 위치에 텔포석상을 설치했습니다. 5초 안에 다시 누르세요."
+            system_message = (
+                f"텔포석상을 설치했습니다. 남은 설치 횟수: {teleport_placements_remaining}"
+                + (" (Shift+슬롯키로 재설치)" if teleport_placements_remaining else "")
+            )
         else:
             old_x = my_player.X + my_player.rect.width / 2
             old_y = my_player.Y + my_player.rect.height / 2
@@ -1110,15 +1172,19 @@ def activate_quick_slot(key):
             particles.emit(teleport_anchor[0], teleport_anchor[1], (180, 255, 180), count=30, speed=90, lifetime=700, size=6)
             teleport_anchor = None
             teleport_anchor_expires_at = 0
-            skill_cooldowns["텔포"] = now + TELEPORT_COOLDOWN_MS
-            system_message = "텔레포트했습니다. 15초 후 다시 사용할 수 있습니다."
+            if teleport_placements_remaining <= 0:
+                _finish_teleport_cycle(now)
+                cooldown_message = f"{TELEPORT_COOLDOWN_MS / 1000:g}초 후 다시 사용할 수 있습니다."
+            else:
+                cooldown_message = f"남은 설치 횟수: {teleport_placements_remaining}"
+            system_message = f"텔레포트했습니다. {cooldown_message}"
 
 def select_weapon(weapon_id):
     global system_message, vision_shape_override, main_weapon_id
     global weapon_fire_until, weapon_smoke_until, knife_attack_until, screen_shake
     if ScreenState not in ("GameView", "PracticeView"):
         main_weapon_id = weapon_id
-    elif not debug_mode and weapon_id not in (main_weapon_id, "knife"):
+    elif not debug_mode and weapon_id not in (main_weapon_id, "knife", third_weapon_id):
         system_message = "게임 중에는 선택한 총과 칼만 사용할 수 있습니다."
         return
     if weapon_state.select(weapon_id):
@@ -1193,6 +1259,12 @@ def handle_key_event(event, _mouse_pos):
         weapon_id = main_weapon_id
     elif event.key == pygame.K_2:
         weapon_id = "knife"
+    elif event.key == pygame.K_3 and ScreenState in ("GameView", "PracticeView"):
+        if third_weapon_id:
+            select_weapon(third_weapon_id)
+        else:
+            system_message = "노란 특수상자를 열어 3번 무기를 획득하세요."
+        return
     elif ScreenState not in ("GameView", "PracticeView"):
         weapon_id = dict(zip(
             (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5),
@@ -1247,9 +1319,15 @@ def handle_key_event(event, _mouse_pos):
         pygame.K_b: lambda _key: toggle_inventory(),
         pygame.K_h: lambda _key: use_healing_item(),
         pygame.K_v: lambda _key: cycle_vision_shape(),
-        pygame.K_q: lambda _key: activate_quick_slot(_key),
-        pygame.K_e: lambda _key: activate_quick_slot(_key),
-        pygame.K_t: lambda _key: activate_quick_slot(_key),
+        pygame.K_q: lambda _key: activate_quick_slot(
+            _key, reinstall=bool(event.mod & pygame.KMOD_SHIFT)
+        ),
+        pygame.K_e: lambda _key: activate_quick_slot(
+            _key, reinstall=bool(event.mod & pygame.KMOD_SHIFT)
+        ),
+        pygame.K_t: lambda _key: activate_quick_slot(
+            _key, reinstall=bool(event.mod & pygame.KMOD_SHIFT)
+        ),
         pygame.K_r: lambda _key: reload_weapon(),
         pygame.K_f: lambda _key: activate_skill_or_reload(_key),
         pygame.K_x: lambda _key: remove_ward_at_cursor(),
@@ -1419,6 +1497,7 @@ def fire_stun_bullet():
     if not weapon_state.can_fire():
         system_message = "기절탄을 발사할 수 없습니다."
         return False
+    break_stealth_on_attack()
     center_x, center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
@@ -1462,6 +1541,7 @@ def fire_bullet():
         if not weapon_state.can_fire():
             system_message = f"{config.name} 공격은 아직 준비 중입니다."
             return
+        break_stealth_on_attack()
         fire_knife()
         return
     
@@ -1469,6 +1549,7 @@ def fire_bullet():
         if config.projectile and weapon_state.magazine_ammo == 0:
             reload_weapon()
         return
+    break_stealth_on_attack()
 
     center_x, center_y = get_player_world_center(
         my_player.X,
@@ -1597,8 +1678,15 @@ def GameFrame(practice_mode=False):
     if teleport_anchor is not None and now >= teleport_anchor_expires_at:
         teleport_anchor = None
         teleport_anchor_expires_at = 0
-        skill_cooldowns["텔포"] = now + TELEPORT_COOLDOWN_MS
-        system_message = "텔포석상이 사라졌습니다. 15초 후 다시 사용할 수 있습니다."
+        if teleport_placements_remaining <= 0:
+            _finish_teleport_cycle(now)
+            system_message = (
+                f"텔포석상이 사라졌습니다. {TELEPORT_COOLDOWN_MS / 1000:g}초 후 다시 사용할 수 있습니다."
+            )
+        else:
+            system_message = (
+                f"텔포석상이 사라졌습니다. 남은 설치 횟수: {teleport_placements_remaining}"
+            )
     handle_game_events()
 
     if my_player.Hp > 0 and mouse_fire_hold and weapon_state.config.automatic and weapon_state.can_fire():
@@ -1809,24 +1897,13 @@ def GameFrame(practice_mode=False):
             event_snapshot = own_snapshot or {}
             for kill_event in event_snapshot.get("kill_events", []):
                 event_id = kill_event.get("event_id")
-                if event_id not in processed_kill_event_ids:
-                    processed_kill_event_ids.add(event_id)
-                    killer_id = str(kill_event.get("killer_id"))
-                    target_id = str(kill_event.get("target_id"))
-                    killer_info = next(
-                        (info for player_id, info in server_players.items() if str(player_id) == killer_id),
-                        {},
-                    )
-                    target_info = next(
-                        (info for player_id, info in server_players.items() if str(player_id) == target_id),
-                        {},
-                    )
-                    kill_feed.append({
-                        **kill_event,
-                        "killer_name": killer_info.get("name") or kill_event.get("killer_name"),
-                        "target_name": target_info.get("name") or kill_event.get("target_name"),
-                        "started_at": now,
-                    })
+                if event_id is None or event_id in processed_kill_event_ids:
+                    continue
+                processed_kill_event_ids.add(event_id)
+                kill_feed.append({
+                    **kill_event,
+                    "started_at": now,
+                })
             kill_feed = [event for event in kill_feed if now - event["started_at"] < 5000][-5:]
             for damage_event in event_snapshot.get("damage_events", []):
                 event_id = damage_event.get("event_id")
@@ -2099,24 +2176,9 @@ def GameFrame(practice_mode=False):
             ):
                 bullet.is_active = False
                 continue
-            destroyed_treasure = TileGene.destroy_treasure_at(bullet.rect)
-            if destroyed_treasure:
-                # 보물상자 타일은 먼저 제거하고, 이 클라이언트에게 보상을 지급합니다.
-                # destroyed_treasures 동기화는 다른 클라이언트의 맵에서도 상자를 제거합니다.
-                pending_treasure_destroys.append(destroyed_treasure)
-                play_effect_sound(chest_sound, "chest_open.wav")
-                available = [name for name in SKILL_BOOK if name not in owned_skills]
-                chest_reward = "skill" if random.random() < CHEST_SKILL_REWARD_CHANCE else "magazine"
-                if chest_reward == "skill" and available:
-                    obtained_skill = random.choice(available)
-                    add_skill_to_inventory(obtained_skill)
-                    system_message = f"보물상자: [{obtained_skill}] 인벤토리에 저장"
-                else:
-                    weapon_state.magazine_ammo = weapon_state.config.magazine_size
-                    weapon_state.reserve_ammo += weapon_state.config.magazine_size
-                    weapon_state.reloading = False
-                    preserve_magazine_after_chest = True
-                    system_message = f"보물상자: 탄창 회복, 예비 탄약 +{weapon_state.config.magazine_size}"
+            treasure_position = TileGene.treasure_at(bullet.rect)
+            if treasure_position:
+                collect_treasure(treasure_position, from_bullet=True)
                 bullet.is_active = False
                 continue
             for p_id, p_info in frame_server_players.items():
@@ -2134,10 +2196,16 @@ def GameFrame(practice_mode=False):
                         "stun_ms": bullet.stun_ms,
                     })
                     bullet.is_active = False
+                    impact_color = (100, 225, 255) if bullet.stun_ms else (255, 70, 70)
                     particles.emit(
-                        bullet.x, bullet.y, (255, 70, 70),
+                        bullet.x, bullet.y, impact_color,
                         count=12, speed=65, lifetime=350, size=4,
                     )
+                    if bullet.stun_ms:
+                        particles.ring(
+                            bullet.x, bullet.y, (160, 240, 255),
+                            count=20, radius=38, lifetime=650, size=4,
+                        )
                     break
             if bullet.is_active and (practice_mode or debug_mode) and training_dummy is not None:
                 hit_part = training_dummy.check_bullet_hit(bullet.rect, bullet.damage)
@@ -2240,6 +2308,7 @@ def GameFrame(practice_mode=False):
     visible_player_ids = set()
     # 다른 플레이어 그리기
     remote_players = {} if practice_mode or local_match else frame_server_players
+    hawk_vision_active = vision_skill_until > now
     for p_id, p_info in remote_players.items():
         if str(p_id) == str(network.player_id) or is_hidden_player(p_info):
             continue
@@ -2259,7 +2328,7 @@ def GameFrame(practice_mode=False):
         if p_info.get("stealth", False):
             continue
         # 부쉬 은폐는 관찰자도 부쉬 안에 있을 때만 해제됩니다.
-        if target_in_bush and not in_bush:
+        if target_in_bush and not in_bush and not hawk_vision_active:
             continue
 
         bush_fov_bonus = (
@@ -2436,6 +2505,16 @@ def GameFrame(practice_mode=False):
 
     display.blit(dark_overlay, (0, 0))
 
+    for p_id, p_info in frame_server_players.items():
+        if p_id not in visible_player_ids or p_info.get("stun_ms_remaining", 0) <= 0:
+            continue
+        stunned_center = get_player_screen_center(
+            p_info["posX"], p_info["posY"],
+            IML.Player.get_width(), IML.Player.get_height(),
+            CameraPosX, CameraPosY, camera_zoom,
+        )
+        draw_stun_effect(display, *stunned_center, camera_zoom, now)
+
     # 시야 오버레이 위에 로컬 플레이어를 다시 그려 기본 시야에서도 항상 보이게 합니다.
     if now < stealth_until or in_bush:
         visible_player_image = my_player.get_display_image().copy()
@@ -2462,6 +2541,8 @@ def GameFrame(practice_mode=False):
         display.blit(rotated_shotgun, Shotgun_rect)
     local_name = GuiFont.render(player_name or "플레이어", True, (255, 230, 160))
     display.blit(local_name, local_name.get_rect(midbottom=(round(player_center_screen_x), round(player_screen_y - 6))))
+    if now < local_stun_until:
+        draw_stun_effect(display, player_center_screen_x, player_center_screen_y, camera_zoom, now)
 
     for alert_x, alert_y, remaining_ms in rune_alerts:
         alert_screen_x, alert_screen_y = world_to_screen(
@@ -2634,7 +2715,10 @@ def GameFrame(practice_mode=False):
             camera_zoom,
             (80, 220, 255),
         )
-        draw_ward(display, ward_x, ward_y, CameraPosX, CameraPosY, camera_zoom)
+        draw_ward(
+            display, ward_x, ward_y, CameraPosX, CameraPosY, camera_zoom,
+            IML.GetWardImage(),
+        )
     for player_id, player_info in frame_server_players.items():
         if str(player_id) == str(network.player_id) or is_hidden_player(player_info):
             continue
@@ -2650,7 +2734,10 @@ def GameFrame(practice_mode=False):
                 fov_angle=current_vision.vision_fov,
                 vision_width=current_vision_width,
             ):
-                draw_ward(display, ward_x, ward_y, CameraPosX, CameraPosY, camera_zoom)
+                draw_ward(
+                    display, ward_x, ward_y, CameraPosX, CameraPosY, camera_zoom,
+                    IML.GetWardImage(),
+                )
 
     if shield_until > pygame.time.get_ticks():
         shield_center = get_player_screen_center(

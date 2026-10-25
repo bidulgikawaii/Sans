@@ -64,6 +64,19 @@ def new_match_events():
     }
 
 
+def append_kill_event(events, killer_id, target_id, killer_name, target_name, weapon_id, cause):
+    events["kill_events"].append({
+        "event_id": events["next_kill_event_id"],
+        "killer_id": killer_id,
+        "target_id": target_id,
+        "killer_name": killer_name,
+        "target_name": target_name,
+        "weapon_id": weapon_id,
+        "cause": cause,
+    })
+    events["next_kill_event_id"] += 1
+
+
 match_events = {mode.mode_id: new_match_events() for mode in get_game_modes()}
 completed_match_winner_ids = {}
 result_pending_player_ids = {}
@@ -295,10 +308,17 @@ def handle_client(conn, player_id):
             stealth_token = int(client_data.get("stealth_token", 0))
             if stealth_token != players[player_id]["stealth_token"]:
                 players[player_id]["stealth_token"] = stealth_token
-                players[player_id]["stealth_until"] = time.monotonic() + STEALTH_DURATION_MS / 1000
+                players[player_id]["stealth_until"] = (
+                    time.monotonic() + STEALTH_DURATION_MS / 1000
+                    if client_data.get("stealth", False)
+                    else 0.0
+                )
+            elif not client_data.get("stealth", False):
+                players[player_id]["stealth_until"] = 0.0
             # stealth는 스킬 은신만 나타내며, 부쉬 은폐는 in_bush로 별도 전달합니다.
             players[player_id]["stealth"] = (
-                time.monotonic() < players[player_id]["stealth_until"]
+                bool(client_data.get("stealth", False))
+                and time.monotonic() < players[player_id]["stealth_until"]
                 and players[player_id]["stealth_token"] == stealth_token
             )
 
@@ -323,8 +343,23 @@ def handle_client(conn, player_id):
                 )
                 damage = int(players[player_id]["zone_damage_credit"])
                 if damage:
+                    previous_hp = players[player_id]["hp"]
                     players[player_id]["hp"] = max(0, players[player_id]["hp"] - damage)
                     players[player_id]["zone_damage_credit"] -= damage
+                    if (
+                        previous_hp > 0
+                        and players[player_id]["hp"] <= 0
+                        and not players[player_id].get("revive_armed", False)
+                    ):
+                        append_kill_event(
+                            events,
+                            None,
+                            player_id,
+                            "자기장",
+                            players[player_id].get("name", "플레이어"),
+                            None,
+                            "magnetic_zone",
+                        )
             else:
                 players[player_id]["zone_outside_since"] = None
                 players[player_id]["zone_damage_credit"] = 0.0
@@ -344,6 +379,7 @@ def handle_client(conn, player_id):
                 damage = max(0, int(hit_event.get("damage", 0)))
                 if hit_event.get("hit_part") == "head":
                     damage *= HEADSHOT_DAMAGE_MULTIPLIER
+                stun_ms = max(0, int(hit_event.get("stun_ms", 0)))
                 previous_hp = target["hp"]
                 target["hp"] = max(0, target["hp"] - damage)
                 events["damage_events"].append({
@@ -352,6 +388,7 @@ def handle_client(conn, player_id):
                     "target_id": target_id,
                     "damage": damage,
                     "hit_part": hit_event.get("hit_part", "body"),
+                    "stun_ms": stun_ms,
                 })
                 events["next_damage_event_id"] += 1
                 if (
@@ -371,16 +408,15 @@ def handle_client(conn, player_id):
                             events["kill_scores"][player_id] = (
                                 events["kill_scores"].get(player_id, 0) + 1
                             )
-                    events["kill_events"].append({
-                        "event_id": events["next_kill_event_id"],
-                        "killer_id": player_id,
-                        "target_id": target_id,
-                        "killer_name": players[player_id].get("name", "플레이어"),
-                        "target_name": target.get("name", "플레이어"),
-                        "weapon_id": client_data.get("weapon_id", DEFAULT_WEAPON_ID),
-                    })
-                    events["next_kill_event_id"] += 1
-                stun_ms = max(0, int(hit_event.get("stun_ms", 0)))
+                    append_kill_event(
+                        events,
+                        player_id,
+                        target_id,
+                        players[player_id].get("name", "플레이어"),
+                        target.get("name", "플레이어"),
+                        client_data.get("weapon_id", DEFAULT_WEAPON_ID),
+                        "self_inflicted" if player_id == target_id else "player",
+                    )
                 if stun_ms:
                     target["stunned_until"] = max(
                         target.get("stunned_until", 0.0),

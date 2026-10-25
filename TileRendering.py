@@ -48,32 +48,6 @@ class TileRenderingMixin:
         )
         self.tile_images[3] = treasure
 
-        special_treasure = pygame.Surface((self.tile_size, self.tile_size))
-        special_treasure.fill((140, 180, 130))
-        special_x = self.tile_size // 6
-        special_y = self.tile_size // 3
-        special_width = self.tile_size - special_x * 2
-        special_height = max(8, self.tile_size // 3)
-        pygame.draw.rect(
-            special_treasure,
-            (255, 205, 20),
-            (special_x, special_y, special_width, special_height),
-        )
-        pygame.draw.rect(
-            special_treasure,
-            (255, 250, 150),
-            (special_x, special_y, special_width, special_height),
-            2,
-        )
-        pygame.draw.line(
-            special_treasure,
-            (160, 105, 0),
-            (self.tile_size // 2, special_y),
-            (self.tile_size // 2, special_y + special_height),
-            2,
-        )
-        self.tile_images[10] = special_treasure
-
         bush = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
         center = self.tile_size // 2
         pygame.draw.circle(bush, (45, 105, 45), (center, center), max(5, self.tile_size // 3))

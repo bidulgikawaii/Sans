@@ -399,8 +399,24 @@ def draw_supply_drop(surface, supply, camera_x, camera_y, zoom, colors, now):
     warning_until = supply.get("warning_until", 0)
     if now < warning_until:
         pulse = 22 + round(8 * math.sin(now * 0.012))
-        pygame.draw.circle(surface, (255, 230, 120), (x, y), max(18, round(pulse * zoom)), 3)
-        pygame.draw.line(surface, (255, 240, 150), (x, max(0, y - round(150 * zoom))), (x, y), 2)
+        top = max(0, y - round(180 * zoom))
+        elapsed = max(0, now - supply.get("fall_started_at", now))
+        fall_progress = min(1.0, elapsed / max(1, warning_until - supply.get("fall_started_at", now)))
+        beam_y = top + round((y - top) * fall_progress)
+        pygame.draw.circle(
+            surface,
+            (255, 230, 120),
+            (x, y),
+            max(18, round(pulse * zoom)),
+            3,
+        )
+        pygame.draw.line(surface, (255, 240, 150), (x, top), (x, beam_y), 2)
+        pygame.draw.circle(
+            surface,
+            (255, 250, 190),
+            (x, beam_y),
+            max(3, round(6 * zoom)),
+        )
         font_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"
         )
@@ -411,3 +427,16 @@ def draw_supply_drop(surface, supply, camera_x, camera_y, zoom, colors, now):
     pygame.draw.rect(surface, (35, 35, 45), box, border_radius=4)
     pygame.draw.rect(surface, color, box, 3, border_radius=4)
     pygame.draw.line(surface, color, (box.left, box.centery), (box.right, box.centery), 2)
+    labels = {
+        "special_weapon": "3",
+        "flare_ammo": "+10",
+        "flare_skill": "S",
+    }
+    label_text = labels.get(supply["type"])
+    if label_text:
+        label = pygame.font.SysFont(None, max(12, round(18 * zoom))).render(
+            label_text,
+            True,
+            (255, 255, 255),
+        )
+        surface.blit(label, label.get_rect(center=box.center))

@@ -12,7 +12,7 @@ from PlayerClass import Player
 from Tool_Cordinate import *
 from SkillAndSlot import *
 from Weapon import (
-    SPECIAL_CRATE_WEAPONS,
+    MELEE_WEAPON_IDS,
     SpecialWeaponCrate,
     WeaponState,
     WEAPONS,
@@ -89,11 +89,31 @@ def _scale_cached(image, size, smooth=True):
     return scaled
 
 
+def _cached_visibility_polygon(key, center_x, center_y, radius, **options):
+    cache_key = (key, round(center_x / 16), round(center_y / 16))
+    polygon = visibility_polygon_cache.get(cache_key)
+    if polygon is None:
+        snapped_x = round(center_x / 16) * 16
+        snapped_y = round(center_y / 16) * 16
+        polygon = TileGene.get_visibility_polygon(
+            snapped_x,
+            snapped_y,
+            radius,
+            **options,
+        )
+        if len(visibility_polygon_cache) >= 64:
+            visibility_polygon_cache.pop(next(iter(visibility_polygon_cache)))
+        visibility_polygon_cache[cache_key] = polygon
+    return polygon
+
+
 def leave_lobby():
     """로비에서 나간 뒤 다음 경기에 사용할 클라이언트 상태를 정리합니다."""
     try:
         network.client.sendall(pickle.dumps({"type": "lobby_leave"}))
-        network.client.recv(NETWORK_BUFFER_SIZE)
+        response = pickle.loads(network.client.recv(NETWORK_BUFFER_SIZE))
+        if response.get("type") == "match_cancelled":
+            network.lobby_status["message"] = "플레이어가 나가 매치가 취소되었습니다."
     except (OSError, EOFError, pickle.PickleError):
         reconnect_to_server()
     reset_match_state()
@@ -111,6 +131,11 @@ IML = Imageload()
 blade_animation = FrameAnimation(
     IML.GetBladeFrames(),
     max(1, MELEE_ATTACK_DURATION_MS // max(1, len(IML.GetBladeFrames()))),
+    loop=False,
+)
+bat_animation = FrameAnimation(
+    IML.GetBatFrames(),
+    max(1, MELEE_ATTACK_DURATION_MS // max(1, len(IML.GetBatFrames()))),
     loop=False,
 )
 main_screen = MainScreenRenderer(display, IML.GetTitles(), GuiFont, (ScreenX, ScreenY))
@@ -280,8 +305,14 @@ debug_mode = False
 active_bombs = []
 active_explosions = []
 knife_attack_until = 0
+hurt_flash_started_at = 0
 supply_drops = []
+pending_supply_spawn_requests = []
+pending_supply_collect_ids = set()
+processed_supply_collection_ids = set()
 next_supply_drop_at = pygame.time.get_ticks() + SUPPLY_DROP_INTERVAL_MS
+bush_entered_at = 0
+next_bush_leaf_at = 0
 pending_treasure_destroys = []
 pending_furniture_destroys = []
 pending_hit_events = []
@@ -290,6 +321,8 @@ server_players = {}
 kill_feed = []
 match_result = None
 result_started_at = 0
+lobby_notice = ""
+lobby_notice_until = 0
 game_start_banner_until = 0
 show_hitboxes = True
 local_stun_until = 0
@@ -310,6 +343,9 @@ SUPPLY_COLORS = {
     "haste": (255, 240, 100),
     "shield": (100, 220, 255),
     "skill": (210, 150, 255),
+    "special_weapon": (255, 215, 35),
+    "flare_ammo": (255, 135, 65),
+    "flare_skill": (200, 125, 255),
 }
 # 방향과 모양이 크게 바뀔 때만 시야 폴리곤을 다시 계산합니다.
 visibility_polygon_cache = {}
@@ -331,10 +367,15 @@ def is_hidden_player(player_info):
     return player_info.get("hidden", False) or player_info.get("hp", 1) <= 0
 
 def spawn_supply_drop(now):
-    """안전한 바닥 타일에 보급품 묶음을 생성하고 활성 개수를 제한합니다."""
+    """매치 호스트가 고른 위치와 보상을 서버에 보급품 생성 요청으로 보냅니다."""
+    if not server_players or min(server_players, key=str) != str(network.player_id):
+        return
     if random.random() > SUPPLY_DROP_CHANCE:
         return
-    drop_count = min(SUPPLY_DROP_BATCH_COUNT, SUPPLY_DROP_MAX - len(supply_drops))
+    drop_count = min(
+        SUPPLY_DROP_BATCH_COUNT,
+        SUPPLY_DROP_MAX - len(supply_drops) - len(pending_supply_spawn_requests),
+    )
     if drop_count <= 0:
         return
     # 벽이나 집 안에 생성되면 플레이어가 접근할 수 없으므로
@@ -350,20 +391,79 @@ def spawn_supply_drop(now):
         if not spawn_tile:
             break
         tile_x, tile_y = spawn_tile
-        supply_drops.append({
+        pending_supply_spawn_requests.append({
             "x": (tile_x + 0.5) * TileGene.tile_size,
             "y": (tile_y + 0.5) * TileGene.tile_size,
             "type": random.choice(SUPPLY_REWARD_TYPES),
-            "warning_until": now + SUPPLY_DROP_WARNING_MS,
-            "expires_at": now + SUPPLY_DROP_LIFETIME_MS,
+            "warning_ms": SUPPLY_DROP_WARNING_MS,
+            "lifetime_ms": SUPPLY_DROP_LIFETIME_MS,
         })
 
 
+def launch_flare_supplies(center_x, center_y, now):
+    """플레어 발사 지점 주변에 떨어질 보급품 세 개를 서버에 요청합니다."""
+    del now
+    offsets = (
+        (TileGene.tile_size * 3, 0),
+        (-round(TileGene.tile_size * 1.5), round(TileGene.tile_size * 2.6)),
+        (-round(TileGene.tile_size * 1.5), -round(TileGene.tile_size * 2.6)),
+    )
+    placed_rects = []
+    for index, (offset_x, offset_y) in enumerate(offsets):
+        desired_x = center_x + offset_x
+        desired_y = center_y + offset_y
+        candidates = [(desired_x, desired_y)]
+        for ring in range(1, 7):
+            radius = ring * TileGene.tile_size // 2
+            candidates.extend(
+                (
+                    desired_x + round(math.cos(angle) * radius),
+                    desired_y + round(math.sin(angle) * radius),
+                )
+                for angle in (
+                    0, math.pi / 4, math.pi / 2, 3 * math.pi / 4,
+                    math.pi, 5 * math.pi / 4, 3 * math.pi / 2, 7 * math.pi / 4,
+                )
+            )
+        drop_position = None
+        for candidate_x, candidate_y in candidates:
+            drop_rect = pygame.Rect(
+                round(candidate_x - SUPPLY_DROP_RADIUS),
+                round(candidate_y - SUPPLY_DROP_RADIUS),
+                SUPPLY_DROP_RADIUS * 2,
+                SUPPLY_DROP_RADIUS * 2,
+            )
+            if (
+                not TileGene.check_collision(drop_rect)
+                and not any(drop_rect.colliderect(rect) for rect in placed_rects)
+            ):
+                drop_position = (candidate_x, candidate_y)
+                placed_rects.append(drop_rect)
+                break
+        if drop_position is None:
+            drop_position = (desired_x, desired_y)
+        pending_supply_spawn_requests.append({
+            "x": drop_position[0],
+            "y": drop_position[1],
+            "type": "flare_skill" if index == FLARE_SUPPLY_DROP_COUNT - 1 else "flare_ammo",
+            "warning_ms": SUPPLY_DROP_WARNING_MS + index * 250,
+            "lifetime_ms": SUPPLY_DROP_LIFETIME_MS,
+        })
+    particles.ring(
+        center_x, center_y, (255, 155, 70),
+        count=36, radius=TileGene.tile_size * 2, lifetime=700, size=7,
+    )
+    particles.ring(
+        center_x, center_y, (255, 230, 130),
+        count=24, radius=TileGene.tile_size, lifetime=500, size=5,
+    )
+
+
 def apply_supply_reward(reward_type):
-    """회복, 이동 속도, 보호막, 스킬 중 보급품 효과를 적용합니다."""
+    """보급품 종류에 따라 회복, 스킬, 탄약 또는 특수 무기를 지급합니다."""
     # 보급품은 서버에 아이템 자체를 동기화하지 않고,
     # 획득한 클라이언트의 플레이어 상태에만 효과를 적용합니다.
-    global healing_item_count, haste_until, shield_until
+    global healing_item_count, haste_until, shield_until, third_weapon_id
     center_x, center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
@@ -373,11 +473,37 @@ def apply_supply_reward(reward_type):
         message = f"회복 아이템 획득: 보유 {healing_item_count}개"
         color = (100, 255, 130)
    
+    elif reward_type == "flare_ammo":
+        weapon_state.reserve_ammo += FLARE_SUPPLY_AMMO_PER_DROP
+        message = f"탄약 보급품 획득: 예비 탄약 +{FLARE_SUPPLY_AMMO_PER_DROP}"
+        color = (255, 135, 65)
+    elif reward_type == "flare_skill":
+        weapon_state.reserve_ammo += FLARE_SUPPLY_AMMO_PER_DROP
+        if available and random.random() >= FLARE_SKILL_HEAL_CHANCE:
+            obtained_skill = random.choice(available)
+            add_skill_to_inventory(obtained_skill)
+            message = (
+                f"탄약 +{FLARE_SUPPLY_AMMO_PER_DROP}, "
+                f"스킬 [{obtained_skill}] 획득"
+            )
+            color = (180, 120, 255)
+        else:
+            healing_item_count += 1
+            message = f"탄약 +{FLARE_SUPPLY_AMMO_PER_DROP}, 회복 아이템 획득"
+            color = (100, 255, 130)
     elif reward_type == "skill" and available:
         obtained_skill = random.choice(available)
         add_skill_to_inventory(obtained_skill)
         message = f"보급품 획득: [{obtained_skill}] 스킬을 얻었습니다."
         color = (180, 120, 255)
+    elif reward_type == "special_weapon":
+        weapon_id = special_weapon_crate.open()
+        if weapon_id is None:
+            raise RuntimeError("특수상자 무기 목록이 비어 있습니다.")
+        third_weapon_id = weapon_id
+        weapon_state.reset_weapon_ammo(weapon_id)
+        message = f"특수 보급품 획득: [{WEAPONS[weapon_id].name}] 3번 슬롯에 저장"
+        color = (255, 215, 35)
     else:
         message = "보급품 획득: 이미 모든 스킬을 보유하고 있습니다."
         color = (200, 200, 220)
@@ -419,29 +545,14 @@ def draw_healing_inventory(surface):
 
 
 def collect_treasure(tile_position, from_bullet=False):
-    global preserve_magazine_after_chest, system_message, third_weapon_id
+    global preserve_magazine_after_chest, system_message
     if not tile_position:
-        return False
-    is_special = TileGene.is_special_treasure(*tile_position)
-    if is_special and not SPECIAL_CRATE_WEAPONS:
-        message = "특수상자 무기를 Weapon.py의 SPECIAL_CRATE_WEAPONS에 등록해 주세요."
-        if system_message != message:
-            system_message = message
         return False
     if not TileGene.destroy_treasure(*tile_position):
         return False
 
     pending_treasure_destroys.append(tile_position)
     play_effect_sound(chest_sound, "chest_open.wav")
-    if is_special:
-        weapon_id = special_weapon_crate.open()
-        if weapon_id is None:
-            raise RuntimeError("특수상자 무기 목록이 비어 있습니다.")
-        third_weapon_id = weapon_id
-        weapon_state.select(weapon_id)
-        system_message = f"특수상자 획득: [{WEAPONS[weapon_id].name}] 3번 무기로 교체"
-        return True
-
     available = [name for name in SKILL_BOOK if name not in owned_skills]
     chest_label = "보물상자:" if from_bullet else "보물상자 획득:"
     if random.random() < CHEST_SKILL_REWARD_CHANCE and available:
@@ -520,6 +631,8 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     global CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY
     global camera_fov, camera_zoom
     global Weapon_Angle, Weapon_Pos, screen_shake, knife_attack_until
+    global hurt_flash_started_at
+    global bush_entered_at, next_bush_leaf_at
     global weapon_fire_until, weapon_smoke_until, aim_lock_until, aim_locked_pos
     global game_start_banner_until
     global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
@@ -544,6 +657,9 @@ def reset_match_state(regenerate_world=False, independent_world=False):
         pending_hit_events, wards, rune_alerts, damage_numbers,
     ):
         collection.clear()
+    pending_supply_spawn_requests.clear()
+    pending_supply_collect_ids.clear()
+    processed_supply_collection_ids.clear()
     processed_bullet_events.clear()
     processed_damage_event_ids.clear()
     processed_kill_event_ids.clear()
@@ -587,6 +703,9 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     Weapon_Pos = (0, 0)
     screen_shake = 0
     knife_attack_until = 0
+    hurt_flash_started_at = 0
+    bush_entered_at = 0
+    next_bush_leaf_at = 0
     weapon_fire_until = 0
     weapon_smoke_until = 0
     aim_lock_until = 0
@@ -636,6 +755,8 @@ def reset_match_state(regenerate_world=False, independent_world=False):
         "stealth_token": 0,
         "bullets": [],
         "hit_events": [],
+        "supply_spawn_requests": [],
+        "supply_collect_ids": [],
     })
 
 def MainView():
@@ -715,6 +836,9 @@ def start_practice_match():
 def ModeSelectView():
     global running, ScreenState
     button_rects = main_screen.draw_mode_select()
+    if pygame.time.get_ticks() < lobby_notice_until:
+        notice = GuiFont.render(lobby_notice, True, (255, 220, 140))
+        display.blit(notice, notice.get_rect(center=(ScreenX // 2, ScreenY - 72)))
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -773,6 +897,8 @@ def NameInputView():
 
 def LoadingView():
     global running, ScreenState, game_start_banner_until, debug_mode
+    global local_match, selected_game_mode
+    global lobby_notice, lobby_notice_until
     global match_spawn_index
     debug_mode = selected_game_mode == GAME_MODE_DEBUG
     if debug_mode:
@@ -792,6 +918,15 @@ def LoadingView():
                 network.lobby_status = response
                 if response.get("accepted"):
                     match_spawn_index = response.get("spawn_index", 0)
+            elif response.get("type") == "match_cancelled":
+                selected_game_mode = GAME_MODE_NORMAL
+                local_match = False
+                debug_mode = False
+                reset_match_state()
+                lobby_notice = "다른 플레이어가 나가 매치가 취소되었습니다."
+                lobby_notice_until = pygame.time.get_ticks() + 5000
+                ScreenState = "ModeSelectView"
+                return
         except (OSError, EOFError, pickle.PickleError, KeyError):
             reconnect_to_server()
             network.last_lobby_request_at = 0
@@ -1185,7 +1320,7 @@ def select_weapon(weapon_id):
     if ScreenState not in ("GameView", "PracticeView"):
         main_weapon_id = weapon_id
     elif not debug_mode and weapon_id not in (main_weapon_id, "knife", third_weapon_id):
-        system_message = "게임 중에는 선택한 총과 칼만 사용할 수 있습니다."
+        system_message = "게임 중에는 선택한 총과 3번 슬롯 무기만 사용할 수 있습니다."
         return
     if weapon_state.select(weapon_id):
         vision_shape_override = None
@@ -1399,12 +1534,13 @@ def cycle_vision_shape():
 
 
 def fire_knife():
-    """칼 공격: 근거리 범위 내의 모든 적에게 데미지를 주고, 보물상자도 파괴합니다."""
+    """칼과 배트로 근거리 범위 내의 적과 보물상자를 공격합니다."""
     global screen_shake, system_message, knife_attack_until
     config = weapon_state.config
     attack_started_at = pygame.time.get_ticks()
     knife_attack_until = attack_started_at + MELEE_ATTACK_DURATION_MS
-    blade_animation.start(attack_started_at)
+    animation = bat_animation if weapon_state.weapon_id == "bat" else blade_animation
+    animation.start(attack_started_at)
 
     center_x, center_y = get_player_world_center(
         my_player.X,
@@ -1465,11 +1601,13 @@ def fire_knife():
         dummy_center_x = training_dummy.rect.centerx
         dummy_center_y = training_dummy.rect.centery
         if (center_x - dummy_center_x) ** 2 + (center_y - dummy_center_y) ** 2 <= knife_range ** 2:
-            training_dummy.Hp = max(0, training_dummy.Hp - config.damage)
+            previous_hp = training_dummy.Hp
+            training_dummy.Hp = max(0, training_dummy.Hp - int(config.damage))
+            dealt_damage = previous_hp - training_dummy.Hp
             damage_numbers.append({
                 "x": dummy_center_x,
                 "y": training_dummy.rect.top,
-                "damage": config.damage,
+                "damage": dealt_damage,
                 "color": (255, 255, 255),
                 "started_at": pygame.time.get_ticks(),
                 "lifetime": DAMAGE_TEXT_LIFETIME_MS,
@@ -1483,11 +1621,11 @@ def fire_knife():
 
     if attacked_count > 0:
         particles.emit(center_x, center_y, (255, 80, 80), count=18, speed=100, lifetime=400, size=5)
-        system_message = f"칼 공격! {config.damage} 데미지 × {attacked_count}명"
+        system_message = f"{config.name} 공격! {config.damage} 데미지 × {attacked_count}명"
         if destroyed_furniture_count:
             system_message += f", 가구 {destroyed_furniture_count}개 파괴"
     else:
-        system_message = f"칼 휘둘렀습니다. (데미지: {config.damage})"
+        system_message = f"{config.name} 휘둘렀습니다. (데미지: {config.damage})"
         if destroyed_furniture_count:
             system_message += f" 가구 {destroyed_furniture_count}개 파괴"
 
@@ -1526,7 +1664,7 @@ def fire_stun_bullet():
 
 
 def fire_bullet():
-    global system_message
+    global system_message, third_weapon_id
     global weapon_fire_until, weapon_smoke_until
     if my_player.Hp <= 0:
         return
@@ -1536,7 +1674,7 @@ def fire_bullet():
         system_message = "재장전 중입니다."
         return
     
-    # 칼 공격 특수 처리
+    # 근접 무기는 투사체 발사 대신 공통 공격 처리를 사용합니다.
     if not config.projectile:
         if not weapon_state.can_fire():
             system_message = f"{config.name} 공격은 아직 준비 중입니다."
@@ -1575,6 +1713,17 @@ def fire_bullet():
     muzzle_y = center_y + math.sin(base_angle) * 40
     weapon_state.consume_round()
     animation_started_at = pygame.time.get_ticks()
+    if weapon_state.weapon_id == "flaregun":
+        launch_flare_supplies(target_world_x, target_world_y, animation_started_at)
+        third_weapon_id = None
+        weapon_state.select(main_weapon_id)
+        weapon_state.reset_weapon_ammo("flaregun")
+        particles.emit(
+            muzzle_x, muzzle_y, (255, 225, 125),
+            count=28, speed=150, lifetime=450, size=6,
+        )
+        system_message = "플레어건을 사용했습니다. 보급품 3개가 낙하합니다."
+        return
     weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
     weapon_smoke_until = animation_started_at + WEAPON_SMOKE_ANIMATION_MS
     particles.emit(muzzle_x, muzzle_y, (255, 220, 100), count=10, speed=70, lifetime=220, size=4)
@@ -1659,6 +1808,10 @@ def GameFrame(practice_mode=False):
     global teleport_anchor, teleport_anchor_expires_at
     global damage_numbers, easter_egg_found, easter_egg_flash_until
     global local_kill_count, match_elapsed_ms, respawn_ms_remaining
+    global hurt_flash_started_at
+    global bush_entered_at, next_bush_leaf_at
+    global selected_game_mode, debug_mode
+    global lobby_notice, lobby_notice_until
 
     MousePos = pygame.mouse.get_pos()
     deathmatch = selected_game_mode == GAME_MODE_DEATHMATCH and not (practice_mode or local_match)
@@ -1697,21 +1850,25 @@ def GameFrame(practice_mode=False):
     haste_bonus = (
         PLAYER_HASTE_SPEED - PLAYER_NORMAL_SPEED if now < haste_until else 0
     )
-    # 칼의 추가 속도는 특수 이동인 대시에만 적용합니다.
+    # 근접 무기의 추가 속도는 특수 이동인 대시에만 적용합니다.
     # 평상시 걷기와 Shift 달리기는 무기 종류와 무관하게 같은 속도를 유지합니다.
     knife_dash_bonus = (
-        KNIFE_DASH_SPEED_BONUS if weapon_state.weapon_id == "knife" else 0
+        KNIFE_DASH_SPEED_BONUS
+        if weapon_state.weapon_id in MELEE_WEAPON_IDS
+        else 0
     )
     my_player.normal_speed = PLAYER_NORMAL_SPEED + haste_bonus
     my_player.sprint_speed = PLAYER_SPRINT_SPEED + haste_bonus
     my_player.dash_speed = PLAYER_DASH_SPEED + haste_bonus + knife_dash_bonus
-    # 칼 대시는 추가 속도만 적용하며, 지속 시간은 기본 대시와 동일하게 둡니다.
+    # 근접 무기 대시는 추가 속도만 적용하며, 지속 시간은 기본 대시와 같습니다.
     if my_player.Hp > 0 and now >= local_stun_until:
         my_player.dash_duration = PLAYER_DASH_DURATION_MS + (
-            KNIFE_DASH_DURATION_BONUS_MS if weapon_state.weapon_id == "knife" else 0
+            KNIFE_DASH_DURATION_BONUS_MS
+            if weapon_state.weapon_id in MELEE_WEAPON_IDS
+            else 0
         )
         dash_requested = (
-            weapon_state.weapon_id == "knife"
+            weapon_state.weapon_id in MELEE_WEAPON_IDS
             and pygame.mouse.get_pressed(3)[2]
         )
         my_player.handle_input(dash_requested)
@@ -1771,12 +1928,11 @@ def GameFrame(practice_mode=False):
             SUPPLY_DROP_RADIUS * 2,
             SUPPLY_DROP_RADIUS * 2,
         )
-        if now >= supply["expires_at"]:
+        if now < supply["warning_until"]:
+            remaining_supply_drops.append(supply)
             continue
         if player_rect.colliderect(supply_rect):
-            # 아이템을 획득한 순간 목록에서 제거해 한 번만 보상합니다.
-            system_message = apply_supply_reward(supply["type"])
-            continue
+            pending_supply_collect_ids.add(supply["id"])
         remaining_supply_drops.append(supply)
     supply_drops = remaining_supply_drops
 
@@ -1819,11 +1975,12 @@ def GameFrame(practice_mode=False):
             dummy_center_x = training_dummy.rect.centerx
             dummy_center_y = training_dummy.rect.centery
             if math.hypot(dummy_center_x - bomb["x"], dummy_center_y - bomb["y"]) <= BOMB_RADIUS:
+                previous_hp = training_dummy.Hp
                 training_dummy.Hp = max(0, training_dummy.Hp - BOMB_DAMAGE)
                 damage_numbers.append({
                     "x": dummy_center_x,
                     "y": training_dummy.rect.top,
-                    "damage": BOMB_DAMAGE,
+                    "damage": previous_hp - training_dummy.Hp,
                     "color": (255, 255, 255),
                     "started_at": now,
                     "lifetime": DAMAGE_TEXT_LIFETIME_MS,
@@ -1850,6 +2007,26 @@ def GameFrame(practice_mode=False):
     )
     # 스킬 은신과 지형 은폐를 분리해 서버가 각각의 상태를 전달합니다.
     in_bush = TileGene.is_in_bush(player_world_x, player_world_y)
+    if in_bush:
+        if not bush_entered_at:
+            bush_entered_at = now
+            next_bush_leaf_at = now + BUSH_LEAF_DELAY_MS
+        elif now >= next_bush_leaf_at:
+            leaf_x = my_player.rect.centerx + random.randint(-12, 12)
+            leaf_y = my_player.rect.bottom - random.randint(4, 18)
+            particles.emit(
+                leaf_x,
+                leaf_y,
+                random.choice(((115, 170, 65), (160, 195, 90))),
+                count=2,
+                speed=18,
+                lifetime=620,
+                size=2,
+            )
+            next_bush_leaf_at = now + BUSH_LEAF_INTERVAL_MS
+    else:
+        bush_entered_at = 0
+        next_bush_leaf_at = 0
     send_data["stealth"] = now < stealth_until
     send_data["in_bush"] = in_bush
     send_data["stealth_token"] = stealth_token
@@ -1865,6 +2042,8 @@ def GameFrame(practice_mode=False):
         for slot in quick_slots
     )
     send_data["hit_events"] = list(pending_hit_events) if my_player.Hp > 0 else []
+    send_data["supply_spawn_requests"] = list(pending_supply_spawn_requests)
+    send_data["supply_collect_ids"] = list(pending_supply_collect_ids)
     
     # ★ [정리] 총알 정보 - 이번 프레임에서 새로 발사된 총알만 전송
     send_data["bullets"] = [
@@ -1892,7 +2071,17 @@ def GameFrame(practice_mode=False):
             if not server_raw:
                 raise ConnectionError("서버가 동기화 연결을 종료했습니다.")
         if server_raw:
-            server_players = pickle.loads(server_raw)
+            server_response = pickle.loads(server_raw)
+            if server_response.get("type") == "match_cancelled":
+                selected_game_mode = GAME_MODE_NORMAL
+                local_match = False
+                debug_mode = False
+                reset_match_state()
+                lobby_notice = "다른 플레이어가 나가 매치가 취소되었습니다."
+                lobby_notice_until = pygame.time.get_ticks() + 5000
+                ScreenState = "ModeSelectView"
+                return
+            server_players = server_response
             own_snapshot = server_players.get(network.player_id)
             event_snapshot = own_snapshot or {}
             for kill_event in event_snapshot.get("kill_events", []):
@@ -1927,6 +2116,7 @@ def GameFrame(practice_mode=False):
                         "lifetime": DAMAGE_TEXT_LIFETIME_MS,
                     })
                 if str(target_id) == str(network.player_id):
+                    hurt_flash_started_at = now
                     screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 7)
                     particles.emit(
                         my_player.rect.centerx,
@@ -1946,6 +2136,32 @@ def GameFrame(practice_mode=False):
             synchronized_rune_alerts = []
             if own_snapshot:
                 synchronized_rune_alerts = own_snapshot.get("rune_alerts", [])
+                synchronized_supply_drops = []
+                for supply in own_snapshot.get("supply_drops", []):
+                    warning_remaining_ms = supply.get("warning_remaining_ms", 0)
+                    synchronized_supply_drops.append({
+                        **supply,
+                        "fall_started_at": now - (
+                            supply.get("warning_duration_ms", SUPPLY_DROP_WARNING_MS)
+                            - warning_remaining_ms
+                        ),
+                        "warning_until": now + warning_remaining_ms,
+                        "expires_at": now + supply.get("expires_remaining_ms", 0),
+                    })
+                supply_drops = synchronized_supply_drops
+                pending_supply_spawn_requests.clear()
+                pending_supply_collect_ids.clear()
+                for collection_event in own_snapshot.get(
+                    "supply_collection_events", []
+                ):
+                    event_id = collection_event.get("event_id")
+                    if event_id in processed_supply_collection_ids:
+                        continue
+                    processed_supply_collection_ids.add(event_id)
+                    if str(collection_event.get("player_id")) == str(network.player_id):
+                        system_message = apply_supply_reward(
+                            collection_event.get("type")
+                        )
             for tile_x, tile_y in synchronized_treasures:
                 TileGene.destroy_treasure(tile_x, tile_y)
             synchronized_furniture_changes = []
@@ -2208,9 +2424,10 @@ def GameFrame(practice_mode=False):
                         )
                     break
             if bullet.is_active and (practice_mode or debug_mode) and training_dummy is not None:
+                previous_hp = training_dummy.Hp
                 hit_part = training_dummy.check_bullet_hit(bullet.rect, bullet.damage)
                 if hit_part:
-                    dealt_damage = bullet.damage * (HEADSHOT_DAMAGE_MULTIPLIER if hit_part == "head" else 1)
+                    dealt_damage = previous_hp - training_dummy.Hp
                     damage_numbers.append({
                         "x": training_dummy.rect.centerx,
                         "y": training_dummy.rect.top,
@@ -2349,18 +2566,20 @@ def GameFrame(practice_mode=False):
 
         other_center_x, other_center_y = get_player_screen_center(p_info["posX"], p_info["posY"], IML.Player.get_width(), IML.Player.get_height(), CameraPosX, CameraPosY, camera_zoom)
         server_weapon_id = p_info.get("weapon_id", DEFAULT_WEAPON_ID)
-        if server_weapon_id == "knife" and IML.GetBladeFrames():
-            other_weapon_image = IML.GetBladeFrames()[0]
-            other_weapon_image = _scale_cached(
-                other_weapon_image,
-                (
-                    max(1, round(other_weapon_image.get_width() * camera_zoom * MELEE_WEAPON_SCALE)),
-                    max(1, round(other_weapon_image.get_height() * camera_zoom * MELEE_WEAPON_SCALE)),
-                ),
+        if server_weapon_id in MELEE_WEAPON_IDS:
+            melee_frames = (
+                IML.GetBatFrames()
+                if server_weapon_id == "bat"
+                else IML.GetBladeFrames()
+            )
+            other_weapon_image = (
+                melee_frames[0]
+                if melee_frames
+                else IML.GetWeaponImage(server_weapon_id)
             )
         else:
             other_weapon_image = IML.GetWeaponImage(server_weapon_id)
-        if server_weapon_id in ("pistol", "knife"):
+        if server_weapon_id in ("pistol", *MELEE_WEAPON_IDS):
             other_weapon_image = pygame.transform.flip(other_weapon_image, True, False)
         other_gun = other_weapon_image if camera_zoom == 1.0 else pygame.transform.scale(
             other_weapon_image, (round(other_weapon_image.get_width() * camera_zoom), round(other_weapon_image.get_height() * camera_zoom))
@@ -2389,19 +2608,32 @@ def GameFrame(practice_mode=False):
         )
     else:
         my_player.draw(display, CameraPosX, CameraPosY, camera_zoom, local_stun_offset_x)
-        if weapon_state.weapon_id == "knife" and knife_attack_until > now and IML.GetBladeFrames():
-            blade = blade_animation.frame_at(now)
-            blade = _scale_cached(
-                blade,
-                (
-                    max(1, round(blade.get_width() * camera_zoom * MELEE_WEAPON_SCALE)),
-                    max(1, round(blade.get_height() * camera_zoom * MELEE_WEAPON_SCALE)),
-                ),
+        if weapon_state.weapon_id in MELEE_WEAPON_IDS:
+            is_bat = weapon_state.weapon_id == "bat"
+            melee_frames = IML.GetBatFrames() if is_bat else IML.GetBladeFrames()
+            melee_animation = bat_animation if is_bat else blade_animation
+            melee_image = (
+                melee_animation.frame_at(now)
+                if knife_attack_until > now and melee_frames
+                else (melee_frames[0] if melee_frames else IML.GetWeaponImage(weapon_state.weapon_id))
             )
-            blade = pygame.transform.flip(blade, True, False)
-            blade = pygame.transform.rotate(blade, -Weapon_Angle)
-            display.blit(blade, blade.get_rect(center=(player_center_screen_x, player_center_screen_y)))
-        elif weapon_state.weapon_id != "knife":
+            if melee_image is not None:
+                melee_image = _scale_cached(
+                    melee_image,
+                    (
+                        max(1, round(melee_image.get_width() * camera_zoom)),
+                        max(1, round(melee_image.get_height() * camera_zoom)),
+                    ),
+                )
+                melee_image = pygame.transform.flip(melee_image, True, False)
+                melee_image = pygame.transform.rotate(melee_image, -Weapon_Angle)
+                display.blit(
+                    melee_image,
+                    melee_image.get_rect(
+                        center=(player_center_screen_x, player_center_screen_y)
+                    ),
+                )
+        else:
             display.blit(rotated_shotgun, Shotgun_rect)
 
 
@@ -2410,7 +2642,8 @@ def GameFrame(practice_mode=False):
     # 기본 시야는 무기 시야와 구분되는 어두운 청색 영역으로 표시합니다.
     base_overlay = base_vision_overlay
     base_overlay.fill((8, 24, 42, PLAYER_BASE_VISION_ALPHA))
-    base_vision_polygon = TileGene.get_visibility_polygon(
+    base_vision_polygon = _cached_visibility_polygon(
+        ("base", PLAYER_BASE_VISION_RADIUS),
         player_world_x,
         player_world_y,
         PLAYER_BASE_VISION_RADIUS,
@@ -2451,32 +2684,25 @@ def GameFrame(practice_mode=False):
             camera_zoom,
         )
 
-    # 위치 8픽셀, 방향 4도 단위로 묶어 마우스 이동 중 재계산을 줄입니다.
+    # 위치를 16픽셀, 방향을 8도 단위로 묶어 벽 그림자 계산을 재사용합니다.
     polygon_cache_key = (
-        round(player_world_x / 8),
-        round(player_world_y / 8),
-        round(Weapon_Angle / 4),
+        "weapon",
+        round(Weapon_Angle / 8),
         current_vision_shape,
         current_vision_radius,
         current_vision.vision_fov,
         current_vision_width,
     )
-    if polygon_cache_key not in visibility_polygon_cache:
-        # 캐시가 없을 때만 벽과 광선이 포함된 폴리곤을 계산합니다.
-        visibility_polygon_cache[polygon_cache_key] = TileGene.get_visibility_polygon(
-            player_world_x,
-            player_world_y,
-            current_vision_radius,
-            vision_shape=current_vision_shape,
-            direction_angle=Weapon_Angle,
-            fov_angle=current_vision.vision_fov,
-            vision_width=current_vision_width,
-            ray_samples=None,  # 자동 최적화 (저격총 직선은 8, 기타는 12)
-        )
-        # [최적화] 캐시 크기를 128로 증대 (저격총 직선은 각도 변화가 많음)
-        if len(visibility_polygon_cache) > 128:
-            visibility_polygon_cache.pop(next(iter(visibility_polygon_cache)))
-    visibility_polygon = visibility_polygon_cache[polygon_cache_key]
+    visibility_polygon = _cached_visibility_polygon(
+        polygon_cache_key,
+        player_world_x,
+        player_world_y,
+        current_vision_radius,
+        vision_shape=current_vision_shape,
+        direction_angle=round(Weapon_Angle / 8) * 8,
+        fov_angle=current_vision.vision_fov,
+        vision_width=current_vision_width,
+    )
     if visibility_polygon:
         # 월드 폴리곤을 현재 카메라 좌표로 변환해 어두운 레이어를 뚫습니다.
         draw_visibility_geometry(dark_overlay, visibility_polygon, CameraPosX, CameraPosY, camera_zoom)
@@ -2895,6 +3121,14 @@ def GameFrame(practice_mode=False):
             zone_status,
             zone_color,
         )
+    if hurt_flash_started_at:
+        elapsed = now - hurt_flash_started_at
+        hurt_image = IML.GetHurtImage()
+        if 0 <= elapsed < HURT_FLASH_DURATION_MS and hurt_image is not None:
+            hurt_image.set_alpha(round(
+                HURT_FLASH_MAX_ALPHA * (1 - elapsed / HURT_FLASH_DURATION_MS)
+            ))
+            display.blit(hurt_image, (0, 0))
     # ------------------ [그리기 끝] ------------------
 
 

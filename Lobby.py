@@ -84,6 +84,18 @@ class LobbyState:
             self.started_at[mode] = None
             self.match_player_ids[mode].clear()
 
+    def cancel(self, mode):
+        """해당 모드의 대기열과 진행 중 매치를 전체 참가자 대상으로 취소합니다."""
+        player_ids = self._player_ids(mode)
+        for player_id in player_ids:
+            self.modes.pop(player_id, None)
+            self.ready_players.discard(player_id)
+        self.started[mode] = False
+        self.start_at[mode] = None
+        self.started_at[mode] = None
+        self.match_player_ids[mode].clear()
+        return player_ids
+
     def finish_match(self, mode=GAME_MODE_NORMAL):
         """경기 결과가 확정되면 다음 대기열을 위한 상태를 비웁니다."""
         for player_id in self._player_ids(mode):

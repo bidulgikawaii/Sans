@@ -61,6 +61,10 @@ def new_match_events():
         "kill_scores": {},
         "damage_events": [],
         "next_damage_event_id": 1,
+        "supply_drops": {},
+        "next_supply_drop_id": 1,
+        "supply_collection_events": [],
+        "next_supply_collection_id": 1,
     }
 
 
@@ -80,6 +84,7 @@ def append_kill_event(events, killer_id, target_id, killer_name, target_name, we
 match_events = {mode.mode_id: new_match_events() for mode in get_game_modes()}
 completed_match_winner_ids = {}
 result_pending_player_ids = {}
+cancelled_match_notices = {}
 player_count = 0
 lobby = LobbyState()
 magnetic_zone = MagneticZone(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, 32)
@@ -152,6 +157,13 @@ def handle_client(conn, player_id):
 
             if client_data.get("type") == "lobby_join":
                 with player_lock:
+                    cancelled_mode = cancelled_match_notices.pop(player_id, None)
+                    if cancelled_mode is not None:
+                        conn.sendall(pickle.dumps({
+                            "type": "match_cancelled",
+                            "mode": cancelled_mode,
+                        }))
+                        continue
                     requested_mode = client_data.get("mode")
                     if client_data.get("debug_enabled", False):
                         requested_mode = GAME_MODE_DEBUG
@@ -212,7 +224,14 @@ def handle_client(conn, player_id):
             if client_data.get("type") == "lobby_leave":
                 with player_lock:
                     mode = lobby.mode_for(player_id)
-                    lobby.leave(player_id)
+                    cancelled_ids = lobby.cancel(mode) if mode is not None else set()
+                    for cancelled_id in cancelled_ids:
+                        if cancelled_id != player_id:
+                            cancelled_match_notices[cancelled_id] = mode
+                    if mode is not None:
+                        completed_match_winner_ids.pop(mode, None)
+                        result_pending_player_ids.pop(mode, None)
+                        reset_match_events(mode)
                     for pending_mode, pending_ids in tuple(result_pending_player_ids.items()):
                         pending_ids.discard(player_id)
                         if not pending_ids and pending_mode in completed_match_winner_ids:
@@ -220,9 +239,11 @@ def handle_client(conn, player_id):
                             completed_match_winner_ids.pop(pending_mode, None)
                             result_pending_player_ids.pop(pending_mode, None)
                             reset_match_events(pending_mode)
-                    if mode is not None and not lobby.active_player_ids(mode):
-                        reset_match_events(mode)
-                conn.sendall(pickle.dumps(lobby.status(player_id)))
+                conn.sendall(pickle.dumps(
+                    {"type": "match_cancelled", "mode": mode}
+                    if mode is not None
+                    else lobby.status(player_id)
+                ))
                 continue
 
             if client_data.get("type") == "lobby_ready":
@@ -239,9 +260,87 @@ def handle_client(conn, player_id):
             with player_lock:
                 mode = lobby.mode_for(player_id)
                 if mode is None:
-                    conn.sendall(pickle.dumps({}))
+                    cancelled_mode = cancelled_match_notices.pop(player_id, None)
+                    conn.sendall(pickle.dumps(
+                        {"type": "match_cancelled", "mode": cancelled_mode}
+                        if cancelled_mode is not None
+                        else {}
+                    ))
                     continue
                 events = match_events[mode]
+
+            with player_lock:
+                now_monotonic = time.monotonic()
+                events["supply_drops"] = {
+                    drop_id: drop
+                    for drop_id, drop in events["supply_drops"].items()
+                    if drop["expires_at"] > now_monotonic
+                }
+                spawn_requests = client_data.get("supply_spawn_requests", [])
+                if isinstance(spawn_requests, list):
+                    for request in spawn_requests:
+                        if not isinstance(request, dict):
+                            continue
+                        drop_type = request.get("type")
+                        if drop_type not in (
+                            "heal", "skill", "special_weapon",
+                            "flare_ammo", "flare_skill",
+                        ):
+                            continue
+                        try:
+                            drop_x = float(request["x"])
+                            drop_y = float(request["y"])
+                            warning_ms = int(request.get("warning_ms", 2200))
+                            lifetime_ms = int(request.get("lifetime_ms", 30_000))
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                        if not (0 <= drop_x < MAP_WIDTH_TILES * 32 and 0 <= drop_y < MAP_HEIGHT_TILES * 32):
+                            continue
+                        if len(events["supply_drops"]) >= 64:
+                            continue
+                        if drop_type in ("heal", "skill", "special_weapon"):
+                            active_ids = sorted(lobby.active_player_ids(mode))
+                            if not active_ids or player_id != active_ids[0]:
+                                continue
+                        drop_id = events["next_supply_drop_id"]
+                        events["next_supply_drop_id"] += 1
+                        warning_ms = max(0, min(10_000, warning_ms))
+                        lifetime_ms = max(warning_ms + 1000, min(120_000, lifetime_ms))
+                        events["supply_drops"][drop_id] = {
+                            "id": drop_id,
+                            "x": drop_x,
+                            "y": drop_y,
+                            "type": drop_type,
+                            "warning_duration_ms": warning_ms,
+                            "warning_until": now_monotonic + warning_ms / 1000,
+                            "expires_at": now_monotonic + lifetime_ms / 1000,
+                        }
+                collect_ids = client_data.get("supply_collect_ids", [])
+                if isinstance(collect_ids, list):
+                    for requested_drop_id in collect_ids:
+                        try:
+                            drop_id = int(requested_drop_id)
+                            player_center_x = float(client_data["posX"]) + 36
+                            player_center_y = float(client_data["posY"]) + 36
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                        drop = events["supply_drops"].get(drop_id)
+                        if drop is None or drop["warning_until"] > now_monotonic:
+                            continue
+                        if (
+                            abs(player_center_x - drop["x"]) > 36 + 18
+                            or abs(player_center_y - drop["y"]) > 36 + 18
+                        ):
+                            continue
+                        events["supply_collection_events"].append({
+                            "event_id": events["next_supply_collection_id"],
+                            "drop_id": drop_id,
+                            "player_id": player_id,
+                            "type": drop["type"],
+                        })
+                        events["next_supply_collection_id"] += 1
+                        events["supply_drops"].pop(drop_id, None)
+                events["supply_collection_events"][:] = events["supply_collection_events"][-64:]
 
             for treasure in client_data.get("destroyed_treasures", []):
                 if len(treasure) == 2:
@@ -381,7 +480,8 @@ def handle_client(conn, player_id):
                     damage *= HEADSHOT_DAMAGE_MULTIPLIER
                 stun_ms = max(0, int(hit_event.get("stun_ms", 0)))
                 previous_hp = target["hp"]
-                target["hp"] = max(0, target["hp"] - damage)
+                damage = min(damage, previous_hp)
+                target["hp"] = previous_hp - damage
                 events["damage_events"].append({
                     "event_id": events["next_damage_event_id"],
                     "attacker_id": player_id,
@@ -543,6 +643,21 @@ def handle_client(conn, player_id):
                 player["zone_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
                 player["kill_events"] = list(events["kill_events"][-12:])
                 player["damage_events"] = list(events["damage_events"][-32:])
+                player["supply_drops"] = [
+                    {
+                        **drop,
+                        "warning_remaining_ms": max(
+                            0, round((drop["warning_until"] - now_monotonic) * 1000)
+                        ),
+                        "expires_remaining_ms": max(
+                            0, round((drop["expires_at"] - now_monotonic) * 1000)
+                        ),
+                    }
+                    for drop in events["supply_drops"].values()
+                ]
+                player["supply_collection_events"] = list(
+                    events["supply_collection_events"]
+                )
                 player["stun_ms_remaining"] = max(
                     0, round((player.get("stunned_until", 0.0) - time.monotonic()) * 1000)
                 )

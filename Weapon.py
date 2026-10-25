@@ -66,11 +66,22 @@ WEAPONS = {
 
 # 노란 특수상자에서 지급할 무기를 여기에 추가하면 일반 무기 목록에도 등록됩니다.
 SPECIAL_CRATE_WEAPONS = {
-    # "third_weapon": WeaponConfig("새 무기", damage=20, magazine_size=8, reserve_ammo=24, fire_interval=0.5),
+    "flaregun": WeaponConfig(
+        "플레어건", damage=0, magazine_size=1, reserve_ammo=0,
+        fire_interval=0.8, bullet_size=5, bullet_speed=18.0,
+        vision_radius=WEAPON_VISION_RADIUS, vision_fov=110, vision_width=260,
+    ),
+    "bat": WeaponConfig(
+        "배트", damage=20, magazine_size=0, reserve_ammo=0,
+        fire_interval=0.5, reload_time=0.0, projectile=False, recoil=0.0,
+        bullet_lifetime=0.2, vision_radius=WEAPON_VISION_RADIUS,
+        vision_fov=180, vision_width=420,
+    ),
 }
 WEAPONS.update(SPECIAL_CRATE_WEAPONS)
 
 WEAPON_KEYS = ("pistol", "rifle", "shotgun", "sniper", "smg", "knife")
+MELEE_WEAPON_IDS = frozenset(("knife", "bat"))
 
 
 class SpecialWeaponCrate:
@@ -144,6 +155,18 @@ class WeaponState:
         self.reloading = False
         self.reload_started_at = 0.0
         self.reload_finished_at = 0.0
+
+    def reset_weapon_ammo(self, weapon_id):
+        if weapon_id not in WEAPONS:
+            return False
+        config = WEAPONS[weapon_id]
+        self._ammo_by_weapon[weapon_id] = (
+            config.magazine_size,
+            config.reserve_ammo,
+        )
+        if self.weapon_id == weapon_id:
+            self.magazine_ammo, self.reserve_ammo = self._ammo_by_weapon[weapon_id]
+        return True
 
     def can_fire(self):
         now = time.monotonic()

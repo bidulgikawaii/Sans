@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pygame
 
-from Config import MAIN_SCREEN_IMAGE_SIZES, PISTOL_IMAGE_SIZE, SKILL_ICON_SIZE
+from Config import (
+    MAIN_SCREEN_IMAGE_SIZES,
+    PISTOL_IMAGE_SIZE,
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+    SKILL_ICON_SIZE,
+)
 
 
 SKILL_ICON_FILES = {
@@ -32,6 +38,8 @@ class Imageload:
         "smg": "Gigwan",
         "sniper": "Sniper",
         "shotgun": "ShotGun",
+        "flaregun": "FlareGun",
+        "bat": "BatIcon",
 
     }
 
@@ -48,8 +56,12 @@ class Imageload:
         self.PistolFire = self._load_scaled_image("pistol_fire_transparent.png", PISTOL_IMAGE_SIZE)
         self.PistolSmoke = self._load_scaled_image("pistol_smoke_transparent.png", PISTOL_IMAGE_SIZE)
         self.Gigwan = self._load_scaled_image("Gigwan.png", (128, 64))
-        self.HBlade = self._load_animation("karambit", (64, 64))
+        self.HBlade = self._load_animation("karambit", (32, 32))
+        self.Bat = self._load_animation("hyeonminbat", (32, 32))
+        self.BatIcon = self.Bat[0] if self.Bat else self._create_flaregun_image()
         self.Expo = self._load_animation("Expo", (128, 128))
+        flaregun = self._load_scaled_image("flaregun.png", (96, 48))
+        self.FlareGun = flaregun if flaregun is not None else self._create_flaregun_image()
         self.Sniper = self._load_scaled_image("Sniper.png", (192, 64))
         shotgun = self._load_scaled_image("ShotGun_3.png", (128, 64))
         self.ShotGun = [shotgun] if shotgun is not None else []
@@ -67,7 +79,13 @@ class Imageload:
         self.SkillWindow = self._load_image_file(self.root / "SkillWindow.png")
         self.QuickSlot = self._load_image_file(self.root / "QuickSlot.png")
         self.TpStatue = self._load_scaled_image("TpStatue.png", (64, 96))
-        self.WardSet = self._load_image_file(self.root / "ward_Set.PNG",(64,64))
+        self.WardSet = self._load_scaled_image("ward_Set.PNG", (64, 64))
+        hurt = self._load_image_file(self.root / "Hurt.png")
+        self.Hurt = (
+            pygame.transform.smoothscale(hurt, (SCREEN_WIDTH, SCREEN_HEIGHT))
+            if hurt is not None
+            else None
+        )
 
         self.TitleImages = self._load_title_images()
         if self.BackG is not None:
@@ -134,14 +152,63 @@ class Imageload:
             match = re.search(r"\((\d+)\)", path.name)
             return int(match.group(1)) if match else -1
 
-        frames = []
-        for path in sorted(paths, key=frame_number):
+        ordered_paths = sorted(paths, key=frame_number)
+        if target_size is None:
+            images = []
+            for path in ordered_paths:
+                image = self._load_image_file(path)
+                if image is not None:
+                    images.append(image)
+            return images
+
+        bounds = []
+        for path in ordered_paths:
             image = self._load_image_file(path)
             if image is not None:
-                if target_size is not None:
-                    image = pygame.transform.smoothscale(image, target_size)
-                frames.append(image)
+                bounds.append((path, image.get_bounding_rect(min_alpha=8)))
+                del image
+        visible_bounds = [
+            rect for _path, rect in bounds if rect.width and rect.height
+        ]
+        if not visible_bounds:
+            frames = []
+            for path, _rect in bounds:
+                image = self._load_image_file(path)
+                if image is not None:
+                    frames.append(pygame.transform.smoothscale(image, target_size))
+            return frames
+        left = min(rect.left for rect in visible_bounds)
+        top = min(rect.top for rect in visible_bounds)
+        right = max(rect.right for rect in visible_bounds)
+        bottom = max(rect.bottom for rect in visible_bounds)
+        crop = pygame.Rect(left, top, right - left, bottom - top)
+        scale = min(target_size[0] / crop.width, target_size[1] / crop.height)
+        scaled_size = (
+            max(1, round(crop.width * scale)),
+            max(1, round(crop.height * scale)),
+        )
+        frames = []
+        for path, _rect in bounds:
+            image = self._load_image_file(path)
+            if image is None:
+                continue
+            frame = pygame.Surface(target_size, pygame.SRCALPHA)
+            visible = image.subsurface(crop).copy()
+            visible = pygame.transform.smoothscale(visible, scaled_size)
+            frame.blit(visible, visible.get_rect(center=frame.get_rect().center))
+            frames.append(frame)
+            del image, visible
         return frames
+
+    @staticmethod
+    def _create_flaregun_image():
+        image = pygame.Surface((72, 36), pygame.SRCALPHA)
+        pygame.draw.rect(image, (70, 75, 90), (13, 10, 48, 14), border_radius=4)
+        pygame.draw.rect(image, (245, 120, 55), (31, 7, 18, 20), border_radius=3)
+        pygame.draw.rect(image, (180, 190, 200), (55, 13, 15, 8), border_radius=2)
+        pygame.draw.polygon(image, (50, 55, 65), ((20, 22), (38, 22), (33, 35), (23, 35)))
+        pygame.draw.circle(image, (255, 225, 145), (45, 17), 3)
+        return image
 
     def _load_title_images(self):
         image_dir = self.root / "MainScreen"
@@ -205,6 +272,12 @@ class Imageload:
 
     def GetBladeFrames(self):
         return self.HBlade
+
+    def GetBatFrames(self):
+        return self.Bat
+
+    def GetHurtImage(self):
+        return self.Hurt
 
     def GetExplosionFrames(self):
         return self.Expo

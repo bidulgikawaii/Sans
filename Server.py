@@ -224,26 +224,51 @@ def handle_client(conn, player_id):
             if client_data.get("type") == "lobby_leave":
                 with player_lock:
                     mode = lobby.mode_for(player_id)
-                    cancelled_ids = lobby.cancel(mode) if mode is not None else set()
-                    for cancelled_id in cancelled_ids:
-                        if cancelled_id != player_id:
-                            cancelled_match_notices[cancelled_id] = mode
-                    if mode is not None:
-                        completed_match_winner_ids.pop(mode, None)
-                        result_pending_player_ids.pop(mode, None)
-                        reset_match_events(mode)
-                    for pending_mode, pending_ids in tuple(result_pending_player_ids.items()):
-                        pending_ids.discard(player_id)
-                        if not pending_ids and pending_mode in completed_match_winner_ids:
-                            lobby.finish_match(pending_mode)
-                            completed_match_winner_ids.pop(pending_mode, None)
-                            result_pending_player_ids.pop(pending_mode, None)
-                            reset_match_events(pending_mode)
-                conn.sendall(pickle.dumps(
-                    {"type": "match_cancelled", "mode": mode}
-                    if mode is not None
-                    else lobby.status(player_id)
-                ))
+                    if (
+                        mode is not None
+                        and lobby.started[mode]
+                        and player_id in lobby.match_player_ids[mode]
+                        and mode != GAME_MODE_DEBUG
+                    ):
+                        if mode in completed_match_winner_ids:
+                            lobby.leave(player_id)
+                            pending_ids = result_pending_player_ids.get(mode)
+                            if pending_ids is not None:
+                                pending_ids.discard(player_id)
+                                if not pending_ids:
+                                    lobby.finish_match(mode)
+                                    completed_match_winner_ids.pop(mode, None)
+                                    result_pending_player_ids.pop(mode, None)
+                                    reset_match_events(mode)
+                            response = {"type": "match_result_complete", "mode": mode}
+                        else:
+                            players[player_id]["hp"] = 0
+                            players[player_id]["revive_armed"] = False
+                            players[player_id]["deathmatch_respawn_at"] = None
+                            lobby.leave(player_id)
+                            response = {"type": "match_defeat", "mode": mode}
+                    else:
+                        cancelled_ids = lobby.cancel(mode) if mode is not None else set()
+                        for cancelled_id in cancelled_ids:
+                            if cancelled_id != player_id:
+                                cancelled_match_notices[cancelled_id] = mode
+                        if mode is not None:
+                            completed_match_winner_ids.pop(mode, None)
+                            result_pending_player_ids.pop(mode, None)
+                            reset_match_events(mode)
+                        for pending_mode, pending_ids in tuple(result_pending_player_ids.items()):
+                            pending_ids.discard(player_id)
+                            if not pending_ids and pending_mode in completed_match_winner_ids:
+                                lobby.finish_match(pending_mode)
+                                completed_match_winner_ids.pop(pending_mode, None)
+                                result_pending_player_ids.pop(pending_mode, None)
+                                reset_match_events(pending_mode)
+                        response = (
+                            {"type": "match_cancelled", "mode": mode}
+                            if mode is not None
+                            else lobby.status(player_id)
+                        )
+                conn.sendall(pickle.dumps(response))
                 continue
 
             if client_data.get("type") == "lobby_ready":
@@ -601,6 +626,21 @@ def handle_client(conn, player_id):
                         & lobby.active_player_ids(mode)
                         & players.keys()
                     )
+                active_match_player_ids = (
+                    set(match_player_ids)
+                    & lobby.active_player_ids(mode)
+                    & players.keys()
+                )
+                if (
+                    winner_ids is None
+                    and mode != GAME_MODE_DEBUG
+                    and lobby.started[mode]
+                    and len(match_player_ids) >= get_game_mode(mode).min_players
+                    and len(active_match_player_ids) == 1
+                ):
+                    winner_ids = [next(iter(active_match_player_ids))]
+                    completed_match_winner_ids[mode] = winner_ids
+                    result_pending_player_ids[mode] = set(active_match_player_ids)
                 if winner_ids is None and get_game_mode(mode).elimination and (
                     lobby.started[mode]
                         and len(match_player_ids) >= get_game_mode(mode).min_players

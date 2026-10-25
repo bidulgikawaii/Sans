@@ -109,6 +109,7 @@ def _cached_visibility_polygon(key, center_x, center_y, radius, **options):
 
 def leave_lobby():
     """로비에서 나간 뒤 다음 경기에 사용할 클라이언트 상태를 정리합니다."""
+    response = {}
     try:
         network.client.sendall(pickle.dumps({"type": "lobby_leave"}))
         response = pickle.loads(network.client.recv(NETWORK_BUFFER_SIZE))
@@ -116,7 +117,8 @@ def leave_lobby():
             network.lobby_status["message"] = "플레이어가 나가 매치가 취소되었습니다."
     except (OSError, EOFError, pickle.PickleError):
         reconnect_to_server()
-    reset_match_state()
+    if response.get("type") != "match_defeat":
+        reset_match_state()
     network.lobby_status = {
         "count": 0,
         "max_players": MAX_PLAYERS,
@@ -124,6 +126,7 @@ def leave_lobby():
         "started": False,
     }
     network.last_lobby_request_at = 0
+    return response
 
 
 random.seed(network.init_data["seed"])
@@ -1474,7 +1477,10 @@ def leave_game_to_main():
     """현재 게임과 로비 상태를 정리하고 메인 화면으로 돌아갑니다."""
     global ScreenState, local_match, debug_mode, selected_game_mode
     if not local_match:
-        leave_lobby()
+        response = leave_lobby()
+        if response.get("type") == "match_defeat":
+            show_defeat()
+            return
     else:
         reset_match_state()
     local_match = False

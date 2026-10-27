@@ -304,21 +304,63 @@ def draw_ward(surface, ward_x, ward_y, camera_x, camera_y, zoom, image=None):
 
 def draw_stun_effect(surface, center_x, center_y, zoom, now):
     """기절 중인 플레이어 주변에 맥동하는 전기 효과를 표시합니다."""
-    pulse = 1.0 + 0.12 * math.sin(now * 0.025)
-    radius = max(12, round(27 * zoom * pulse))
+    pulse = 1.0 + 0.16 * math.sin(now * 0.035)
+    radius = max(12, round(30 * zoom * pulse))
     center = (round(center_x), round(center_y))
     pygame.draw.circle(surface, (100, 225, 255), center, radius, max(1, round(2 * zoom)))
     pygame.draw.circle(surface, (210, 250, 255), center, max(2, round(radius * 0.18)), 1)
-    for index in range(4):
-        angle = math.tau * index / 4 + now * 0.002
-        points = []
-        for step, distance in enumerate((radius + 4, radius + 11, radius + 17, radius + 24)):
-            offset = (step % 2) * 5 * zoom
+    for index in range(6):
+        angle = math.tau * index / 6 + now * 0.003
+        start = (center_x + math.cos(angle) * radius, center_y + math.sin(angle) * radius)
+        end = (
+            center_x + math.cos(angle + 0.22) * (radius + 15 * zoom),
+            center_y + math.sin(angle + 0.22) * (radius + 15 * zoom),
+        )
+        middle = (
+            (start[0] + end[0]) / 2 + math.sin(now * 0.04 + index * 2) * 7 * zoom,
+            (start[1] + end[1]) / 2 + math.cos(now * 0.035 + index) * 7 * zoom,
+        )
+        points = [tuple(map(round, point)) for point in (start, middle, end)]
+        pygame.draw.lines(surface, (55, 180, 255), False, points, max(2, round(4 * zoom)))
+        pygame.draw.lines(surface, (225, 255, 255), False, points, max(1, round(1.5 * zoom)))
+
+
+def draw_stun_bolt(surface, center_x, center_y, angle, zoom, now):
+    """기절탄 주위에 빠르게 깜빡이는 짧은 번개 가지를 그립니다."""
+    angle = math.radians(angle)
+    direction = (math.cos(angle), math.sin(angle))
+    perpendicular = (-direction[1], direction[0])
+    center = (round(center_x), round(center_y))
+    flicker = 0.65 + 0.35 * abs(math.sin(now * 0.07))
+    for side in (-1, 1):
+        start = (
+            center_x - direction[0] * 8 * zoom,
+            center_y - direction[1] * 8 * zoom,
+        )
+        points = [start]
+        for step in range(1, 4):
+            distance = (step - 1.5) * 9 * zoom
+            jitter = math.sin(now * 0.09 + step * 5 + side) * 7 * zoom
             points.append((
-                round(center_x + math.cos(angle) * (distance + offset)),
-                round(center_y + math.sin(angle) * (distance + offset)),
+                center_x + perpendicular[0] * (distance + jitter * side)
+                + direction[0] * step * 5 * zoom,
+                center_y + perpendicular[1] * (distance + jitter * side)
+                + direction[1] * step * 5 * zoom,
             ))
-        pygame.draw.lines(surface, (150, 235, 255), False, points, max(1, round(2 * zoom)))
+        points.append((
+            center_x + direction[0] * 11 * zoom,
+            center_y + direction[1] * 11 * zoom,
+        ))
+        points = [tuple(map(round, point)) for point in points]
+        pygame.draw.lines(
+            surface, (45, 165, 255, round(190 * flicker)), False, points,
+            max(2, round(4 * zoom)),
+        )
+        pygame.draw.lines(
+            surface, (220, 255, 255, round(255 * flicker)), False, points,
+            max(1, round(2 * zoom)),
+        )
+    pygame.draw.circle(surface, (180, 245, 255), center, max(2, round(3 * zoom)))
 
 
 def draw_skill_range(surface, world_x, world_y, world_radius, camera_x, camera_y, zoom, color, pulse=1.0):

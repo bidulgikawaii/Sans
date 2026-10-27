@@ -62,6 +62,12 @@ WEAPONS = {
         reload_time=0.0, projectile=False, recoil=0.0, bullet_lifetime=0.2,
         vision_radius=WEAPON_VISION_RADIUS, vision_fov=180, vision_width=420,
     ),
+    "flaregun": WeaponConfig(
+        "플레어건", damage=0, magazine_size=1, reserve_ammo=0,
+        fire_interval=0.8, reload_time=0.0, bullet_size=0,
+        projectile=True, recoil=0.0, bullet_lifetime=0.2,
+        vision_radius=WEAPON_VISION_RADIUS, vision_fov=180, vision_width=420,
+    ),
 }
 
 # 노란 특수상자에서 지급할 무기를 여기에 추가하면 일반 무기 목록에도 등록됩니다.

@@ -9,6 +9,7 @@ from Config import (
     DEFAULT_WEAPON_ID,
     DEATHMATCH_DURATION_MS,
     DEATHMATCH_RESPAWN_MS,
+    BUSH_LEAF_INTERVAL_MS,
     GAME_MODE_DEBUG,
     GAME_MODE_DEATHMATCH,
     GAME_MODE_NORMAL,
@@ -68,6 +69,8 @@ def new_match_events():
         "next_supply_drop_id": 1,
         "supply_collection_events": [],
         "next_supply_collection_id": 1,
+        "bush_leaf_events": [],
+        "next_bush_leaf_event_id": 1,
     }
 
 
@@ -172,10 +175,13 @@ def handle_client(conn, player_id):
         "reserve_ammo": WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo,
         "stealth": False,
         "in_bush": False,
+        "last_bush_leaf_token": 0,
+        "last_bush_leaf_at": 0.0,
         "stealth_token": 0,
         "stealth_until": 0.0,
         "wards": [],
         "revive_token": 0,
+        "revive_accepted_token": 0,
         "revive_armed": False,
         "deathmatch_revive_used": False,
         "heal_token": 0,
@@ -236,10 +242,13 @@ def handle_client(conn, player_id):
                             "reserve_ammo": WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo,
                             "stealth": False,
                             "in_bush": False,
+                            "last_bush_leaf_token": 0,
+                            "last_bush_leaf_at": 0.0,
                             "stealth_token": 0,
                             "stealth_until": 0.0,
                             "wards": [],
                             "revive_token": 0,
+                            "revive_accepted_token": 0,
                             "revive_armed": False,
                             "deathmatch_revive_used": False,
                             "heal_token": 0,
@@ -483,6 +492,43 @@ def handle_client(conn, player_id):
             verified_kill_count = events["kill_scores"].get(player_id, 0)
             players[player_id]["kill_count"] = min(reported_kill_count, verified_kill_count)
             players[player_id]["in_bush"] = bool(client_data.get("in_bush", False))
+            if players[player_id]["in_bush"]:
+                leaf_requests = client_data.get("bush_leaf_requests", [])
+                if isinstance(leaf_requests, list):
+                    for request in leaf_requests[:4]:
+                        if not isinstance(request, dict):
+                            continue
+                        try:
+                            leaf_token = int(request.get("token", 0))
+                        except (TypeError, ValueError):
+                            continue
+                        if (
+                            leaf_token <= players[player_id]["last_bush_leaf_token"]
+                            or now_monotonic - players[player_id]["last_bush_leaf_at"]
+                            < BUSH_LEAF_INTERVAL_MS / 1000
+                        ):
+                            continue
+                        try:
+                            player_x = float(client_data["posX"]) + 36
+                            player_y = float(client_data["posY"]) + 60
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                        if not (
+                            0 <= player_x < MAP_WIDTH_TILES * 32
+                            and 0 <= player_y < MAP_HEIGHT_TILES * 32
+                        ):
+                            continue
+                        events["bush_leaf_events"].append({
+                            "event_id": events["next_bush_leaf_event_id"],
+                            "player_id": player_id,
+                            "x": player_x,
+                            "y": player_y,
+                            "seed": random.getrandbits(32),
+                        })
+                        events["next_bush_leaf_event_id"] += 1
+                        players[player_id]["last_bush_leaf_token"] = leaf_token
+                        players[player_id]["last_bush_leaf_at"] = now_monotonic
+                events["bush_leaf_events"][:] = events["bush_leaf_events"][-64:]
             players[player_id]["wards"] = [
                 (float(ward[0]), float(ward[1]))
                 for ward in client_data.get("wards", [])
@@ -512,6 +558,7 @@ def handle_client(conn, player_id):
                         players[player_id]["hp"] = PLAYER_MAX_HP
                         players[player_id]["revive_armed"] = True
                         players[player_id]["deathmatch_revive_used"] = True
+                        players[player_id]["revive_accepted_token"] = revive_token
                 else:
                     players[player_id]["hp"] = max(1, round(PLAYER_MAX_HP * REVIVE_HP_RATIO))
                     players[player_id]["revive_armed"] = False
@@ -653,9 +700,10 @@ def handle_client(conn, player_id):
                             time.monotonic() + DEATHMATCH_RESPAWN_MS / 1000
                         )
                         if attacker_id != target_id:
-                            events["kill_scores"][attacker_id] = (
-                                events["kill_scores"].get(attacker_id, 0) + 1
-                            )
+                            with player_lock:
+                                events["kill_scores"][attacker_id] = (
+                                    events["kill_scores"].get(attacker_id, 0) + 1
+                                )
                     append_kill_event(
                         events,
                         attacker_id,
@@ -828,13 +876,18 @@ def handle_client(conn, player_id):
                     )
             # 네트워크 직렬화 전 복사본을 만들되, pickle 왕복은 피합니다.
             snapshot = copy.deepcopy(active_players)
+            with player_lock:
+                score_snapshot = {
+                    match_id: events["kill_scores"].get(match_id, 0)
+                    for match_id in match_player_ids
+                }
             pending_bullets = [
                 bullet for bullet in events["bullet_events"]
                 if bullet["event_id"] > last_sent_bullet_event_ids[mode]
             ]
             if pending_bullets:
                 last_sent_bullet_event_ids[mode] = pending_bullets[-1]["event_id"]
-            for player in snapshot.values():
+            for snapshot_player_id, player in snapshot.items():
                 player["bullets"] = list(pending_bullets)
                 player["destroyed_treasures"] = list(events["destroyed_treasures"])
                 player["destroyed_furniture"] = list(events["destroyed_furniture"])
@@ -844,8 +897,15 @@ def handle_client(conn, player_id):
                 ]
                 player["winner_id"] = winner_ids[0] if winner_ids and len(winner_ids) == 1 else None
                 player["winner_ids"] = list(winner_ids or [])
-                player["kill_scores"] = dict(events["kill_scores"])
-                player["kill_count"] = events["kill_scores"].get(player_id, 0)
+                player["kill_scores"] = dict(score_snapshot)
+                player["kill_count"] = score_snapshot.get(snapshot_player_id, 0)
+                player["deathmatch_revive_used"] = player.get(
+                    "deathmatch_revive_used", False
+                )
+                player["revive_token"] = player.get("revive_token", 0)
+                player["revive_accepted_token"] = player.get(
+                    "revive_accepted_token", 0
+                )
                 player["match_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
                 respawn_at = player.get("deathmatch_respawn_at")
                 player["respawn_ms_remaining"] = (
@@ -871,6 +931,7 @@ def handle_client(conn, player_id):
                 player["supply_collection_events"] = list(
                     events["supply_collection_events"]
                 )
+                player["bush_leaf_events"] = list(events["bush_leaf_events"])
                 player["stun_ms_remaining"] = max(
                     0, round((player.get("stunned_until", 0.0) - time.monotonic()) * 1000)
                 )

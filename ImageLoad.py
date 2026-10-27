@@ -79,7 +79,7 @@ class Imageload:
         self.SkillWindow = self._load_image_file(self.root / "SkillWindow.png")
         self.QuickSlot = self._load_image_file(self.root / "QuickSlot.png")
         self.TpStatue = self._load_scaled_image("TpStatue.png", (64, 96))
-        self.WardSet = self._load_scaled_image("ward_Set.PNG", (128, 128))
+        self.WardSet = self._load_scaled_image("ward_Set.PNG", (160, 160))
         hurt = self._load_image_file(self.root / "Hurt.png")
         self.Hurt = (
             pygame.transform.smoothscale(hurt, (SCREEN_WIDTH, SCREEN_HEIGHT))

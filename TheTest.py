@@ -89,12 +89,33 @@ def _scale_cached(image, size, smooth=True):
     return scaled
 
 
+def _draw_melee_weapon(surface, image, center, angle, zoom):
+    display_size = (
+        max(1, round(image.get_width() * zoom * 1.3)),
+        max(1, round(image.get_height() * zoom * 1.3)),
+    )
+    scaled_image = _scale_cached(image, display_size)
+    flipped_image = pygame.transform.flip(scaled_image, True, False)
+    rotated_image = pygame.transform.rotate(flipped_image, -angle)
+    forward_offset = 14 * zoom
+    radians = math.radians(angle)
+    weapon_center = (
+        round(center[0] + math.cos(radians) * forward_offset),
+        round(center[1] + math.sin(radians) * forward_offset + 10 * zoom),
+    )
+    surface.blit(rotated_image, rotated_image.get_rect(center=weapon_center))
+
+
 def _cached_visibility_polygon(key, center_x, center_y, radius, **options):
-    cache_key = (key, round(center_x / 16), round(center_y / 16))
+    if len(key) > 2 and key[0] == "weapon" and key[2] == VISION_CIRCLE:
+        snapped_x = round(center_x / 4) * 4
+        snapped_y = round(center_y / 4) * 4
+    else:
+        snapped_x = round(center_x)
+        snapped_y = round(center_y)
+    cache_key = (key, snapped_x, snapped_y)
     polygon = visibility_polygon_cache.get(cache_key)
     if polygon is None:
-        snapped_x = round(center_x / 16) * 16
-        snapped_y = round(center_y / 16) * 16
         polygon = TileGene.get_visibility_polygon(
             snapped_x,
             snapped_y,
@@ -302,6 +323,8 @@ wards = []
 active_rune_tile = None
 rune_alerts = []
 revive_token = 0
+deathmatch_revive_armed = False
+processed_revive_effect_ids = set()
 heal_token = 0
 pending_heal_amount = 0
 debug_mode = False
@@ -314,6 +337,10 @@ pending_supply_spawn_requests = []
 pending_supply_collect_ids = set()
 processed_supply_collection_ids = set()
 next_supply_drop_at = pygame.time.get_ticks() + SUPPLY_DROP_INTERVAL_MS
+next_unique_supply_drop_at = pygame.time.get_ticks() + UNIQUE_SUPPLY_INTERVAL_MS
+announced_unique_supply_ids = set()
+unique_supply_notice = ""
+unique_supply_notice_until = 0
 bush_entered_at = 0
 next_bush_leaf_at = 0
 pending_treasure_destroys = []
@@ -340,6 +367,7 @@ vision_overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
 base_vision_overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
 result_overlays = {}
 result_text_cache = {}
+unique_supply_banner_cache = {}
 game_start_banner = BannerFont.render("게임 시작!", True, (255, 225, 120))
 SUPPLY_COLORS = {
     "heal": (100, 255, 130),
@@ -350,9 +378,10 @@ SUPPLY_COLORS = {
     "flare_ammo": (255, 135, 65),
     "flare_skill": (200, 125, 255),
 }
-# 방향과 모양이 크게 바뀔 때만 시야 폴리곤을 다시 계산합니다.
+# 픽셀 위치와 정확한 방향이 바뀌면 시야 폴리곤을 다시 계산합니다.
 visibility_polygon_cache = {}
 mouse_fire_hold = False
+flare_skill_used = False
 aim_lock_until = 0
 aim_locked_pos = None
 weapon_fire_until = 0
@@ -401,6 +430,43 @@ def spawn_supply_drop(now):
             "warning_ms": SUPPLY_DROP_WARNING_MS,
             "lifetime_ms": SUPPLY_DROP_LIFETIME_MS,
         })
+
+
+def spawn_unique_supply_drop(now):
+    """주기적으로 유니크 보급품의 안전한 위치를 5초 전에 서버에 알립니다."""
+    if not server_players or min(server_players, key=str) != str(network.player_id):
+        return False
+    spawn_tile = TileGene.find_safe_spawn(
+        2,
+        TileGene.map_width - 3,
+        2,
+        TileGene.map_height - 3,
+        rng=random.SystemRandom(),
+    )
+    if not spawn_tile:
+        raise RuntimeError("유니크 보급품을 배치할 안전한 위치를 찾지 못했습니다.")
+    tile_x, tile_y = spawn_tile
+    pending_supply_spawn_requests.append({
+        "x": (tile_x + 0.5) * TileGene.tile_size,
+        "y": (tile_y + 0.5) * TileGene.tile_size,
+        "type": "special_weapon",
+        "warning_ms": UNIQUE_SUPPLY_WARNING_MS,
+        "lifetime_ms": UNIQUE_SUPPLY_WARNING_MS + SUPPLY_DROP_LIFETIME_MS,
+    })
+    return True
+
+
+def get_unique_supply_countdown(now):
+    """가장 가까운 유니크 보급의 경고 또는 다음 주기까지 남은 초를 계산합니다."""
+    warning_drops = [
+        supply for supply in supply_drops
+        if supply.get("type") == "special_weapon" and now < supply["warning_until"]
+    ]
+    if warning_drops:
+        remaining_ms = min(supply["warning_until"] - now for supply in warning_drops)
+    else:
+        remaining_ms = max(0, next_unique_supply_drop_at - now)
+    return max(0, (round(remaining_ms) + 999) // 1000)
 
 
 def launch_flare_supplies(center_x, center_y, now):
@@ -462,6 +528,20 @@ def launch_flare_supplies(center_x, center_y, now):
     )
 
 
+def grant_starting_flare_skill():
+    """경기 시작 때 일회용 플레어 스킬을 지급하고 빈 퀵슬롯에 장착합니다."""
+    if flare_skill_used or "플레어건" in owned_skills:
+        return
+    owned_skills.add("플레어건")
+    empty_slot = next(
+        (slot for slot in quick_slots if slot.assigned_skill is None),
+        None,
+    )
+    if empty_slot:
+        empty_slot.assigned_skill = "플레어건"
+    refresh_skill_inventory()
+
+
 def apply_supply_reward(reward_type):
     """보급품 종류에 따라 회복, 스킬, 탄약 또는 특수 무기를 지급합니다."""
     # 보급품은 서버에 아이템 자체를 동기화하지 않고,
@@ -470,18 +550,31 @@ def apply_supply_reward(reward_type):
     center_x, center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
-    available = [name for name in SKILL_BOOK if name not in owned_skills]
+    available = [
+        name for name in SKILL_BOOK
+        if name not in owned_skills and name != "플레어건"
+    ]
     if reward_type == "heal":
         healing_item_count += 1
         message = f"회복 아이템 획득: 보유 {healing_item_count}개"
         color = (100, 255, 130)
    
     elif reward_type == "flare_ammo":
-        weapon_state.reserve_ammo += FLARE_SUPPLY_AMMO_PER_DROP
+        ammo_weapon_id = (
+            main_weapon_id
+            if weapon_state.weapon_id in MELEE_WEAPON_IDS
+            else weapon_state.weapon_id
+        )
+        weapon_state.add_reserve_ammo(FLARE_SUPPLY_AMMO_PER_DROP, ammo_weapon_id)
         message = f"탄약 보급품 획득: 예비 탄약 +{FLARE_SUPPLY_AMMO_PER_DROP}"
         color = (255, 135, 65)
     elif reward_type == "flare_skill":
-        weapon_state.reserve_ammo += FLARE_SUPPLY_AMMO_PER_DROP
+        ammo_weapon_id = (
+            main_weapon_id
+            if weapon_state.weapon_id in MELEE_WEAPON_IDS
+            else weapon_state.weapon_id
+        )
+        weapon_state.add_reserve_ammo(FLARE_SUPPLY_AMMO_PER_DROP, ammo_weapon_id)
         if available and random.random() >= FLARE_SKILL_HEAL_CHANCE:
             obtained_skill = random.choice(available)
             add_skill_to_inventory(obtained_skill)
@@ -556,26 +649,38 @@ def collect_treasure(tile_position, from_bullet=False):
 
     pending_treasure_destroys.append(tile_position)
     play_effect_sound(chest_sound, "chest_open.wav")
-    available = [name for name in SKILL_BOOK if name not in owned_skills]
+    available = [
+        name for name in SKILL_BOOK
+        if name not in owned_skills and name != "플레어건"
+    ]
     chest_label = "보물상자:" if from_bullet else "보물상자 획득:"
     if random.random() < CHEST_SKILL_REWARD_CHANCE and available:
         obtained_skill = random.choice(available)
         add_skill_to_inventory(obtained_skill)
         system_message = f"{chest_label} [{obtained_skill}] 스킬을 얻었습니다."
     else:
-        weapon_state.magazine_ammo = weapon_state.config.magazine_size
-        weapon_state.reserve_ammo += weapon_state.config.magazine_size
+        ammo_weapon_id = (
+            main_weapon_id
+            if weapon_state.weapon_id in MELEE_WEAPON_IDS
+            else weapon_state.weapon_id
+        )
+        weapon_config = WEAPONS[ammo_weapon_id]
+        weapon_state.refill_magazine(ammo_weapon_id)
+        weapon_state.add_reserve_ammo(
+            weapon_config.magazine_size,
+            ammo_weapon_id,
+        )
         weapon_state.reloading = False
         preserve_magazine_after_chest = True
         system_message = (
-            f"{chest_label} 탄창 회복, 예비 탄약 +{weapon_state.config.magazine_size}"
+            f"{chest_label} 탄창 회복, 예비 탄약 +{weapon_config.magazine_size}"
         )
     return True
 
 
 def use_revive_skill():
     """퀵슬롯에 장착된 부활의 차 스킬을 사망 순간 한 번 소모합니다."""
-    global revive_token, system_message
+    global revive_token, system_message, screen_shake
     revive_slot = next(
         (slot for slot in quick_slots if slot.assigned_skill == "부활의 차"),
         None,
@@ -599,8 +704,46 @@ def use_revive_skill():
         lifetime=900,
         size=6,
     )
+    particles.ring(
+        my_player.X + my_player.rect.width / 2,
+        my_player.Y + my_player.rect.height / 2,
+        (255, 245, 180),
+        count=48,
+        radius=95,
+        lifetime=1100,
+        size=5,
+    )
+    particles.ring(
+        my_player.X + my_player.rect.width / 2,
+        my_player.Y + my_player.rect.height / 2,
+        (255, 190, 100),
+        count=28,
+        radius=52,
+        lifetime=700,
+        size=4,
+    )
+    screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 5)
     system_message = "부활의 차 스킬이 발동했습니다."
     return True
+
+
+def play_revive_effect(x, y):
+    particles.emit(
+        x, y, (255, 215, 90), count=90, speed=190, lifetime=1500, size=7,
+        gravity=-45,
+    )
+    particles.emit(
+        x, y, (255, 250, 210), count=55, speed=145, lifetime=1200, size=5,
+    )
+    particles.ring(
+        x, y, (255, 245, 170), count=72, radius=175, lifetime=1300, size=7,
+    )
+    particles.ring(
+        x, y, (255, 170, 55), count=52, radius=105, lifetime=950, size=6,
+    )
+    particles.ring(
+        x, y, (255, 255, 235), count=40, radius=55, lifetime=650, size=5,
+    )
 
 
 skill_sounds = {
@@ -625,7 +768,7 @@ vision_shape_override = None
 
 def reset_match_state(regenerate_world=False, independent_world=False):
     """새 경기에 들어갈 때 이전 경기의 클라이언트 상태를 초기화합니다."""
-    global match_result, result_started_at, system_message, revive_token, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
+    global match_result, result_started_at, system_message, revive_token, deathmatch_revive_armed, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
     global pending_heal_amount, vision_skill_until, shield_until, haste_until
     global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
     global teleport_placements_remaining, third_weapon_id, special_weapon_crate
@@ -640,8 +783,11 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     global game_start_banner_until
     global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
     global healing_item_count, mouse_fire_hold
+    global announced_unique_supply_ids
     global local_kill_count, match_elapsed_ms, respawn_ms_remaining
-    global spawn_tiles
+    global flare_skill_used
+    global next_unique_supply_drop_at, unique_supply_notice, unique_supply_notice_until
+    global spawn_tiles, spawn_tile_x, spawn_tile_y
     if regenerate_world:
         world_seed = (
             random.SystemRandom().getrandbits(32)
@@ -666,6 +812,7 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     processed_bullet_events.clear()
     processed_damage_event_ids.clear()
     processed_kill_event_ids.clear()
+    processed_revive_effect_ids.clear()
     particles.particles.clear()
     server_players.clear()
     skill_cooldowns.clear()
@@ -675,6 +822,7 @@ def reset_match_state(regenerate_world=False, independent_world=False):
         slot.assigned_skill = None
     refresh_skill_inventory()
     revive_token = heal_token = pending_heal_amount = 0
+    deathmatch_revive_armed = False
     healing_item_count = 0
     vision_skill_until = shield_until = haste_until = stealth_until = 0
     stealth_token = 0
@@ -689,12 +837,17 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     local_stun_until = 0
     zone_elapsed_ms = 0
     next_supply_drop_at = pygame.time.get_ticks() + SUPPLY_DROP_INTERVAL_MS
+    next_unique_supply_drop_at = pygame.time.get_ticks() + UNIQUE_SUPPLY_INTERVAL_MS
+    announced_unique_supply_ids.clear()
+    unique_supply_notice = ""
+    unique_supply_notice_until = 0
     last_effect_tick = pygame.time.get_ticks()
     match_result = None
     result_started_at = 0
     local_kill_count = 0
     match_elapsed_ms = 0
     respawn_ms_remaining = 0
+    flare_skill_used = False
     send_data["kill_count"] = 0
     game_start_banner_until = 0
     system_message = ""
@@ -831,6 +984,7 @@ def start_practice_match():
         force=True,
     )
     owned_skills.update(SKILL_BOOK)
+    grant_starting_flare_skill()
     refresh_skill_inventory()
     game_start_banner_until = pygame.time.get_ticks() + 2000
     ScreenState = "PracticeView"
@@ -902,6 +1056,7 @@ def LoadingView():
     global running, ScreenState, game_start_banner_until, debug_mode
     global local_match, selected_game_mode
     global lobby_notice, lobby_notice_until
+    global next_unique_supply_drop_at, unique_supply_notice, unique_supply_notice_until
     global match_spawn_index
     debug_mode = selected_game_mode == GAME_MODE_DEBUG
     if debug_mode:
@@ -915,6 +1070,7 @@ def LoadingView():
                 "mode": selected_game_mode,
                 "debug_enabled": debug_mode,
                 "name": player_name.strip() or default_player_name(),
+                "spawn_tiles": spawn_tiles if selected_game_mode == GAME_MODE_DEATHMATCH else [],
             }))
             response = pickle.loads(network.client.recv(4096))
             if response.get("type") == "lobby_status":
@@ -943,6 +1099,7 @@ def LoadingView():
 
     if network.lobby_status.get("started") and network.lobby_status.get("accepted", True):
         reset_match_state(regenerate_world=True)
+        grant_starting_flare_skill()
         if debug_mode:
             owned_skills.update(SKILL_BOOK)
             refresh_skill_inventory()
@@ -1147,7 +1304,7 @@ def _finish_teleport_cycle(now):
 
 
 def activate_quick_slot(key, reinstall=False):
-    global system_message, vision_shape_override, vision_skill_until, shield_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining
+    global system_message, vision_shape_override, vision_skill_until, shield_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining, flare_skill_used, revive_token, deathmatch_revive_armed, screen_shake
     key_name = pygame.key.name(key).upper()
     slot = next((slot for slot in quick_slots if slot.key_name == key_name), None)
     if not slot or not slot.assigned_skill:
@@ -1156,26 +1313,65 @@ def activate_quick_slot(key, reinstall=False):
 
     skill_name = slot.assigned_skill
     if skill_name == "부활의 차":
+        if (
+            selected_game_mode == GAME_MODE_DEATHMATCH
+            and not (practice_mode or local_match)
+        ):
+            owned_skills.remove(skill_name)
+            for revive_slot in quick_slots:
+                if revive_slot.assigned_skill == skill_name:
+                    revive_slot.assigned_skill = None
+            refresh_skill_inventory()
+            revive_token += 1
+            send_data["revive_token"] = revive_token
+            send_data["revive_request"] = True
+            deathmatch_revive_armed = True
+            my_player.Hp = my_player.MaxHp
+            effect_x = my_player.X + my_player.rect.width / 2
+            effect_y = my_player.Y + my_player.rect.height / 2
+            play_revive_effect(effect_x, effect_y)
+            screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 12)
+            system_message = "부활의 차 발동! 체력을 완전히 회복하고 사망 1회를 막습니다."
+            return
         system_message = "부활의 차는 장착 중 사망하면 자동 발동합니다."
         return
+    if skill_name == "플레어건" and flare_skill_used:
+        owned_skills.discard(skill_name)
+        slot.assigned_skill = None
+        refresh_skill_inventory()
+        system_message = "플레어건은 경기당 한 번만 사용할 수 있습니다."
+        return
     now = pygame.time.get_ticks()
+    deathmatch_teleport = (
+        skill_name == "텔포"
+        and selected_game_mode == GAME_MODE_DEATHMATCH
+        and not (practice_mode or local_match)
+    )
     if (
         skill_name == "텔포"
+        and not deathmatch_teleport
         and teleport_anchor is None
         and now >= skill_cooldowns.get(skill_name, 0)
         and teleport_placements_remaining == 0
     ):
         teleport_placements_remaining = TELEPORT_MAX_PLACEMENTS
-    if skill_name == "텔포" and teleport_anchor is None and now < skill_cooldowns.get(skill_name, 0):
+    if (
+        skill_name == "텔포"
+        and (deathmatch_teleport or teleport_anchor is None)
+        and now < skill_cooldowns.get(skill_name, 0)
+    ):
         remain = (skill_cooldowns[skill_name] - now) / 1000
         system_message = f"텔포 재사용 대기: {remain:.1f}초"
         return
-    if skill_name != "텔포" and now < skill_cooldowns.get(skill_name, 0):
+    if (
+        skill_name not in ("텔포", "플레어건")
+        and now < skill_cooldowns.get(skill_name, 0)
+    ):
         remain = (skill_cooldowns[skill_name] - now) / 1000
         system_message = f"{skill_name} 재사용 대기: {remain:.1f}초"
         return
 
-    if skill_name != "텔포":
+    if skill_name not in ("텔포", "플레어건"):
         cooldown = STEALTH_COOLDOWN_MS if skill_name == "은신" else SKILL_COOLDOWN_MS
         skill_cooldowns[skill_name] = now + cooldown
     play_effect_sound(skill_sounds.get(skill_name), skill_name)
@@ -1230,17 +1426,48 @@ def activate_quick_slot(key, reinstall=False):
         particles.ring(
             vision_center_x,
             vision_center_y,
-            (120, 220, 255), count=32, radius=140, lifetime=850, size=5,
+            (120, 220, 255), count=40, radius=140, lifetime=900, size=5,
         )
-        system_message = "3초 동안 원형으로 넓게 봅니다."
+        particles.ring(
+            vision_center_x,
+            vision_center_y,
+            (190, 245, 255), count=28, radius=80, lifetime=700, size=4,
+        )
+        particles.emit(
+            vision_center_x,
+            vision_center_y,
+            (150, 225, 255),
+            count=26,
+            speed=95,
+            lifetime=1000,
+            size=4,
+            gravity=-30,
+        )
+        system_message = "3초 동안 최대 사거리의 360도 시야를 확보합니다."
     elif skill_name == "보호막":
         shield_until = now + SHIELD_DURATION_MS
+        my_player.is_dashing = False
+        my_player.is_moving = False
         particles.ring(
             my_player.X + my_player.rect.width / 2,
             my_player.Y + my_player.rect.height / 2,
             (100, 220, 255), count=28, radius=55, lifetime=700, size=5,
         )
-        system_message = "5초 동안 피해를 받지 않습니다."
+        particles.ring(
+            my_player.X + my_player.rect.width / 2,
+            my_player.Y + my_player.rect.height / 2,
+            (190, 250, 255), count=36, radius=78, lifetime=900, size=4,
+        )
+        particles.emit(
+            my_player.X + my_player.rect.width / 2,
+            my_player.Y + my_player.rect.height / 2,
+            (100, 220, 255),
+            count=20,
+            speed=75,
+            lifetime=800,
+            size=4,
+        )
+        system_message = "3초 동안 피해를 받지 않지만 움직일 수 없습니다."
     elif skill_name == "은신":
         stealth_until = now + STEALTH_DURATION_MS
         stealth_token += 1
@@ -1263,6 +1490,11 @@ def activate_quick_slot(key, reinstall=False):
             my_player.Y + my_player.rect.height / 2,
             (225, 235, 255), count=18, speed=115, lifetime=900, size=3, gravity=-35,
         )
+        particles.ring(
+            my_player.X + my_player.rect.width / 2,
+            my_player.Y + my_player.rect.height / 2,
+            (170, 205, 255), count=44, radius=92, lifetime=950, size=4,
+        )
         system_message = "4.5초 동안 적에게 완전히 보이지 않습니다."
     elif skill_name == "와드":
         target_x, target_y = screen_to_world(*pygame.mouse.get_pos(), CameraPosX, CameraPosY, camera_zoom)
@@ -1277,6 +1509,45 @@ def activate_quick_slot(key, reinstall=False):
             wards.pop(0)
         particles.ring(target_x, target_y, (120, 240, 255), count=18, radius=28, lifetime=650, size=4)
         system_message = f"와드를 설치했습니다. 현재 {len(wards)}/{WARD_MAX_COUNT}개"
+    elif deathmatch_teleport:
+        if now < shield_until:
+            system_message = "보호막이 유지되는 동안에는 순간이동할 수 없습니다."
+            return
+        target_x, target_y = screen_to_world(
+            *pygame.mouse.get_pos(), CameraPosX, CameraPosY, camera_zoom
+        )
+        destination = my_player.rect.copy()
+        destination.center = (round(target_x), round(target_y))
+        if TileGene.check_collision(destination):
+            system_message = "벽이나 맵 밖으로는 순간이동할 수 없습니다."
+            return
+        old_x = my_player.X + my_player.rect.width / 2
+        old_y = my_player.Y + my_player.rect.height / 2
+        my_player.X = target_x - my_player.rect.width / 2
+        my_player.Y = target_y - my_player.rect.height / 2
+        my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
+        my_player._update_hitboxes()
+        particles.emit(
+            old_x, old_y, (180, 255, 180),
+            count=30, speed=110, lifetime=650, size=5,
+        )
+        particles.ring(
+            old_x, old_y, (180, 255, 180),
+            count=22, radius=42, lifetime=500, size=4,
+        )
+        particles.emit(
+            target_x, target_y, (180, 255, 180),
+            count=36, speed=120, lifetime=750, size=5,
+        )
+        particles.ring(
+            target_x, target_y, (210, 255, 210),
+            count=28, radius=52, lifetime=650, size=4,
+        )
+        skill_cooldowns["텔포"] = now + TELEPORT_COOLDOWN_MS
+        system_message = (
+            f"데스매치 순간이동: 지정한 위치로 이동했습니다. "
+            f"{TELEPORT_COOLDOWN_MS / 1000:g}초 후 다시 사용할 수 있습니다."
+        )
     elif skill_name == "텔포":
         if teleport_anchor is None or reinstall:
             if teleport_placements_remaining <= 0:
@@ -1316,6 +1587,18 @@ def activate_quick_slot(key, reinstall=False):
             else:
                 cooldown_message = f"남은 설치 횟수: {teleport_placements_remaining}"
             system_message = f"텔레포트했습니다. {cooldown_message}"
+    elif skill_name == "플레어건":
+        target_x, target_y = screen_to_world(
+            *pygame.mouse.get_pos(), CameraPosX, CameraPosY, camera_zoom
+        )
+        launch_flare_supplies(target_x, target_y, now)
+        flare_skill_used = True
+        owned_skills.discard(skill_name)
+        for quick_slot in quick_slots:
+            if quick_slot.assigned_skill == skill_name:
+                quick_slot.assigned_skill = None
+        refresh_skill_inventory()
+        system_message = "플레어건을 사용했습니다. 보급품 3개가 낙하합니다."
 
 def select_weapon(weapon_id):
     global system_message, vision_shape_override, main_weapon_id
@@ -1580,8 +1863,10 @@ def fire_knife():
             attacked_count += 1
             pending_hit_events.append({
                 "target_id": p_id,
+                "attacker_id": network.player_id,
                 "damage": config.damage,
                 "hit_part": "body",
+                "weapon_id": weapon_state.weapon_id,
             })
 
     start_x = max(0, int((center_x - knife_range) // TileGene.tile_size))
@@ -1664,6 +1949,26 @@ def fire_stun_bullet():
     )
     bullet.just_fired = True
     bullets.append(bullet)
+    muzzle_x = center_x + math.cos(angle) * 38
+    muzzle_y = center_y + math.sin(angle) * 38
+    particles.emit(
+        muzzle_x,
+        muzzle_y,
+        (110, 225, 255),
+        count=16,
+        speed=95,
+        lifetime=420,
+        size=4,
+    )
+    particles.ring(
+        muzzle_x,
+        muzzle_y,
+        (195, 250, 255),
+        count=16,
+        radius=34,
+        lifetime=380,
+        size=3,
+    )
     weapon_state.consume_round()
     system_message = "기절탄을 발사했습니다."
     return True
@@ -1719,17 +2024,6 @@ def fire_bullet():
     muzzle_y = center_y + math.sin(base_angle) * 40
     weapon_state.consume_round()
     animation_started_at = pygame.time.get_ticks()
-    if weapon_state.weapon_id == "flaregun":
-        launch_flare_supplies(target_world_x, target_world_y, animation_started_at)
-        third_weapon_id = None
-        weapon_state.select(main_weapon_id)
-        weapon_state.reset_weapon_ammo("flaregun")
-        particles.emit(
-            muzzle_x, muzzle_y, (255, 225, 125),
-            count=28, speed=150, lifetime=450, size=6,
-        )
-        system_message = "플레어건을 사용했습니다. 보급품 3개가 낙하합니다."
-        return
     weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
     weapon_smoke_until = animation_started_at + WEAPON_SMOKE_ANIMATION_MS
     particles.emit(muzzle_x, muzzle_y, (255, 220, 100), count=10, speed=70, lifetime=220, size=4)
@@ -1816,8 +2110,11 @@ def GameFrame(practice_mode=False):
     global local_kill_count, match_elapsed_ms, respawn_ms_remaining
     global hurt_flash_started_at
     global bush_entered_at, next_bush_leaf_at
+    global next_unique_supply_drop_at
     global selected_game_mode, debug_mode
     global lobby_notice, lobby_notice_until
+    global unique_supply_notice, unique_supply_notice_until
+    global deathmatch_revive_armed
 
     MousePos = pygame.mouse.get_pos()
     deathmatch = selected_game_mode == GAME_MODE_DEATHMATCH and not (practice_mode or local_match)
@@ -1867,7 +2164,7 @@ def GameFrame(practice_mode=False):
     my_player.sprint_speed = PLAYER_SPRINT_SPEED + haste_bonus
     my_player.dash_speed = PLAYER_DASH_SPEED + haste_bonus + knife_dash_bonus
     # 근접 무기 대시는 추가 속도만 적용하며, 지속 시간은 기본 대시와 같습니다.
-    if my_player.Hp > 0 and now >= local_stun_until:
+    if my_player.Hp > 0 and now >= local_stun_until and now >= shield_until:
         my_player.dash_duration = PLAYER_DASH_DURATION_MS + (
             KNIFE_DASH_DURATION_BONUS_MS
             if weapon_state.weapon_id in MELEE_WEAPON_IDS
@@ -1878,6 +2175,9 @@ def GameFrame(practice_mode=False):
             and pygame.mouse.get_pressed(3)[2]
         )
         my_player.handle_input(dash_requested)
+    elif now < shield_until:
+        my_player.is_dashing = False
+        my_player.is_moving = False
     weapon_state.update_reload()
 
     current_tile = (
@@ -1923,6 +2223,14 @@ def GameFrame(practice_mode=False):
     if now >= next_supply_drop_at:
         spawn_supply_drop(now)
         next_supply_drop_at = now + SUPPLY_DROP_INTERVAL_MS
+    if (
+        not practice_mode
+        and not local_match
+        and selected_game_mode != GAME_MODE_DEBUG
+        and now >= next_unique_supply_drop_at - UNIQUE_SUPPLY_WARNING_MS
+    ):
+        spawn_unique_supply_drop(now)
+        next_unique_supply_drop_at += UNIQUE_SUPPLY_INTERVAL_MS
 
     player_rect = my_player.rect
     collect_treasure(TileGene.treasure_at(player_rect))
@@ -1976,6 +2284,8 @@ def GameFrame(practice_mode=False):
                     "target_id": p_id,
                     "damage": BOMB_DAMAGE,
                     "hit_part": "body",
+                    "attacker_id": network.player_id,
+                    "weapon_id": weapon_state.weapon_id,
                 })
         if (practice_mode or debug_mode) and training_dummy is not None and training_dummy.Hp > 0:
             dummy_center_x = training_dummy.rect.centerx
@@ -2024,10 +2334,21 @@ def GameFrame(practice_mode=False):
                 leaf_x,
                 leaf_y,
                 random.choice(((115, 170, 65), (160, 195, 90))),
-                count=2,
-                speed=18,
-                lifetime=620,
+                count=5,
+                speed=62,
+                lifetime=1050,
+                size=3,
+                gravity=-24,
+            )
+            particles.emit(
+                my_player.rect.centerx + random.randint(-18, 18),
+                my_player.rect.centery + random.randint(-12, 12),
+                (190, 215, 115),
+                count=3,
+                speed=42,
+                lifetime=850,
                 size=2,
+                gravity=-18,
             )
             next_bush_leaf_at = now + BUSH_LEAF_INTERVAL_MS
     else:
@@ -2046,7 +2367,7 @@ def GameFrame(practice_mode=False):
     send_data["revive_armed"] = any(
         slot.assigned_skill == "부활의 차"
         for slot in quick_slots
-    )
+    ) or deathmatch_revive_armed
     send_data["hit_events"] = list(pending_hit_events) if my_player.Hp > 0 else []
     send_data["supply_spawn_requests"] = list(pending_supply_spawn_requests)
     send_data["supply_collect_ids"] = list(pending_supply_collect_ids)
@@ -2100,6 +2421,18 @@ def GameFrame(practice_mode=False):
                     "started_at": now,
                 })
             kill_feed = [event for event in kill_feed if now - event["started_at"] < 5000][-5:]
+            for revive_event in event_snapshot.get("revive_events", []):
+                event_id = revive_event.get("event_id")
+                if event_id is None or event_id in processed_revive_effect_ids:
+                    continue
+                processed_revive_effect_ids.add(event_id)
+                effect_x = revive_event.get("x", 0) + my_player.rect.width / 2
+                effect_y = revive_event.get("y", 0) + my_player.rect.height / 2
+                play_revive_effect(effect_x, effect_y)
+                if str(revive_event.get("player_id")) == str(network.player_id):
+                    deathmatch_revive_armed = False
+                    screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 12)
+                    system_message = "부활의 차가 치명상을 막았습니다!"
             for damage_event in event_snapshot.get("damage_events", []):
                 event_id = damage_event.get("event_id")
                 if event_id in processed_damage_event_ids:
@@ -2113,14 +2446,35 @@ def GameFrame(practice_mode=False):
                         "posY": my_player.Y,
                     }
                 if target is not None:
+                    damage_x = target.get("posX", my_player.X) + my_player.rect.width / 2
+                    damage_y = target.get("posY", my_player.Y) + my_player.rect.height / 2
                     damage_numbers.append({
-                        "x": target.get("posX", my_player.X) + my_player.rect.width / 2,
+                        "x": damage_x,
                         "y": target.get("posY", my_player.Y),
                         "damage": damage_event.get("damage", 0),
                         "color": (255, 235, 100) if damage_event.get("hit_part") == "head" else (255, 255, 255),
                         "started_at": now,
                         "lifetime": DAMAGE_TEXT_LIFETIME_MS,
                     })
+                    if damage_event.get("stun_ms", 0) > 0:
+                        particles.emit(
+                            damage_x,
+                            damage_y,
+                            (105, 220, 255),
+                            count=22,
+                            speed=85,
+                            lifetime=600,
+                            size=4,
+                        )
+                        particles.ring(
+                            damage_x,
+                            damage_y,
+                            (180, 245, 255),
+                            count=24,
+                            radius=42,
+                            lifetime=650,
+                            size=3,
+                        )
                 if str(target_id) == str(network.player_id):
                     hurt_flash_started_at = now
                     screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 7)
@@ -2145,6 +2499,14 @@ def GameFrame(practice_mode=False):
                 synchronized_supply_drops = []
                 for supply in own_snapshot.get("supply_drops", []):
                     warning_remaining_ms = supply.get("warning_remaining_ms", 0)
+                    if (
+                        supply.get("type") == "special_weapon"
+                        and warning_remaining_ms <= 0
+                        and supply.get("id") not in announced_unique_supply_ids
+                    ):
+                        announced_unique_supply_ids.add(supply.get("id"))
+                        unique_supply_notice = "유니크 보급품이 맵에 떨어졌습니다!"
+                        unique_supply_notice_until = now + 3500
                     synchronized_supply_drops.append({
                         **supply,
                         "fall_started_at": now - (
@@ -2193,11 +2555,16 @@ def GameFrame(practice_mode=False):
                 respawn_ms_remaining = int(own_snapshot.get("respawn_ms_remaining", 0))
                 was_dead = my_player.Hp <= 0
                 my_player.Hp = own_snapshot.get("hp", my_player.Hp)
+                if deathmatch:
+                    deathmatch_revive_armed = bool(
+                        own_snapshot.get("revive_armed", False)
+                    )
                 if deathmatch and was_dead and my_player.Hp > 0:
                     my_player.X = own_snapshot.get("posX", my_player.X)
                     my_player.Y = own_snapshot.get("posY", my_player.Y)
                     my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
                     my_player._update_hitboxes()
+                    weapon_state.refill_magazine(main_weapon_id)
                 local_stun_until = now + own_snapshot.get("stun_ms_remaining", 0)
                 weapon_id = own_snapshot.get("weapon_id", weapon_state.weapon_id)
                 if weapon_id == weapon_state.weapon_id:
@@ -2349,16 +2716,16 @@ def GameFrame(practice_mode=False):
 
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
     if vision_skill_until > now:
-        draw_skill_range(
+        vision_screen_x, vision_screen_y = world_to_screen(
+            player_world_x, player_world_y, CameraPosX, CameraPosY, camera_zoom
+        )
+        vision_screen_radius = max(1, round(VISION_SKILL_RADIUS * camera_zoom))
+        pygame.draw.circle(
             display,
-            player_world_x,
-            player_world_y,
-            VISION_SKILL_RADIUS,
-            CameraPosX,
-            CameraPosY,
-            camera_zoom,
             (100, 210, 255),
-            1.0 + 0.015 * math.sin(now * 0.006),
+            (round(vision_screen_x), round(vision_screen_y)),
+            vision_screen_radius,
+            max(1, round(2 * camera_zoom)),
         )
     if (practice_mode or debug_mode) and not easter_egg_found:
         map_center_x = TileGene.map_width * TileGene.tile_size / 2
@@ -2413,9 +2780,11 @@ def GameFrame(practice_mode=False):
                     hit_part = "head" if head.colliderect(bullet.rect) else "body"
                     pending_hit_events.append({
                         "target_id": p_id,
+                        "attacker_id": bullet.owner_id,
                         "damage": bullet.damage,
                         "hit_part": hit_part,
                         "stun_ms": bullet.stun_ms,
+                        "weapon_id": bullet.weapon_id,
                     })
                     bullet.is_active = False
                     impact_color = (100, 225, 255) if bullet.stun_ms else (255, 70, 70)
@@ -2481,6 +2850,7 @@ def GameFrame(practice_mode=False):
                 speed=config.bullet_speed,
                 hold_ms=bullet_info.get("hold_ms", 45),
             )
+            enemy_bullet.source_bullet_event_id = event_id
             remote_bullets.append(enemy_bullet)
 
     for bullet in remote_bullets:
@@ -2517,9 +2887,14 @@ def GameFrame(practice_mode=False):
             if hit_part:
                 pending_hit_events.append({
                     "target_id": network.player_id,
+                    "attacker_id": bullet.owner_id,
                     "damage": bullet.damage,
                     "hit_part": hit_part,
                     "stun_ms": bullet.stun_ms,
+                    "weapon_id": bullet.weapon_id,
+                    "source_bullet_event_id": getattr(
+                        bullet, "source_bullet_event_id", None
+                    ),
                 })
                 bullet.is_active = False
     remote_bullets = [b for b in remote_bullets if b.is_active]
@@ -2583,17 +2958,28 @@ def GameFrame(practice_mode=False):
                 if melee_frames
                 else IML.GetWeaponImage(server_weapon_id)
             )
+            if other_weapon_image is not None:
+                _draw_melee_weapon(
+                    display,
+                    other_weapon_image,
+                    (other_center_x, other_center_y),
+                    p_info["angle"],
+                    camera_zoom,
+                )
         else:
             other_weapon_image = IML.GetWeaponImage(server_weapon_id)
-        if server_weapon_id in ("pistol", *MELEE_WEAPON_IDS):
-            other_weapon_image = pygame.transform.flip(other_weapon_image, True, False)
-        other_gun = other_weapon_image if camera_zoom == 1.0 else pygame.transform.scale(
-            other_weapon_image, (round(other_weapon_image.get_width() * camera_zoom), round(other_weapon_image.get_height() * camera_zoom))
-        )
-        other_rotated_gun = pygame.transform.rotate(other_gun, -p_info["angle"])
-        other_gun_rect = other_rotated_gun.get_rect()
-        other_gun_rect.center = (other_center_x, other_center_y)
-        display.blit(other_rotated_gun, other_gun_rect)
+            if other_weapon_image is not None:
+                if server_weapon_id == "pistol":
+                    other_weapon_image = pygame.transform.flip(
+                        other_weapon_image, True, False
+                    )
+                other_gun = other_weapon_image if camera_zoom == 1.0 else pygame.transform.scale(
+                    other_weapon_image, (round(other_weapon_image.get_width() * camera_zoom), round(other_weapon_image.get_height() * camera_zoom))
+                )
+                other_rotated_gun = pygame.transform.rotate(other_gun, -p_info["angle"])
+                other_gun_rect = other_rotated_gun.get_rect()
+                other_gun_rect.center = (other_center_x, other_center_y)
+                display.blit(other_rotated_gun, other_gun_rect)
         other_name = GuiFont.render(str(p_info.get("name", f"P{p_id}")), True, (255, 230, 160))
         display.blit(other_name, other_name.get_rect(midbottom=(round(other_center_x), round(other_screen_y - 6))))
 
@@ -2624,20 +3010,12 @@ def GameFrame(practice_mode=False):
                 else (melee_frames[0] if melee_frames else IML.GetWeaponImage(weapon_state.weapon_id))
             )
             if melee_image is not None:
-                melee_image = _scale_cached(
+                _draw_melee_weapon(
+                    display,
                     melee_image,
-                    (
-                        max(1, round(melee_image.get_width() * camera_zoom)),
-                        max(1, round(melee_image.get_height() * camera_zoom)),
-                    ),
-                )
-                melee_image = pygame.transform.flip(melee_image, True, False)
-                melee_image = pygame.transform.rotate(melee_image, -Weapon_Angle)
-                display.blit(
-                    melee_image,
-                    melee_image.get_rect(
-                        center=(player_center_screen_x, player_center_screen_y)
-                    ),
+                    (player_center_screen_x, player_center_screen_y),
+                    Weapon_Angle,
+                    camera_zoom,
                 )
         else:
             display.blit(rotated_shotgun, Shotgun_rect)
@@ -2690,10 +3068,15 @@ def GameFrame(practice_mode=False):
             camera_zoom,
         )
 
-    # 위치를 16픽셀, 방향을 8도 단위로 묶어 벽 그림자 계산을 재사용합니다.
+    # 픽셀 위치와 정확한 조준 방향을 사용해 그림자가 움직임을 따라가게 합니다.
+    vision_angle = (
+        None
+        if current_vision_shape == VISION_CIRCLE
+        else round(Weapon_Angle)
+    )
     polygon_cache_key = (
         "weapon",
-        round(Weapon_Angle / 8),
+        vision_angle,
         current_vision_shape,
         current_vision_radius,
         current_vision.vision_fov,
@@ -2705,9 +3088,10 @@ def GameFrame(practice_mode=False):
         player_world_y,
         current_vision_radius,
         vision_shape=current_vision_shape,
-        direction_angle=round(Weapon_Angle / 8) * 8,
+        direction_angle=vision_angle or 0,
         fov_angle=current_vision.vision_fov,
         vision_width=current_vision_width,
+        ray_samples=24 if current_vision_shape == VISION_CIRCLE else None,
     )
     if visibility_polygon:
         # 월드 폴리곤을 현재 카메라 좌표로 변환해 어두운 레이어를 뚫습니다.
@@ -3006,6 +3390,12 @@ def GameFrame(practice_mode=False):
         rune_alerts,
         MagneticZoneState if zone_enabled else None,
         zone_elapsed_ms,
+        supply_drops,
+        (
+            get_unique_supply_countdown(now)
+            if not practice_mode and not local_match and selected_game_mode != GAME_MODE_DEBUG
+            else None
+        ),
     )
     kill_feed = [
         event for event in kill_feed
@@ -3051,6 +3441,40 @@ def GameFrame(practice_mode=False):
         remaining = game_start_banner_until - now
         game_start_banner.set_alpha(min(255, max(0, remaining * 2)))
         display.blit(game_start_banner, game_start_banner.get_rect(center=(ScreenX // 2, 150)))
+    unique_warning = next(
+        (
+            supply for supply in supply_drops
+            if supply.get("type") == "special_weapon" and now < supply["warning_until"]
+        ),
+        None,
+    )
+    unique_message = ""
+    if unique_warning is not None:
+        remaining_seconds = max(
+            1,
+            (round(unique_warning["warning_until"] - now) + 999) // 1000,
+        )
+        unique_message = f"유니크 보급품이 곧 도착합니다 · {remaining_seconds}초"
+    elif now < unique_supply_notice_until:
+        unique_message = unique_supply_notice
+    if unique_message:
+        cached_banners = unique_supply_banner_cache.get(unique_message)
+        if cached_banners is None:
+            unique_banner = KillFeedFont.render(
+                unique_message, True, (255, 230, 125)
+            )
+            shadow = KillFeedFont.render(unique_message, True, (20, 20, 15))
+            if len(unique_supply_banner_cache) >= 8:
+                unique_supply_banner_cache.clear()
+            unique_supply_banner_cache[unique_message] = (unique_banner, shadow)
+        else:
+            unique_banner, shadow = cached_banners
+        unique_banner_rect = unique_banner.get_rect(
+            center=(ScreenX // 2, ScreenY // 2 - 120)
+        )
+        for offset in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+            display.blit(shadow, unique_banner_rect.move(*offset))
+        display.blit(unique_banner, unique_banner_rect)
     ui_x = 30
     ui_y = 80  
     draw_health_bar(

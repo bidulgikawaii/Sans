@@ -284,10 +284,10 @@ def draw_ammo_status(
 def draw_ward(surface, ward_x, ward_y, camera_x, camera_y, zoom, image=None):
     screen_x = round((ward_x - camera_x) * zoom)
     screen_y = round((ward_y - camera_y) * zoom)
-    radius = max(6, round(12 * zoom))
+    radius = max(10, round(20 * zoom))
     pygame.draw.circle(surface, (120, 240, 255), (screen_x, screen_y), radius, 2)
     if image is not None:
-        size = max(1, round(radius * 1.5))
+        size = max(1, round(radius * 2))
         image_size = (size, size)
         cache_key = (id(image), image_size)
         scaled_image = _scaled_images.get(cache_key)
@@ -420,7 +420,12 @@ def draw_supply_drop(surface, supply, camera_x, camera_y, zoom, colors, now):
         font_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"
         )
-        label = _get_font(font_path, 26).render("보급품 낙하", True, (255, 240, 150))
+        warning_label = (
+            "유니크 보급품 낙하"
+            if supply["type"] == "special_weapon"
+            else "보급품 낙하"
+        )
+        label = _get_font(font_path, 26).render(warning_label, True, (255, 240, 150))
         surface.blit(label, label.get_rect(center=(x, max(18, y - round(165 * zoom)))))
     box = pygame.Rect(0, 0, max(22, round(36 * zoom)), max(18, round(28 * zoom)))
     box.center = (x, y)

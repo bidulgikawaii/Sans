@@ -1,3 +1,5 @@
+import math
+
 import pygame
 
 
@@ -70,6 +72,8 @@ class MiniMap:
         rune_alerts=None,
         magnetic_zone=None,
         zone_elapsed_ms=0,
+        supply_drops=None,
+        unique_supply_seconds=None,
     ):
         if self._map_surface is None or self._map_signature != self._get_map_signature():
             self._build_map_surface()
@@ -77,7 +81,7 @@ class MiniMap:
         panel_width = self.size[0] + 16
         panel_height = self.size[1] + 42
         panel_y = self.margin[1]
-        alert_width = 190 if magnetic_zone is not None else 0
+        alert_width = 190 if magnetic_zone is not None or unique_supply_seconds is not None else 0
         total_panel_width = panel_width + alert_width
         panel_x = surface.get_width() - total_panel_width - self.margin[0]
         panel_size = (total_panel_width, panel_height)
@@ -104,6 +108,13 @@ class MiniMap:
                 panel.blit(alert_font.render(f"다음 축소까지 {seconds}초", True, (255, 230, 170)), (12, 76))
             else:
                 panel.blit(alert_font.render("자기장 중앙 고정", True, (255, 170, 170)), (12, 48))
+        if unique_supply_seconds is not None:
+            alert_font = self.font
+            panel.blit(alert_font.render("유니크 보급품", True, (255, 220, 100)), (12, 118))
+            panel.blit(
+                alert_font.render(f"도착까지 {unique_supply_seconds}초", True, (255, 245, 180)),
+                (12, 146),
+            )
 
         marker_surface = self._marker_surface
         marker_surface.fill((0, 0, 0, 0))
@@ -146,6 +157,13 @@ class MiniMap:
             alert_position = self._world_to_map(alert_x, alert_y)
             pygame.draw.circle(marker_surface, (255, 225, 90), alert_position, 7, 2)
             pygame.draw.circle(marker_surface, (255, 245, 150), alert_position, 3)
+        for supply in supply_drops or ():
+            if supply.get("type") != "special_weapon":
+                continue
+            drop_position = self._world_to_map(supply["x"], supply["y"])
+            pulse = 8 + round(2 * math.sin(pygame.time.get_ticks() * 0.012))
+            pygame.draw.circle(marker_surface, (255, 225, 85), drop_position, pulse, 2)
+            pygame.draw.circle(marker_surface, (255, 245, 160), drop_position, 3)
         if training_dummy is not None and training_dummy.Hp > 0:
             dummy_x, dummy_y = self._world_to_map(
                 training_dummy.X + training_dummy.rect.width / 2,

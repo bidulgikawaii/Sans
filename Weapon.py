@@ -30,29 +30,29 @@ class WeaponConfig:
 # 무기 제원은 불변 설정으로 두고, 탄약·재장전 시각은 경기 중 상태 객체에서 따로 관리합니다.
 WEAPONS = {
     "pistol": WeaponConfig(
-        "권총", damage=12, magazine_size=14, reserve_ammo=42, fire_interval=0.22,
+        "권총", damage=12, magazine_size=14, reserve_ammo=120, fire_interval=0.22,
         reload_time=1.3, bullet_size=5, bullet_speed=20.0, recoil=2.0,
         bullet_lifetime=2.4, vision_radius=WEAPON_VISION_RADIUS, vision_fov=95, vision_width=240,
     ),
     "rifle": WeaponConfig(
-        "라이플", damage=10, magazine_size=24, reserve_ammo=72, fire_interval=0.16,
+        "라이플", damage=10, magazine_size=24, reserve_ammo=200, fire_interval=0.16,
         automatic=True,
         reload_time=2.1, bullet_size=4, bullet_speed=23.0, recoil=1.6,
         bullet_lifetime=2.6, vision_radius=WEAPON_VISION_RADIUS, vision_fov=75, vision_width=180,
     ),
     "shotgun": WeaponConfig(
-        "샷건", damage=7.0, magazine_size=5, reserve_ammo=15,
+        "샷건", damage=7.0, magazine_size=5, reserve_ammo=45,
         fire_interval=0.85, reload_time=3, bullet_size=4, bullet_speed=16.0,
         pellets=10, spread_degrees=40.0, recoil=6.0, bullet_lifetime=1.4,
         vision_radius=WEAPON_VISION_RADIUS, vision_fov=120, vision_width=300,
     ),
     "sniper": WeaponConfig(
-    "저격총", damage=70, magazine_size=10, reserve_ammo=15, fire_interval=1.0,
+    "저격총", damage=70, magazine_size=10, reserve_ammo=45, fire_interval=1.0,
         reload_time=3.1, bullet_size=3, bullet_speed=32.0, recoil=8.0,
         bullet_lifetime=3.8, vision_shape="cone", vision_radius=WEAPON_VISION_RADIUS, vision_fov=180.0, vision_width=420.0,
     ),
     "smg": WeaponConfig(
-        "기관단총", damage=5, magazine_size=50, reserve_ammo=100, fire_interval=0.08,
+        "기관단총", damage=5, magazine_size=50, reserve_ammo=250, fire_interval=0.08,
         automatic=True,
         reload_time=1.8, bullet_size=4, bullet_speed=17.0, recoil=1.2,
         bullet_lifetime=1.8, vision_radius=WEAPON_VISION_RADIUS, vision_fov=130, vision_width=260,
@@ -66,11 +66,6 @@ WEAPONS = {
 
 # 노란 특수상자에서 지급할 무기를 여기에 추가하면 일반 무기 목록에도 등록됩니다.
 SPECIAL_CRATE_WEAPONS = {
-    "flaregun": WeaponConfig(
-        "플레어건", damage=0, magazine_size=1, reserve_ammo=0,
-        fire_interval=0.8, bullet_size=5, bullet_speed=18.0,
-        vision_radius=WEAPON_VISION_RADIUS, vision_fov=110, vision_width=260,
-    ),
     "bat": WeaponConfig(
         "배트", damage=20, magazine_size=0, reserve_ammo=0,
         fire_interval=0.5, reload_time=0.0, projectile=False, recoil=0.0,
@@ -166,6 +161,43 @@ class WeaponState:
         )
         if self.weapon_id == weapon_id:
             self.magazine_ammo, self.reserve_ammo = self._ammo_by_weapon[weapon_id]
+        return True
+
+    def add_reserve_ammo(self, amount, weapon_id=None):
+        weapon_id = weapon_id or self.weapon_id
+        if weapon_id not in WEAPONS or amount <= 0:
+            return False
+        config = WEAPONS[weapon_id]
+        if weapon_id == self.weapon_id:
+            magazine_ammo, reserve_ammo = self.magazine_ammo, self.reserve_ammo
+        else:
+            magazine_ammo, reserve_ammo = self._ammo_by_weapon.get(
+                weapon_id,
+                (config.magazine_size, config.reserve_ammo),
+            )
+        self._ammo_by_weapon[weapon_id] = (
+            magazine_ammo,
+            reserve_ammo + amount,
+        )
+        if self.weapon_id == weapon_id:
+            self.magazine_ammo, self.reserve_ammo = self._ammo_by_weapon[weapon_id]
+        return True
+
+    def refill_magazine(self, weapon_id=None):
+        weapon_id = weapon_id or self.weapon_id
+        if weapon_id not in WEAPONS:
+            return False
+        config = WEAPONS[weapon_id]
+        if weapon_id == self.weapon_id:
+            reserve_ammo = self.reserve_ammo
+        else:
+            _, reserve_ammo = self._ammo_by_weapon.get(
+                weapon_id,
+                (config.magazine_size, config.reserve_ammo),
+            )
+        self._ammo_by_weapon[weapon_id] = (config.magazine_size, reserve_ammo)
+        if self.weapon_id == weapon_id:
+            self.magazine_ammo = config.magazine_size
         return True
 
     def can_fire(self):

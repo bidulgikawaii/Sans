@@ -2,6 +2,7 @@ import copy
 import socket
 import threading
 import pickle
+import random
 import time
 import uuid
 from Config import (
@@ -23,7 +24,6 @@ from Config import (
     MAX_PLAYERS,
     RUNE_ALERT_DURATION_MS,
     REVIVE_HP_RATIO,
-    SPAWN_POSITION_TILES,
 )
 from Weapon import WEAPONS
 from Lobby import LobbyState
@@ -53,6 +53,7 @@ def new_match_events():
     return {
         "bullet_events": [],
         "next_bullet_event_id": 1,
+        "verified_bullet_events": {},
         "destroyed_treasures": set(),
         "destroyed_furniture": set(),
         "rune_alerts": [],
@@ -61,6 +62,8 @@ def new_match_events():
         "kill_scores": {},
         "damage_events": [],
         "next_damage_event_id": 1,
+        "revive_events": [],
+        "next_revive_event_id": 1,
         "supply_drops": {},
         "next_supply_drop_id": 1,
         "supply_collection_events": [],
@@ -79,6 +82,22 @@ def append_kill_event(events, killer_id, target_id, killer_name, target_name, we
         "cause": cause,
     })
     events["next_kill_event_id"] += 1
+
+
+def consume_deathmatch_revive(events, player_id, player):
+    if player["hp"] > 0 or not player.get("revive_armed", False):
+        return False
+    player["hp"] = 1
+    player["revive_armed"] = False
+    events["revive_events"].append({
+        "event_id": events["next_revive_event_id"],
+        "player_id": player_id,
+        "x": player.get("posX", 0),
+        "y": player.get("posY", 0),
+    })
+    events["next_revive_event_id"] += 1
+    events["revive_events"] = events["revive_events"][-32:]
+    return True
 
 
 match_events = {mode.mode_id: new_match_events() for mode in get_game_modes()}
@@ -102,6 +121,30 @@ def update_player_count(delta):
 
 def generate_player_id():
     return str(uuid.uuid4())
+
+
+def validated_spawn_tiles(raw_tiles):
+    if not isinstance(raw_tiles, (list, tuple)):
+        return []
+    spawn_tiles = []
+    for raw_tile in raw_tiles:
+        if not isinstance(raw_tile, (list, tuple)) or len(raw_tile) != 2:
+            continue
+        x, y = raw_tile
+        if (
+            not isinstance(x, int)
+            or isinstance(x, bool)
+            or not isinstance(y, int)
+            or isinstance(y, bool)
+            or not (0 <= x < MAP_WIDTH_TILES - 2)
+            or not (0 <= y < MAP_HEIGHT_TILES - 2)
+        ):
+            continue
+        if (x, y) not in spawn_tiles:
+            spawn_tiles.append((x, y))
+        if len(spawn_tiles) >= MAX_PLAYERS:
+            break
+    return spawn_tiles
 
 
 def handle_client(conn, player_id):
@@ -134,6 +177,7 @@ def handle_client(conn, player_id):
         "wards": [],
         "revive_token": 0,
         "revive_armed": False,
+        "deathmatch_revive_used": False,
         "heal_token": 0,
         "shield_active": False,
         "rune_alerts": [],
@@ -143,6 +187,8 @@ def handle_client(conn, player_id):
         "zone_last_tick": time.monotonic(),
         "bullets": [],
         "deathmatch_respawn_at": None,
+        "spawn_index": None,
+        "spawn_tiles": [],
         "kill_count": 0,
     }
 
@@ -169,6 +215,7 @@ def handle_client(conn, player_id):
                         requested_mode = GAME_MODE_DEBUG
                     if not is_game_mode_registered(requested_mode):
                         requested_mode = GAME_MODE_NORMAL
+                    previous_mode = lobby.mode_for(player_id)
                     accepted = lobby.join(
                         player_id,
                         requested_mode,
@@ -194,6 +241,7 @@ def handle_client(conn, player_id):
                             "wards": [],
                             "revive_token": 0,
                             "revive_armed": False,
+                            "deathmatch_revive_used": False,
                             "heal_token": 0,
                             "shield_active": False,
                             "rune_alerts": [],
@@ -205,18 +253,56 @@ def handle_client(conn, player_id):
                             "deathmatch_respawn_at": None,
                             "kill_count": 0,
                         })
+                        if requested_mode == GAME_MODE_DEATHMATCH:
+                            spawn_candidates = validated_spawn_tiles(
+                                client_data.get("spawn_tiles")
+                            )
+                            if not spawn_candidates:
+                                accepted = False
+                                lobby.leave(player_id)
+                            else:
+                                if previous_mode != GAME_MODE_DEATHMATCH:
+                                    player["spawn_index"] = None
+                                player["spawn_tiles"] = spawn_candidates
+                                occupied_indices = {
+                                    players[active_id].get("spawn_index")
+                                    for active_id in lobby.active_player_ids(requested_mode)
+                                    if active_id != player_id and active_id in players
+                                }
+                                spawn_index = player.get("spawn_index")
+                                if (
+                                    spawn_index is None
+                                    or spawn_index >= len(spawn_candidates)
+                                    or spawn_index in occupied_indices
+                                ):
+                                    available_indices = [
+                                        index for index in range(len(spawn_candidates))
+                                        if index not in occupied_indices
+                                    ]
+                                    if not available_indices:
+                                        accepted = False
+                                        lobby.leave(player_id)
+                                    else:
+                                        player["spawn_index"] = random.choice(available_indices)
                     lobby_status = lobby.status(player_id, mode=requested_mode)
                     lobby_status["accepted"] = accepted
                     if accepted:
-                        lobby_status["spawn_index"] = sorted(
-                            lobby.active_player_ids(requested_mode)
-                        ).index(player_id)
+                        if requested_mode == GAME_MODE_DEATHMATCH:
+                            lobby_status["spawn_index"] = players[player_id]["spawn_index"]
+                        else:
+                            lobby_status["spawn_index"] = sorted(
+                                lobby.active_player_ids(requested_mode)
+                            ).index(player_id)
                     else:
                         lobby_status["message"] = (
                             "게임이 진행 중이라 참가할 수 없습니다."
                             if lobby.started[requested_mode]
                             or lobby.start_at[requested_mode] is not None
-                            else f"로비가 가득 찼습니다. 최대 {MAX_PLAYERS}명까지 참가할 수 있습니다."
+                            else (
+                                "안전한 스폰 위치를 확보하지 못했습니다."
+                                if requested_mode == GAME_MODE_DEATHMATCH
+                                else f"로비가 가득 찼습니다. 최대 {MAX_PLAYERS}명까지 참가할 수 있습니다."
+                            )
                         )
                 conn.sendall(pickle.dumps(lobby_status))
                 continue
@@ -402,9 +488,10 @@ def handle_client(conn, player_id):
                 for ward in client_data.get("wards", [])
                 if isinstance(ward, (list, tuple)) and len(ward) == 2
             ]
-            players[player_id]["revive_armed"] = bool(
-                client_data.get("revive_armed", False)
-            )
+            if mode != GAME_MODE_DEATHMATCH:
+                players[player_id]["revive_armed"] = bool(
+                    client_data.get("revive_armed", False)
+                )
             players[player_id]["shield_active"] = bool(client_data.get("shield_active", False))
             heal_token = int(client_data.get("heal_token", 0))
             if heal_token != players[player_id]["heal_token"]:
@@ -420,8 +507,14 @@ def handle_client(conn, player_id):
                 and revive_token != players[player_id]["revive_token"]
             ):
                 players[player_id]["revive_token"] = revive_token
-                players[player_id]["hp"] = max(1, round(PLAYER_MAX_HP * REVIVE_HP_RATIO))
-                players[player_id]["revive_armed"] = False
+                if mode == GAME_MODE_DEATHMATCH:
+                    if not players[player_id]["deathmatch_revive_used"]:
+                        players[player_id]["hp"] = PLAYER_MAX_HP
+                        players[player_id]["revive_armed"] = True
+                        players[player_id]["deathmatch_revive_used"] = True
+                else:
+                    players[player_id]["hp"] = max(1, round(PLAYER_MAX_HP * REVIVE_HP_RATIO))
+                    players[player_id]["revive_armed"] = False
             rune_ping = client_data.get("rune_ping")
             if isinstance(rune_ping, (list, tuple)) and len(rune_ping) == 2:
                 events["rune_alerts"].append((float(rune_ping[0]), float(rune_ping[1]), time.monotonic() + RUNE_ALERT_DURATION_MS / 1000))
@@ -470,6 +563,10 @@ def handle_client(conn, player_id):
                     previous_hp = players[player_id]["hp"]
                     players[player_id]["hp"] = max(0, players[player_id]["hp"] - damage)
                     players[player_id]["zone_damage_credit"] -= damage
+                    if mode == GAME_MODE_DEATHMATCH:
+                        consume_deathmatch_revive(
+                            events, player_id, players[player_id]
+                        )
                     if (
                         previous_hp > 0
                         and players[player_id]["hp"] <= 0
@@ -498,6 +595,28 @@ def handle_client(conn, player_id):
                 target = players.get(target_id)
                 if not target or target["hp"] <= 0:
                     continue
+                attacker_id = hit_event.get("attacker_id", player_id)
+                if (
+                    not isinstance(attacker_id, str)
+                    or attacker_id not in lobby.visible_player_ids(player_id)
+                ):
+                    continue
+                if attacker_id != player_id:
+                    try:
+                        source_bullet_event_id = int(
+                            hit_event.get("source_bullet_event_id")
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                    source_bullet = events["verified_bullet_events"].get(
+                        source_bullet_event_id
+                    )
+                    if (
+                        source_bullet is None
+                        or source_bullet["owner_id"] != attacker_id
+                        or now_monotonic - source_bullet["created_at"] > 5000
+                    ):
+                        continue
                 if target.get("shield_active", False):
                     continue
                 damage = max(0, int(hit_event.get("damage", 0)))
@@ -507,9 +626,13 @@ def handle_client(conn, player_id):
                 previous_hp = target["hp"]
                 damage = min(damage, previous_hp)
                 target["hp"] = previous_hp - damage
+                if mode == GAME_MODE_DEATHMATCH and consume_deathmatch_revive(
+                    events, target_id, target
+                ):
+                    damage = previous_hp - target["hp"]
                 events["damage_events"].append({
                     "event_id": events["next_damage_event_id"],
-                    "attacker_id": player_id,
+                    "attacker_id": attacker_id,
                     "target_id": target_id,
                     "damage": damage,
                     "hit_part": hit_event.get("hit_part", "body"),
@@ -529,18 +652,27 @@ def handle_client(conn, player_id):
                         target["deathmatch_respawn_at"] = (
                             time.monotonic() + DEATHMATCH_RESPAWN_MS / 1000
                         )
-                        if player_id != target_id:
-                            events["kill_scores"][player_id] = (
-                                events["kill_scores"].get(player_id, 0) + 1
+                        if attacker_id != target_id:
+                            events["kill_scores"][attacker_id] = (
+                                events["kill_scores"].get(attacker_id, 0) + 1
                             )
                     append_kill_event(
                         events,
-                        player_id,
+                        attacker_id,
                         target_id,
-                        players[player_id].get("name", "플레이어"),
+                        players[attacker_id].get("name", "플레이어"),
                         target.get("name", "플레이어"),
-                        client_data.get("weapon_id", DEFAULT_WEAPON_ID),
-                        "self_inflicted" if player_id == target_id else "player",
+                        (
+                            source_bullet["weapon_id"]
+                            if attacker_id != player_id
+                            else (
+                                hit_event.get("weapon_id")
+                                if isinstance(hit_event.get("weapon_id"), str)
+                                and hit_event.get("weapon_id") in WEAPONS
+                                else players[attacker_id].get("weapon_id", DEFAULT_WEAPON_ID)
+                            )
+                        ),
+                        "self_inflicted" if attacker_id == target_id else "player",
                     )
                 if stun_ms:
                     target["stunned_until"] = max(
@@ -557,9 +689,27 @@ def handle_client(conn, player_id):
                     bullet_event = dict(bullet)
                     bullet_event["owner_id"] = player_id
                     bullet_event["event_id"] = events["next_bullet_event_id"]
+                    bullet_event["created_at"] = now_monotonic
+                    if (
+                        not isinstance(bullet_event.get("weapon_id"), str)
+                        or bullet_event["weapon_id"] not in WEAPONS
+                    ):
+                        bullet_event["weapon_id"] = players[player_id].get(
+                            "weapon_id", DEFAULT_WEAPON_ID
+                        )
+                    events["verified_bullet_events"][bullet_event["event_id"]] = {
+                        "owner_id": player_id,
+                        "weapon_id": bullet_event["weapon_id"],
+                        "created_at": now_monotonic,
+                    }
                     events["next_bullet_event_id"] += 1
                     events["bullet_events"].append(bullet_event)
-
+                events["verified_bullet_events"] = {
+                    event_id: bullet_info
+                    for event_id, bullet_info
+                    in events["verified_bullet_events"].items()
+                    if now_monotonic - bullet_info["created_at"] <= 5000
+                }
 
             # 4. 현재 접속한 모든 유저들의 데이터를 통째로 패킹해서 응답
             with player_lock:
@@ -577,14 +727,36 @@ def handle_client(conn, player_id):
                             and respawn_at is not None
                             and now_monotonic >= respawn_at
                         ):
-                            spawn_index = sorted(lobby.match_player_ids[mode]).index(respawn_id)
-                            spawn_x, spawn_y = SPAWN_POSITION_TILES[
-                                spawn_index % len(SPAWN_POSITION_TILES)
-                            ]
-                            respawning_player["posX"] = spawn_x * 32
-                            respawning_player["posY"] = spawn_y * 32
-                            respawning_player["hp"] = PLAYER_MAX_HP
-                            respawning_player["deathmatch_respawn_at"] = None
+                            available_spawns = []
+                            for spawn_x, spawn_y in respawning_player.get("spawn_tiles", ()):
+                                overlaps_player = False
+                                for active_id in lobby.match_player_ids[mode]:
+                                    if active_id == respawn_id:
+                                        continue
+                                    other_player = players.get(active_id)
+                                    if not other_player or other_player["hp"] <= 0:
+                                        continue
+                                    other_x = int(other_player["posX"] // 32)
+                                    other_y = int(other_player["posY"] // 32)
+                                    if (
+                                        spawn_x < other_x + 3
+                                        and spawn_x + 3 > other_x
+                                        and spawn_y < other_y + 3
+                                        and spawn_y + 3 > other_y
+                                    ):
+                                        overlaps_player = True
+                                        break
+                                if not overlaps_player:
+                                    available_spawns.append((spawn_x, spawn_y))
+                            if available_spawns:
+                                spawn_x, spawn_y = random.choice(available_spawns)
+                                respawning_player["posX"] = spawn_x * 32
+                                respawning_player["posY"] = spawn_y * 32
+                                respawning_player["magazine_ammo"] = WEAPONS[
+                                    respawning_player["weapon_id"]
+                                ].magazine_size
+                                respawning_player["hp"] = PLAYER_MAX_HP
+                                respawning_player["deathmatch_respawn_at"] = None
 
                 active_ids = lobby.visible_player_ids(player_id)
                 active_players = {
@@ -683,6 +855,7 @@ def handle_client(conn, player_id):
                 player["zone_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
                 player["kill_events"] = list(events["kill_events"][-12:])
                 player["damage_events"] = list(events["damage_events"][-32:])
+                player["revive_events"] = list(events["revive_events"])
                 player["supply_drops"] = [
                     {
                         **drop,

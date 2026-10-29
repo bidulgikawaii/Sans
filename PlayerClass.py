@@ -3,6 +3,7 @@ import math
 import pygame
 from Config import *
 from ImageLoad import *
+from Settings import get_key
 
 # 이동을 축별로 충돌 검사하면 벽에 대각선으로 닿아도 벽을 따라 미끄러질 수 있습니다.
 class Player:
@@ -82,12 +83,13 @@ class Player:
         # 1. 일반적인 이동 방향 계산 (방향키 입력)
         dx = 0
         dy = 0
-        if keys[pygame.K_a]:  dx = -1
-        if keys[pygame.K_d]:  dx = 1
-        if keys[pygame.K_w]:  dy = -1
-        if keys[pygame.K_s]:  dy = 1
+        if keys[get_key("move_left")]:  dx = -1
+        if keys[get_key("move_right")]:  dx = 1
+        if keys[get_key("move_up")]:  dy = -1
+        if keys[get_key("move_down")]:  dy = 1
 
         # 2. 달리기/대쉬 키(G) 입력 확인 및 대쉬 시작 조건
+        dash_requested = dash_requested or keys[get_key("dash")]
         if dash_requested and not self.is_dashing:
             # 쿨타임이 지났고, 멈춰있지 않고 움직이는 중일 때만 대쉬 발동
             if current_time - self.last_dash_time >= self.dash_cooldown and (dx != 0 or dy != 0):
@@ -112,7 +114,9 @@ class Player:
                 dx = self.dash_dir_x
                 dy = self.dash_dir_y
         else:
-            sprinting = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
+            sprinting = keys[get_key("sprint")] or (
+                get_key("sprint") == pygame.K_LSHIFT and keys[pygame.K_RSHIFT]
+            )
             speed = self.sprint_speed if sprinting else self.normal_speed
 
         if self.tile_generator:

@@ -1,0 +1,19 @@
+{
+  "mouse_sensitivity": 1.0,
+  "owned_skills_only": true,
+  "key_bindings": {
+    "move_up": 119,
+    "move_down": 115,
+    "move_left": 97,
+    "move_right": 100,
+    "sprint": 1073742049,
+    "dash": 103,
+    "skill_inventory": 105,
+    "healing_inventory": 98,
+    "use_healing": 104,
+    "reload": 114,
+    "slot_q": 113,
+    "slot_e": 101,
+    "slot_t": 116
+  }
+}

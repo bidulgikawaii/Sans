@@ -74,8 +74,11 @@ def new_match_events():
     }
 
 
-def append_kill_event(events, killer_id, target_id, killer_name, target_name, weapon_id, cause):
-    events["kill_events"].append({
+def append_kill_event(
+    events, killer_id, target_id, killer_name, target_name, weapon_id, cause,
+    bat_launch=None,
+):
+    event = {
         "event_id": events["next_kill_event_id"],
         "killer_id": killer_id,
         "target_id": target_id,
@@ -83,7 +86,10 @@ def append_kill_event(events, killer_id, target_id, killer_name, target_name, we
         "target_name": target_name,
         "weapon_id": weapon_id,
         "cause": cause,
-    })
+    }
+    if bat_launch is not None:
+        event["bat_launch"] = bat_launch
+    events["kill_events"].append(event)
     events["next_kill_event_id"] += 1
 
 
@@ -669,11 +675,21 @@ def handle_client(conn, player_id):
                 damage = max(0, int(hit_event.get("damage", 0)))
                 if hit_event.get("hit_part") == "head":
                     damage *= HEADSHOT_DAMAGE_MULTIPLIER
+                hit_weapon_id = hit_event.get("weapon_id")
+                if not isinstance(hit_weapon_id, str) or hit_weapon_id not in WEAPONS:
+                    hit_weapon_id = players[attacker_id].get("weapon_id", DEFAULT_WEAPON_ID)
+                is_bat_hit = (
+                    attacker_id == player_id
+                    and hit_weapon_id == "bat"
+                    and players[player_id].get("weapon_id") == "bat"
+                )
                 stun_ms = max(0, int(hit_event.get("stun_ms", 0)))
                 previous_hp = target["hp"]
-                damage = min(damage, previous_hp)
+                damage = previous_hp if is_bat_hit else min(damage, previous_hp)
                 target["hp"] = previous_hp - damage
-                if mode == GAME_MODE_DEATHMATCH and consume_deathmatch_revive(
+                if is_bat_hit:
+                    target["revive_armed"] = False
+                if mode == GAME_MODE_DEATHMATCH and not is_bat_hit and consume_deathmatch_revive(
                     events, target_id, target
                 ):
                     damage = previous_hp - target["hp"]
@@ -710,17 +726,22 @@ def handle_client(conn, player_id):
                         target_id,
                         players[attacker_id].get("name", "플레이어"),
                         target.get("name", "플레이어"),
-                        (
-                            source_bullet["weapon_id"]
-                            if attacker_id != player_id
-                            else (
-                                hit_event.get("weapon_id")
-                                if isinstance(hit_event.get("weapon_id"), str)
-                                and hit_event.get("weapon_id") in WEAPONS
-                                else players[attacker_id].get("weapon_id", DEFAULT_WEAPON_ID)
-                            )
+                        source_bullet["weapon_id"] if attacker_id != player_id else hit_weapon_id,
+                        "bat" if is_bat_hit else (
+                            "self_inflicted" if attacker_id == target_id else "player"
                         ),
-                        "self_inflicted" if attacker_id == target_id else "player",
+                        {
+                            "x": target.get("posX", 0) + 36,
+                            "y": target.get("posY", 0) + 36,
+                            "direction_x": (
+                                (target.get("posX", 0) - players[attacker_id].get("posX", 0))
+                                if (target.get("posX", 0) != players[attacker_id].get("posX", 0))
+                                or (target.get("posY", 0) != players[attacker_id].get("posY", 0))
+                                else 1
+                            ),
+                            "direction_y": target.get("posY", 0) - players[attacker_id].get("posY", 0),
+                        }
+                        if is_bat_hit else None,
                     )
                 if stun_ms:
                     target["stunned_until"] = max(

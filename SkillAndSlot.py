@@ -2,6 +2,7 @@ import math
 import random
 
 import pygame
+from Settings import key_label, settings
 from Config import (
     QUICK_SLOT_SIZE,
     QUICK_SLOT_START_X,
@@ -187,7 +188,7 @@ class QuickSlot:
             surface.blit(text, text.get_rect(center=self.rect.center))
 
         pygame.draw.rect(surface, border_color, self.rect, border_width, border_radius=5)
-        key_text = get_font().render(self.key_name, True, border_color)
+        key_text = get_font().render(key_label(f"slot_{self.key_name.lower()}"), True, border_color)
         surface.blit(key_text, (self.rect.x + 8, self.rect.y + 5))
         self._draw_equip_particles(surface)
 
@@ -243,7 +244,12 @@ def refresh_skill_inventory():
     item_width = SKILL_ICON_SIZE + SKILL_ICON_GAP_X
     item_height = SKILL_ICON_SIZE + SKILL_ICON_GAP_Y
 
-    for index, skill_name in enumerate(SKILL_BOOK):
+    visible_skills = (
+        [name for name in SKILL_BOOK if name in owned_skills]
+        if settings["owned_skills_only"]
+        else list(SKILL_BOOK)
+    )
+    for index, skill_name in enumerate(visible_skills):
         row, column = divmod(index, INVENTORY_ITEM_COLUMNS)
         inventory_items.append(
             SkillWindowItem(

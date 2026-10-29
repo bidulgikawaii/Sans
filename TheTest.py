@@ -20,6 +20,7 @@ from Weapon import (
 )
 from Effects import ParticleSystem
 from MainScreen import MainScreenRenderer
+from Settings import RESERVED_KEYS, get_key, key_bindings, save_settings, settings
 from PracticeView import PracticeView
 from MiniMap import MiniMap
 from GameRendering import (
@@ -43,6 +44,7 @@ from Zone import MagneticZone
 from GameModes import get_game_mode, get_game_modes
 from WorldEffects import world_effects
 from Animation import FrameAnimation
+from BatLaunch import create_bat_launch, get_bat_launch_frame
 from NetworkClient import (
     default_player_name,
     generate_random_player_name,
@@ -56,6 +58,7 @@ pygame.display.set_caption("전설적인 게임")
 display = pygame.display.set_mode((ScreenX, ScreenY), 0, 32)
 clock = pygame.time.Clock()
 ScreenState = "NameInputView"
+settings_key_waiting = None
 exit_confirm_return_state = "GameView"
 selected_game_mode = GAME_MODE_NORMAL
 local_match = False
@@ -105,6 +108,29 @@ def _draw_melee_weapon(surface, image, center, angle, zoom):
         round(center[1] + math.sin(radians) * forward_offset + 10 * zoom),
     )
     surface.blit(rotated_image, rotated_image.get_rect(center=weapon_center))
+
+
+def get_aim_mouse_position(camera_x=None, camera_y=None):
+    """플레이어 화면 중심을 기준으로 감도 배율이 적용된 조준 좌표를 반환합니다."""
+    if camera_x is None:
+        camera_x = AimCameraPosX
+    if camera_y is None:
+        camera_y = AimCameraPosY
+    mouse_x, mouse_y = pygame.mouse.get_pos()
+    player_x, player_y = get_player_screen_center(
+        my_player.X,
+        my_player.Y,
+        IML.Player.get_width(),
+        IML.Player.get_height(),
+        camera_x,
+        camera_y,
+        camera_zoom,
+    )
+    sensitivity = settings["mouse_sensitivity"]
+    return (
+        round(player_x + (mouse_x - player_x) * sensitivity),
+        round(player_y + (mouse_y - player_y) * sensitivity),
+    )
 
 
 def _stun_shake_offset(now, phase=0):
@@ -323,6 +349,7 @@ remote_bullets = []
 processed_bullet_events = set()
 processed_damage_event_ids = set()
 processed_kill_event_ids = set()
+bat_launch_animations = {}
 skill_cooldowns = {}
 vision_skill_until = 0
 shield_until = 0
@@ -815,6 +842,7 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     processed_bullet_events.clear()
     processed_damage_event_ids.clear()
     processed_kill_event_ids.clear()
+    bat_launch_animations.clear()
     processed_revive_effect_ids.clear()
     particles.particles.clear()
     server_players.clear()
@@ -953,6 +981,61 @@ def MainView():
                 continue
             if button_rects["profile"].collidepoint(event.pos):
                 ScreenState = "ModeSelectView"
+            elif button_rects["settings"].collidepoint(event.pos):
+                ScreenState = "SettingsView"
+
+
+def SettingsView():
+    global running, ScreenState, settings_key_waiting
+    buttons = main_screen.draw_settings(settings, key_bindings, settings_key_waiting)
+
+    def update_sensitivity(mouse_x):
+        track = buttons["sensitivity"]
+        progress = min(1.0, max(0.0, (mouse_x - track.left - 12) / (track.width - 24)))
+        settings["mouse_sensitivity"] = round(0.25 + progress * 1.75, 2)
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN and settings_key_waiting:
+            if event.key == pygame.K_ESCAPE:
+                settings_key_waiting = None
+                continue
+            if event.key in RESERVED_KEYS:
+                continue
+            if event.key in key_bindings.values() and key_bindings[settings_key_waiting] != event.key:
+                system_message = "이미 다른 기능에 지정된 키입니다."
+                continue
+            key_bindings[settings_key_waiting] = event.key
+            settings_key_waiting = None
+            save_settings()
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            ScreenState = "MainView"
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if buttons["back"].collidepoint(event.pos):
+                settings_key_waiting = None
+                ScreenState = "MainView"
+            elif buttons["sensitivity"].collidepoint(event.pos):
+                update_sensitivity(event.pos[0])
+                save_settings()
+            elif buttons["owned_only"].collidepoint(event.pos):
+                settings["owned_skills_only"] = not settings["owned_skills_only"]
+                refresh_skill_inventory()
+                save_settings()
+            else:
+                settings_key_waiting = next(
+                    (
+                        action
+                        for action, rect in buttons["keys"].items()
+                        if rect.collidepoint(event.pos)
+                    ),
+                    None,
+                )
+        elif event.type == pygame.MOUSEMOTION and pygame.mouse.get_pressed()[0]:
+            if buttons["sensitivity"].collidepoint(event.pos):
+                update_sensitivity(event.pos[0])
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            save_settings()
 
 
 def begin_lobby_join(mode):
@@ -1309,8 +1392,10 @@ def _finish_teleport_cycle(now):
 
 def activate_quick_slot(key, reinstall=False):
     global system_message, vision_shape_override, vision_skill_until, shield_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining, revive_token, deathmatch_revive_armed, deathmatch_revive_used, deathmatch_revive_request_pending, screen_shake
-    key_name = pygame.key.name(key).upper()
-    slot = next((slot for slot in quick_slots if slot.key_name == key_name), None)
+    slot_actions = {get_key(f"slot_{name.lower()}"): name for name in ("Q", "E", "T")}
+    slot_name = slot_actions.get(key)
+    slot = next((slot for slot in quick_slots if slot.key_name == slot_name), None)
+    key_name = slot_name or pygame.key.name(key).upper()
     if not slot or not slot.assigned_skill:
         system_message = f"[{key_name}] 슬롯이 비어있습니다."
         return
@@ -1374,7 +1459,7 @@ def activate_quick_slot(key, reinstall=False):
             skill_cooldowns.pop(skill_name, None)
         return
     if skill_name == "폭탄받아라!":
-        target_x, target_y = screen_to_world(*pygame.mouse.get_pos(), CameraPosX, CameraPosY, camera_zoom)
+        target_x, target_y = screen_to_world(*get_aim_mouse_position(CameraPosX, CameraPosY), CameraPosX, CameraPosY, camera_zoom)
         player_x, player_y = get_player_world_center(
             my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
         )
@@ -1491,7 +1576,7 @@ def activate_quick_slot(key, reinstall=False):
         )
         system_message = "4.5초 동안 적에게 완전히 보이지 않습니다."
     elif skill_name == "와드":
-        target_x, target_y = screen_to_world(*pygame.mouse.get_pos(), CameraPosX, CameraPosY, camera_zoom)
+        target_x, target_y = screen_to_world(*get_aim_mouse_position(CameraPosX, CameraPosY), CameraPosX, CameraPosY, camera_zoom)
         target_rect = pygame.Rect(0, 0, 16, 16)
         target_rect.center = (round(target_x), round(target_y))
         if TileGene.check_collision(target_rect):
@@ -1508,7 +1593,7 @@ def activate_quick_slot(key, reinstall=False):
             system_message = "보호막이 유지되는 동안에는 순간이동할 수 없습니다."
             return
         target_x, target_y = screen_to_world(
-            *pygame.mouse.get_pos(), CameraPosX, CameraPosY, camera_zoom
+            *get_aim_mouse_position(CameraPosX, CameraPosY), CameraPosX, CameraPosY, camera_zoom
         )
         destination = my_player.rect.copy()
         destination.center = (round(target_x), round(target_y))
@@ -1618,8 +1703,9 @@ def reload_weapon():
 
 
 def activate_skill_or_reload(key):
-    key_name = pygame.key.name(key).upper()
-    slot = next((slot for slot in quick_slots if slot.key_name == key_name), None)
+    slot_actions = {get_key(f"slot_{name.lower()}"): name for name in ("Q", "E", "T")}
+    slot_name = slot_actions.get(key)
+    slot = next((slot for slot in quick_slots if slot.key_name == slot_name), None)
     if slot and slot.assigned_skill:
         activate_quick_slot(key)
     else:
@@ -1630,7 +1716,7 @@ def remove_ward_at_cursor():
     """마우스 주변의 자기 와드 하나를 제거합니다."""
     global system_message
     target_x, target_y = screen_to_world(
-        *pygame.mouse.get_pos(), CameraPosX, CameraPosY, camera_zoom
+        *get_aim_mouse_position(CameraPosX, CameraPosY), CameraPosX, CameraPosY, camera_zoom
     )
     max_distance = TileGene.tile_size * 1.5
     nearest_index = None
@@ -1695,7 +1781,7 @@ def handle_key_event(event, _mouse_pos):
         system_message = f"히트박스 표시: {'켜짐' if show_hitboxes else '꺼짐'}"
         return
 
-    if event.key == pygame.K_z:
+    if event.key == get_key("healing_inventory"):
         healing_inventory_open = not healing_inventory_open
         if healing_inventory_open:
             inventory_open = False
@@ -1703,9 +1789,9 @@ def handle_key_event(event, _mouse_pos):
         return
 
     slot_key_names = {
-        pygame.K_q: "Q",
-        pygame.K_e: "E",
-        pygame.K_t: "T",
+        get_key("slot_q"): "Q",
+        get_key("slot_e"): "E",
+        get_key("slot_t"): "T",
     }
     if inventory_open and event.key in slot_key_names:
         skill_name, assigned = bind_selected_skill(slot_key_names[event.key])
@@ -1718,8 +1804,8 @@ def handle_key_event(event, _mouse_pos):
 
     key_actions = {
         pygame.K_ESCAPE: lambda _key: request_game_exit(),
-        pygame.K_b: lambda _key: toggle_inventory(),
-        pygame.K_h: lambda _key: use_healing_item(),
+        get_key("skill_inventory"): lambda _key: toggle_inventory(),
+        get_key("use_healing"): lambda _key: use_healing_item(),
         pygame.K_v: lambda _key: cycle_vision_shape(),
         pygame.K_q: lambda _key: activate_quick_slot(
             _key, reinstall=bool(event.mod & pygame.KMOD_SHIFT)
@@ -1730,7 +1816,7 @@ def handle_key_event(event, _mouse_pos):
         pygame.K_t: lambda _key: activate_quick_slot(
             _key, reinstall=bool(event.mod & pygame.KMOD_SHIFT)
         ),
-        pygame.K_r: lambda _key: reload_weapon(),
+        get_key("reload"): lambda _key: reload_weapon(),
         pygame.K_f: lambda _key: activate_skill_or_reload(_key),
         pygame.K_x: lambda _key: remove_ward_at_cursor(),
     }
@@ -1911,7 +1997,7 @@ def fire_stun_bullet():
     center_x, center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
-    mouse_x, mouse_y = pygame.mouse.get_pos()
+    mouse_x, mouse_y = get_aim_mouse_position(AimCameraPosX, AimCameraPosY)
     target_world_x, target_world_y = screen_to_world(
         mouse_x, mouse_y, AimCameraPosX, AimCameraPosY, camera_zoom
     )
@@ -1973,7 +2059,7 @@ def fire_bullet():
             return
         break_stealth_on_attack()
         target_x, target_y = screen_to_world(
-            *pygame.mouse.get_pos(), AimCameraPosX, AimCameraPosY, camera_zoom
+            *get_aim_mouse_position(AimCameraPosX, AimCameraPosY), AimCameraPosX, AimCameraPosY, camera_zoom
         )
         launch_flare_supplies(target_x, target_y, pygame.time.get_ticks())
         weapon_state.consume_round()
@@ -2015,7 +2101,7 @@ def fire_bullet():
         IML.Player.get_width(),
         IML.Player.get_height(),
     )
-    current_mouse_pos = pygame.mouse.get_pos()
+    current_mouse_pos = get_aim_mouse_position(AimCameraPosX, AimCameraPosY)
     player_screen_center = get_player_screen_center(
         my_player.X,
         my_player.Y,
@@ -2429,6 +2515,15 @@ def GameFrame(practice_mode: bool = False):
                     **kill_event,
                     "started_at": now,
                 })
+                if kill_event.get("cause") == "bat":
+                    launch = create_bat_launch(
+                        kill_event,
+                        MAP_WIDTH_TILES * TileGene.tile_size,
+                        MAP_HEIGHT_TILES * TileGene.tile_size,
+                        now,
+                    )
+                    if launch is not None:
+                        bat_launch_animations[str(kill_event.get("target_id"))] = launch
             kill_feed = [event for event in kill_feed if now - event["started_at"] < 5000][-5:]
             for revive_event in event_snapshot.get("revive_events", []):
                 event_id = revive_event.get("event_id")
@@ -3213,6 +3308,27 @@ def GameFrame(practice_mode: bool = False):
 
     display.blit(dark_overlay, (0, 0))
 
+    for target_id, launch in list(bat_launch_animations.items()):
+        center_x, center_y, rotation, alpha, finished = get_bat_launch_frame(launch, now)
+        if finished:
+            bat_launch_animations.pop(target_id, None)
+            continue
+        screen_x, screen_y = world_to_screen(center_x, center_y, CameraPosX, CameraPosY, camera_zoom)
+        sprite = IML.Player.copy()
+        sprite.set_alpha(alpha)
+        if camera_zoom != 1.0:
+            sprite = pygame.transform.scale(
+                sprite,
+                (
+                    max(1, round(sprite.get_width() * camera_zoom)),
+                    max(1, round(sprite.get_height() * camera_zoom)),
+                ),
+            )
+        sprite = pygame.transform.rotate(sprite, rotation)
+        sprite_rect = sprite.get_rect(center=(round(screen_x), round(screen_y)))
+        if sprite_rect.colliderect(display.get_rect()):
+            display.blit(sprite, sprite_rect)
+
     for p_id, p_info in frame_server_players.items():
         if p_id not in visible_player_ids or p_info.get("stun_ms_remaining", 0) <= 0:
             continue
@@ -3760,6 +3876,8 @@ while running:
         ModeSelectView()
     elif ScreenState == "NameInputView":
         NameInputView()
+    elif ScreenState == "SettingsView":
+        SettingsView()
     elif ScreenState == "LoadingView":
         LoadingView()
     elif ScreenState == "GameView":

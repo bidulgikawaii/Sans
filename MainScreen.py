@@ -78,8 +78,13 @@ class MainScreenRenderer:
         self.surface.blit(name_text, name_text.get_rect(center=name_button.center))
         return {"profile": profile_rect, "name": name_button, "settings": settings_rect}
 
-    def draw_settings(self, settings, key_bindings, waiting_action=None):
-        self._draw_background()
+    def draw_settings(self, settings, key_bindings, waiting_action=None, overlay=False):
+        if overlay:
+            veil = pygame.Surface(self.surface.get_size(), pygame.SRCALPHA)
+            veil.fill((8, 12, 20, 230))
+            self.surface.blit(veil, (0, 0))
+        else:
+            self._draw_background()
         title = self.font.render("설정", True, (255, 235, 150))
         self.surface.blit(title, title.get_rect(center=(self.screen_width // 2, 105)))
         buttons = {"keys": {}}
@@ -130,7 +135,24 @@ class MainScreenRenderer:
         pygame.draw.circle(self.surface, (255, 235, 170), (knob_x, slider.centery), 12)
         buttons["sensitivity"] = slider.inflate(24, 34)
 
-        toggle_rect = pygame.Rect(first_x, option_y + 82, total_width, 62)
+        volume_rect = pygame.Rect(first_x, option_y + 82, total_width, 62)
+        pygame.draw.rect(self.surface, (20, 30, 48), volume_rect, border_radius=6)
+        pygame.draw.rect(self.surface, (90, 120, 150), volume_rect, 2, border_radius=6)
+        volume_label = self.font.render(
+            f"효과음 음량  {round(settings['sound_volume'] * 100)}%", True, (235, 240, 250)
+        )
+        self.surface.blit(volume_label, (volume_rect.x + 18, volume_rect.y + 13))
+        volume_slider = pygame.Rect(volume_rect.right - 420, volume_rect.y + 27, 380, 8)
+        pygame.draw.rect(self.surface, (70, 85, 105), volume_slider, border_radius=4)
+        volume_knob_x = volume_slider.x + round(volume_slider.width * settings["sound_volume"])
+        pygame.draw.line(
+            self.surface, (255, 220, 120), volume_slider.topleft,
+            (volume_knob_x, volume_slider.centery), 8,
+        )
+        pygame.draw.circle(self.surface, (255, 235, 170), (volume_knob_x, volume_slider.centery), 12)
+        buttons["volume"] = volume_slider.inflate(24, 34)
+
+        toggle_rect = pygame.Rect(first_x, option_y + 164, total_width, 62)
         pygame.draw.rect(self.surface, (20, 30, 48), toggle_rect, border_radius=6)
         pygame.draw.rect(self.surface, (90, 120, 150), toggle_rect, 2, border_radius=6)
         toggle_label = self.font.render("보유한 스킬 아이콘만 표시", True, (235, 240, 250))
@@ -145,14 +167,16 @@ class MainScreenRenderer:
         if waiting_action:
             guide_text = "변경할 키를 누르세요 · Esc 취소"
         else:
-            guide_text = "키 항목을 눌러 변경하세요 · 감도 0.25 ~ 2.00"
+            guide_text = "키 항목을 눌러 변경 · 감도와 효과음 음량 조절"
         guide = self.font.render(guide_text, True, (180, 195, 215))
         self.surface.blit(guide, guide.get_rect(center=(self.screen_width // 2, toggle_rect.bottom + 34)))
         back_rect = pygame.Rect(0, 0, 220, 60)
         back_rect.center = (self.screen_width // 2, self.screen_height - 70)
         pygame.draw.rect(self.surface, (20, 30, 48), back_rect, border_radius=6)
         pygame.draw.rect(self.surface, (255, 220, 120), back_rect, 2, border_radius=6)
-        back_text = self.font.render("돌아가기", True, (255, 235, 160))
+        back_text = self.font.render(
+            "게임으로 돌아가기" if overlay else "돌아가기", True, (255, 235, 160)
+        )
         self.surface.blit(back_text, back_text.get_rect(center=back_rect.center))
         buttons["back"] = back_rect
         return buttons

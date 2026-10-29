@@ -15,7 +15,6 @@ from Config import (
     MAP_TREASURE_CHANCE,
     MAP_RUNE_COUNT,
     MAP_FURNITURE_CHANCE,
-    MAP_STONE_COUNT,
     MAP_WATER_RADIUS,
 )
 from shapely.geometry import Polygon
@@ -47,8 +46,8 @@ class TileGenerator(TileRenderingMixin):
         self.map_data = {}
         self.map_width = 0
         self.map_height = 0
+        self.map_revision = 0
         self.house_rects = []
-        self.stone_objects = []
         self.world_surface = None
         self._scaled_world_surface = None
         self._scaled_world_zoom = None
@@ -71,9 +70,9 @@ class TileGenerator(TileRenderingMixin):
             random.seed(seed_value) # 👈 이 구문이 돌면서 모든 유저 컴퓨터의 난수 발생 순서가 고정됩니다.
 
         self.map_data.clear() # 기존 데이터 초기화
-        self.stone_objects.clear()
         self.map_width = width_tiles
         self.map_height = height_tiles
+        self.map_revision += 1
 
         # 바닥과 외곽 벽을 한 번에 만들어 경계 타일 객체를 덮어쓰지 않습니다.
         for y in range(height_tiles):
@@ -154,7 +153,6 @@ class TileGenerator(TileRenderingMixin):
         self._place_bushes()
         self._place_runes()
         self._place_furniture()
-        self._place_stones()
         self._place_central_water()
 
         self._build_world_surface()
@@ -225,32 +223,6 @@ class TileGenerator(TileRenderingMixin):
             if self.map_data[(chair_x, chair_y)].tile_type == 0:
                 self.map_data[(chair_x, chair_y)] = Tile(tile_type=8, is_walkable=False)
 
-    def _place_stones(self):
-        """집과 중앙 안전 지대를 피해 총알을 튕겨내는 돌을 배치합니다."""
-        available = [
-            position
-            for position, tile in self.map_data.items()
-            if tile.tile_type == 0
-            and not any(house.collidepoint(*position) for house in self.house_rects)
-        ]
-        random.shuffle(available)
-        center_x = self.map_width // 2
-        center_y = self.map_height // 2
-        placed = 0
-        for tile_x, tile_y in available:
-            if placed >= MAP_STONE_COUNT:
-                break
-            if (tile_x - center_x) ** 2 + (tile_y - center_y) ** 2 <= (MAP_WATER_RADIUS + 3) ** 2:
-                continue
-            stone_rect = pygame.Rect(
-                tile_x * self.tile_size - self.tile_size // 3,
-                tile_y * self.tile_size - self.tile_size // 3,
-                round(self.tile_size * 1.65),
-                round(self.tile_size * 1.45),
-            )
-            self.stone_objects.append({"rect": stone_rect, "tile": (tile_x, tile_y)})
-            placed += 1
-
     def _place_central_water(self):
         center_x = self.map_width // 2
         center_y = self.map_height // 2
@@ -319,7 +291,7 @@ class TileGenerator(TileRenderingMixin):
         while (tile_x, tile_y) != (end_tile_x, end_tile_y):
             if (tile_x, tile_y) != (start_tile_x, start_tile_y):
                 tile = self.map_data.get((tile_x, tile_y))
-                if tile and tile.tile_type in (1, 7, 8, 9):
+                if tile and tile.tile_type in (1, 7, 8):
                     return True
 
             double_error = error * 2
@@ -331,7 +303,7 @@ class TileGenerator(TileRenderingMixin):
                 tile_y += step_y
 
         target_tile = self.map_data.get((end_tile_x, end_tile_y))
-        return bool(target_tile and target_tile.tile_type in (1, 7, 8, 9))
+        return bool(target_tile and target_tile.tile_type in (1, 7, 8))
 
     def is_point_visible_from(
         self,
@@ -476,12 +448,8 @@ class TileGenerator(TileRenderingMixin):
         if self._vision_wall_rects is None:
             self._vision_wall_rects = [
                 (x * self.tile_size, y * self.tile_size, (x + 1) * self.tile_size, (y + 1) * self.tile_size)
-                for (x, y), tile in self.map_data.items() if tile.tile_type in (1, 7, 8, 9)
+                for (x, y), tile in self.map_data.items() if tile.tile_type in (1, 7, 8)
             ]
-            self._vision_wall_rects.extend(
-                (stone["rect"].left, stone["rect"].top, stone["rect"].right, stone["rect"].bottom)
-                for stone in self.stone_objects
-            )
             bucket_size = self.tile_size * 8
             buckets = {}
             for wall in self._vision_wall_rects:
@@ -543,19 +511,12 @@ class TileGenerator(TileRenderingMixin):
         for y in range(start_y, end_y):
             for x in range(start_x, end_x):
                 tile = self.map_data.get((x, y))
-                if tile and tile.tile_type in (1, 7, 8, 9):
+                if tile and tile.tile_type in (1, 7, 8):
                     world_x = x * self.tile_size
                     world_y = y * self.tile_size
                     rect = pygame.Rect(world_x, world_y, self.tile_size, self.tile_size)
                     wall_rects.append(rect)
 
-        wall_rects.extend(
-            stone["rect"] for stone in self.stone_objects
-            if stone["rect"].colliderect(
-                pygame.Rect(camera_x, camera_y, screen_width, screen_height)
-            )
-        )
-                    
         return wall_rects
 
     def is_walkable(self, world_x, world_y):
@@ -583,9 +544,6 @@ class TileGenerator(TileRenderingMixin):
         for x, y in points_to_check:
             if not self.is_walkable(x, y):
                 return True  # 충돌 감지
-        if any(stone["rect"].colliderect(rect) for stone in self.stone_objects):
-            return True
-        
         return False  # 충돌 없음
 
     def check_wall_collision(self, rect):
@@ -604,8 +562,6 @@ class TileGenerator(TileRenderingMixin):
             tile = self.map_data.get((tile_x, tile_y))
             if tile is None or tile.tile_type == 1:
                 return True
-        if any(stone["rect"].colliderect(rect) for stone in self.stone_objects):
-            return True
         return False
 
     def segment_wall_collision(self, start_x, start_y, end_x, end_y, radius=2):
@@ -624,10 +580,7 @@ class TileGenerator(TileRenderingMixin):
         return False
 
     def destructible_collision(self, rect):
-        """총알과 파괴 가능한 가구 또는 돌의 충돌 타일을 반환합니다."""
-        for stone in self.stone_objects:
-            if stone["rect"].colliderect(rect):
-                return stone["tile"][0], stone["tile"][1], 9
+        """총알과 파괴 가능한 가구의 충돌 타일을 반환합니다."""
         start_x = max(0, int(rect.left // self.tile_size))
         end_x = min(self.map_width - 1, int(rect.right // self.tile_size))
         start_y = max(0, int(rect.top // self.tile_size))
@@ -635,7 +588,7 @@ class TileGenerator(TileRenderingMixin):
         for tile_y in range(start_y, end_y + 1):
             for tile_x in range(start_x, end_x + 1):
                 tile = self.map_data.get((tile_x, tile_y))
-                if tile and tile.tile_type in (7, 8, 9):
+                if tile and tile.tile_type in (7, 8):
                     return tile_x, tile_y, tile.tile_type
         return None
 
@@ -650,6 +603,8 @@ class TileGenerator(TileRenderingMixin):
 
     def refresh_world_surface(self, changed_tiles=None):
         """변경 타일만 다시 그린 뒤 시야 캐시를 비웁니다."""
+        if changed_tiles is not None:
+            self.map_revision += 1
         if changed_tiles is None or self.world_surface is None:
             self._build_world_surface()
         else:

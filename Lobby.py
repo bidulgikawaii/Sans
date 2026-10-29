@@ -1,4 +1,5 @@
 import time
+import random
 
 from Config import (
     GAME_MODE_DEBUG,
@@ -21,6 +22,8 @@ class LobbyState:
         self.start_at = {mode_id: None for mode_id in self.started}
         self.started_at = {mode_id: None for mode_id in self.started}
         self.match_player_ids = {mode_id: set() for mode_id in self.started}
+        self.world_seeds = {mode_id: None for mode_id in self.started}
+        self.world_weather = {mode_id: None for mode_id in self.started}
 
     def _player_ids(self, mode):
         return {player_id for player_id, player_mode in self.modes.items() if player_mode == mode}
@@ -51,6 +54,9 @@ class LobbyState:
             self.ready_players.discard(player_id)
             self.match_player_ids[current_mode].discard(player_id)
         self.modes[player_id] = mode
+        if self.world_seeds[mode] is None:
+            self.world_seeds[mode] = random.SystemRandom().getrandbits(32)
+            self.world_weather[mode] = random.SystemRandom().choice(("rain", "snow"))
         return True
 
     def set_ready(self, player_id, ready):
@@ -83,6 +89,8 @@ class LobbyState:
             self.start_at[mode] = None
             self.started_at[mode] = None
             self.match_player_ids[mode].clear()
+            self.world_seeds[mode] = None
+            self.world_weather[mode] = None
 
     def cancel(self, mode):
         """해당 모드의 대기열과 진행 중 매치를 전체 참가자 대상으로 취소합니다."""
@@ -94,6 +102,8 @@ class LobbyState:
         self.start_at[mode] = None
         self.started_at[mode] = None
         self.match_player_ids[mode].clear()
+        self.world_seeds[mode] = None
+        self.world_weather[mode] = None
         return player_ids
 
     def finish_match(self, mode=GAME_MODE_NORMAL):
@@ -105,6 +115,8 @@ class LobbyState:
         self.start_at[mode] = None
         self.started_at[mode] = None
         self.match_player_ids[mode].clear()
+        self.world_seeds[mode] = None
+        self.world_weather[mode] = None
 
     def mode_for(self, player_id):
         return self.modes.get(player_id)
@@ -144,6 +156,8 @@ class LobbyState:
             "max_players": MAX_PLAYERS,
             "mode": mode,
             "started": self.started[mode],
+            "world_seed": self.world_seeds[mode],
+            "weather": self.world_weather[mode],
             "accepting_players": not self.started[mode] and start_at is None,
             "countdown_ms": countdown_ms,
             "elapsed_ms": elapsed_ms,

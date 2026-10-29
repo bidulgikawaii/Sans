@@ -16,7 +16,6 @@ class MiniMap:
         6: (92, 168, 118),
         7: (128, 82, 62),
         8: (155, 105, 55),
-        9: (115, 120, 135),
     }
 
     def __init__(self, tile_generator, size=(260, 260), margin=(30, 30), font=None):
@@ -29,10 +28,20 @@ class MiniMap:
         self._panel_surface = None
         self._panel_surface_size = None
         self._marker_surface = pygame.Surface(self.size, pygame.SRCALPHA)
+        self._spectator_map_surface = None
+        self._spectator_map_signature = None
+        self._spectator_map_size = None
+        self._spectator_sprite = None
+        self._spectator_sprite_key = None
 
     def _get_map_signature(self):
         generator = self.tile_generator
-        return generator.map_width, generator.map_height, generator.tile_size, len(generator.map_data)
+        return (
+            generator.map_width,
+            generator.map_height,
+            generator.tile_size,
+            getattr(generator, "map_revision", 0),
+        )
 
     def _build_map_surface(self):
         # 정적인 타일 지형은 축소 Surface로 한 번 그려 두고, 프레임마다 동적 표식만 덧그립니다.
@@ -173,3 +182,91 @@ class MiniMap:
 
         panel.blit(marker_surface, (map_x, 28))
         surface.blit(panel, (panel_x, panel_y))
+
+    def draw_spectator(self, surface, players, player_sprite, selected_player_id=None):
+        """전체 맵에서 생존 플레이어를 미니맵과 같은 좌표계의 스프라이트로 표시합니다."""
+        if self._map_surface is None or self._map_signature != self._get_map_signature():
+            self._build_map_surface()
+
+        surface.fill((8, 13, 22))
+        title = self.font.render(
+            "관전 모드  ·  ←/→ 대상 변경  ·  TAB 또는 Esc 종료",
+            True,
+            (240, 245, 255),
+        )
+        surface.blit(title, title.get_rect(center=(surface.get_width() // 2, 48)))
+
+        margin = 72
+        map_top = 92
+        footer_height = 86
+        available_width = max(1, surface.get_width() - margin * 2)
+        available_height = max(1, surface.get_height() - map_top - footer_height - margin)
+        scale = min(
+            available_width / max(1, self._map_surface.get_width()),
+            available_height / max(1, self._map_surface.get_height()),
+        )
+        map_size = (
+            max(1, round(self._map_surface.get_width() * scale)),
+            max(1, round(self._map_surface.get_height() * scale)),
+        )
+        if (
+            self._spectator_map_surface is None
+            or self._spectator_map_signature != self._map_signature
+            or self._spectator_map_size != map_size
+        ):
+            self._spectator_map_surface = pygame.transform.smoothscale(
+                self._map_surface, map_size
+            )
+            self._spectator_map_signature = self._map_signature
+            self._spectator_map_size = map_size
+        map_image = self._spectator_map_surface
+        map_rect = map_image.get_rect(
+            center=(surface.get_width() // 2, map_top + available_height // 2)
+        )
+        pygame.draw.rect(surface, (8, 12, 18), map_rect.inflate(12, 12), border_radius=8)
+        surface.blit(map_image, map_rect)
+        pygame.draw.rect(surface, (180, 205, 225), map_rect, 2, border_radius=4)
+
+        world_width = max(1, self.tile_generator.map_width * self.tile_generator.tile_size)
+        world_height = max(1, self.tile_generator.map_height * self.tile_generator.tile_size)
+        selected_info = None
+        alive_players = []
+        sprite_size = max(16, min(30, round(24 * scale)))
+        sprite_key = (id(player_sprite), sprite_size)
+        if self._spectator_sprite_key != sprite_key:
+            self._spectator_sprite = pygame.transform.smoothscale(
+                player_sprite, (sprite_size, sprite_size)
+            )
+            self._spectator_sprite_key = sprite_key
+        sprite = self._spectator_sprite
+        for player_id, player_info in players.items():
+            if player_info.get("hidden", False) or player_info.get("hp", 0) <= 0:
+                continue
+            alive_players.append((player_id, player_info))
+            center_x = (
+                map_rect.left
+                + round((player_info.get("posX", 0) + player_sprite.get_width() / 2)
+                        * map_rect.width / world_width)
+            )
+            center_y = (
+                map_rect.top
+                + round((player_info.get("posY", 0) + player_sprite.get_height() / 2)
+                        * map_rect.height / world_height)
+            )
+            player_rect = sprite.get_rect(center=(center_x, center_y))
+            if str(player_id) == str(selected_player_id):
+                pygame.draw.rect(
+                    surface, (255, 220, 100), player_rect.inflate(8, 8), 2, border_radius=4
+                )
+                selected_info = player_info
+            surface.blit(sprite, player_rect)
+
+        if selected_info is not None:
+            label = (
+                f"관전 대상: {selected_info.get('name', '플레이어')}  "
+                f"HP {selected_info.get('hp', 0)}"
+            )
+        else:
+            label = f"생존 플레이어 {len(alive_players)}명"
+        footer = self.font.render(label, True, (255, 225, 150))
+        surface.blit(footer, footer.get_rect(center=(surface.get_width() // 2, surface.get_height() - 34)))

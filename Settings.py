@@ -49,7 +49,11 @@ RESERVED_KEYS = {
     pygame.K_5,
     pygame.K_6,
     pygame.K_F9,
+    pygame.K_F1,
     pygame.K_F10,
+    pygame.K_TAB,
+    pygame.K_LEFT,
+    pygame.K_RIGHT,
     pygame.K_f,
     pygame.K_v,
     pygame.K_x,
@@ -59,6 +63,7 @@ RESERVED_KEYS = {
 SETTINGS_PATH = Path(__file__).resolve().with_name("settings.json")
 settings = {
     "mouse_sensitivity": 1.0,
+    "sound_volume": 0.7,
     "owned_skills_only": False,
 }
 key_bindings = DEFAULT_KEY_BINDINGS.copy()
@@ -74,6 +79,9 @@ def load_settings():
     sensitivity = saved.get("mouse_sensitivity", settings["mouse_sensitivity"])
     if isinstance(sensitivity, (int, float)):
         settings["mouse_sensitivity"] = min(2.0, max(0.25, float(sensitivity)))
+    sound_volume = saved.get("sound_volume", settings["sound_volume"])
+    if isinstance(sound_volume, (int, float)):
+        settings["sound_volume"] = min(1.0, max(0.0, float(sound_volume)))
     if isinstance(saved.get("owned_skills_only"), bool):
         settings["owned_skills_only"] = saved["owned_skills_only"]
 

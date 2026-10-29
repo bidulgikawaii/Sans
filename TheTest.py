@@ -24,6 +24,8 @@ from Settings import RESERVED_KEYS, get_key, key_bindings, save_settings, settin
 from PracticeView import PracticeView
 from MiniMap import MiniMap
 from GameRendering import (
+    create_bat_launch,
+    get_bat_launch_frame,
     draw_ammo_status,
     draw_health_bar,
     draw_local_aim_ray,
@@ -39,12 +41,11 @@ from GameRendering import (
     draw_stun_bolt,
     draw_stun_effect,
 )
-from GameAudio import load_effect_sound, play_effect_sound
+from GameAudio import load_effect_sound, play_effect_sound, set_effect_volume
 from Zone import MagneticZone
 from GameModes import get_game_mode, get_game_modes
-from WorldEffects import world_effects
+from WorldEffects import RainWeather, register_weather, world_effects
 from Animation import FrameAnimation
-from BatLaunch import create_bat_launch, get_bat_launch_frame
 from NetworkClient import (
     default_player_name,
     generate_random_player_name,
@@ -59,6 +60,13 @@ display = pygame.display.set_mode((ScreenX, ScreenY), 0, 32)
 clock = pygame.time.Clock()
 ScreenState = "NameInputView"
 settings_key_waiting = None
+settings_overlay_open = False
+settings_dragging = None
+spectator_mode = False
+spectator_selected_player_id = None
+spectator_dismissed = False
+match_completed = False
+active_world_weather = None
 exit_confirm_return_state = "GameView"
 selected_game_mode = GAME_MODE_NORMAL
 local_match = False
@@ -209,6 +217,9 @@ MiniMapFont = pygame.font.Font(
     18,
 )
 MiniMapRenderer = MiniMap(TileGene, MINIMAP_SIZE, MINIMAP_MARGIN, MiniMapFont)
+register_weather(GAME_MODE_NORMAL, RainWeather)
+register_weather(GAME_MODE_DEATHMATCH, RainWeather)
+register_weather(GAME_MODE_DEBUG, RainWeather)
 MagneticZoneState = MagneticZone(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, TileGene.tile_size)
 
 # [커스텀 가능] HP 프레임의 화면 표시 크기입니다. 원본 비율을 유지해 한 번만 축소합니다.
@@ -360,10 +371,6 @@ wards = []
 active_rune_tile = None
 rune_alerts = []
 revive_token = 0
-deathmatch_revive_armed = False
-deathmatch_revive_used = False
-deathmatch_revive_request_pending = False
-processed_revive_effect_ids = set()
 heal_token = 0
 pending_heal_amount = 0
 debug_mode = False
@@ -754,25 +761,6 @@ def use_revive_skill():
     return True
 
 
-def play_revive_effect(x, y):
-    particles.emit(
-        x, y, (255, 215, 90), count=90, speed=190, lifetime=1500, size=7,
-        gravity=-45,
-    )
-    particles.emit(
-        x, y, (255, 250, 210), count=55, speed=145, lifetime=1200, size=5,
-    )
-    particles.ring(
-        x, y, (255, 245, 170), count=72, radius=175, lifetime=1300, size=7,
-    )
-    particles.ring(
-        x, y, (255, 170, 55), count=52, radius=105, lifetime=950, size=6,
-    )
-    particles.ring(
-        x, y, (255, 255, 235), count=40, radius=55, lifetime=650, size=5,
-    )
-
-
 skill_sounds = {
     "폭탄받아라!": load_effect_sound("skill_bomb.wav"),
     "매의 눈": load_effect_sound("skill_vision.wav"),
@@ -793,9 +781,9 @@ weapon_state = WeaponState()
 vision_shape_override = None
 
 
-def reset_match_state(regenerate_world=False, independent_world=False):
+def reset_match_state(regenerate_world=False, independent_world=False, world_seed=None):
     """새 경기에 들어갈 때 이전 경기의 클라이언트 상태를 초기화합니다."""
-    global match_result, result_started_at, system_message, revive_token, deathmatch_revive_armed, deathmatch_revive_used, deathmatch_revive_request_pending, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
+    global match_result, result_started_at, system_message, revive_token, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
     global pending_heal_amount, vision_skill_until, shield_until, haste_until
     global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
     global teleport_placements_remaining, third_weapon_id, special_weapon_crate
@@ -810,6 +798,10 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     global game_start_banner_until
     global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
     global healing_item_count, mouse_fire_hold
+    global settings_overlay_open, settings_key_waiting, settings_dragging
+    global spectator_mode, spectator_selected_player_id
+    global spectator_dismissed
+    global match_completed, active_world_weather
     global announced_unique_supply_ids
     global local_kill_count, match_elapsed_ms, respawn_ms_remaining
     global bush_leaf_request_token
@@ -819,7 +811,11 @@ def reset_match_state(regenerate_world=False, independent_world=False):
         world_seed = (
             random.SystemRandom().getrandbits(32)
             if independent_world
-            else network.init_data["seed"]
+            else (
+                world_seed
+                if world_seed is not None
+                else network.init_data["seed"]
+            )
         )
         TileGene.generate_map(
             MAP_WIDTH_TILES,
@@ -843,7 +839,6 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     processed_damage_event_ids.clear()
     processed_kill_event_ids.clear()
     bat_launch_animations.clear()
-    processed_revive_effect_ids.clear()
     particles.particles.clear()
     server_players.clear()
     skill_cooldowns.clear()
@@ -853,9 +848,6 @@ def reset_match_state(regenerate_world=False, independent_world=False):
         slot.assigned_skill = None
     refresh_skill_inventory()
     revive_token = heal_token = pending_heal_amount = 0
-    deathmatch_revive_armed = False
-    deathmatch_revive_used = False
-    deathmatch_revive_request_pending = False
     healing_item_count = 0
     vision_skill_until = shield_until = haste_until = stealth_until = 0
     stealth_token = 0
@@ -882,6 +874,14 @@ def reset_match_state(regenerate_world=False, independent_world=False):
     respawn_ms_remaining = 0
     send_data["kill_count"] = 0
     game_start_banner_until = 0
+    settings_overlay_open = False
+    settings_key_waiting = None
+    settings_dragging = None
+    spectator_mode = False
+    spectator_selected_player_id = None
+    spectator_dismissed = False
+    match_completed = False
+    active_world_weather = None
     system_message = ""
     weapon_state.reset(main_weapon_id)
     weapon_state.reset_weapon_ammo("flaregun")
@@ -994,6 +994,12 @@ def SettingsView():
         progress = min(1.0, max(0.0, (mouse_x - track.left - 12) / (track.width - 24)))
         settings["mouse_sensitivity"] = round(0.25 + progress * 1.75, 2)
 
+    def update_volume(mouse_x):
+        track = buttons["volume"]
+        progress = min(1.0, max(0.0, (mouse_x - track.left - 12) / (track.width - 24)))
+        settings["sound_volume"] = round(progress, 2)
+        set_effect_volume(settings["sound_volume"])
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
@@ -1018,6 +1024,9 @@ def SettingsView():
             elif buttons["sensitivity"].collidepoint(event.pos):
                 update_sensitivity(event.pos[0])
                 save_settings()
+            elif buttons["volume"].collidepoint(event.pos):
+                update_volume(event.pos[0])
+                save_settings()
             elif buttons["owned_only"].collidepoint(event.pos):
                 settings["owned_skills_only"] = not settings["owned_skills_only"]
                 refresh_skill_inventory()
@@ -1034,6 +1043,8 @@ def SettingsView():
         elif event.type == pygame.MOUSEMOTION and pygame.mouse.get_pressed()[0]:
             if buttons["sensitivity"].collidepoint(event.pos):
                 update_sensitivity(event.pos[0])
+            elif buttons["volume"].collidepoint(event.pos):
+                update_volume(event.pos[0])
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             save_settings()
 
@@ -1043,11 +1054,6 @@ def begin_lobby_join(mode):
     selected_game_mode = mode
     debug_mode = mode == GAME_MODE_DEBUG
     local_match = False
-    world_effects.activate(
-        mode,
-        (MAP_WIDTH_TILES * TileGene.tile_size, MAP_HEIGHT_TILES * TileGene.tile_size),
-        force=True,
-    )
     network.lobby_status = {
         "count": 0,
         "max_players": MAX_PLAYERS,
@@ -1062,7 +1068,7 @@ def begin_lobby_join(mode):
 
 def start_practice_match():
     global ScreenState, selected_game_mode, debug_mode, local_match
-    global game_start_banner_until
+    global game_start_banner_until, active_world_weather
     reset_match_state(regenerate_world=True, independent_world=True)
     debug_mode = True
     local_match = True
@@ -1071,7 +1077,9 @@ def start_practice_match():
         GAME_MODE_DEBUG,
         (MAP_WIDTH_TILES * TileGene.tile_size, MAP_HEIGHT_TILES * TileGene.tile_size),
         force=True,
+        weather="rain",
     )
+    active_world_weather = "rain"
     owned_skills.update(SKILL_BOOK)
     refresh_skill_inventory()
     game_start_banner_until = pygame.time.get_ticks() + 2000
@@ -1145,7 +1153,7 @@ def LoadingView():
     global local_match, selected_game_mode
     global lobby_notice, lobby_notice_until
     global next_unique_supply_drop_at, unique_supply_notice, unique_supply_notice_until
-    global match_spawn_index
+    global match_spawn_index, spawn_tiles, active_world_weather
     debug_mode = selected_game_mode == GAME_MODE_DEBUG
     if debug_mode:
         owned_skills.update(SKILL_BOOK)
@@ -1163,6 +1171,19 @@ def LoadingView():
             response = pickle.loads(network.client.recv(4096))
             if response.get("type") == "lobby_status":
                 network.lobby_status = response
+                match_seed = response.get("world_seed")
+                if (
+                    response.get("accepted")
+                    and isinstance(match_seed, int)
+                    and match_seed != getattr(LoadingView, "_loaded_world_seed", None)
+                ):
+                    TileGene.generate_map(
+                        MAP_WIDTH_TILES,
+                        MAP_HEIGHT_TILES,
+                        seed_value=match_seed,
+                    )
+                    spawn_tiles = get_fixed_spawn_tiles()
+                    LoadingView._loaded_world_seed = match_seed
                 if response.get("accepted"):
                     match_spawn_index = response.get("spawn_index", 0)
             elif response.get("type") == "match_cancelled":
@@ -1186,7 +1207,15 @@ def LoadingView():
     )
 
     if network.lobby_status.get("started") and network.lobby_status.get("accepted", True):
-        reset_match_state(regenerate_world=True)
+        match_seed = network.lobby_status.get("world_seed")
+        reset_match_state(regenerate_world=True, world_seed=match_seed)
+        world_effects.activate(
+            selected_game_mode,
+            (MAP_WIDTH_TILES * TileGene.tile_size, MAP_HEIGHT_TILES * TileGene.tile_size),
+            force=True,
+            weather=network.lobby_status.get("weather"),
+        )
+        active_world_weather = network.lobby_status.get("weather")
         if debug_mode:
             owned_skills.update(SKILL_BOOK)
             refresh_skill_inventory()
@@ -1212,6 +1241,9 @@ def LoadingView():
 def show_victory():
     """승리 결과를 기록하고 승리 화면으로 전환합니다."""
     global match_result, result_started_at, ScreenState
+    global match_completed, spectator_mode
+    match_completed = True
+    spectator_mode = False
     if match_result != "victory":
         match_result = "victory"
         result_started_at = pygame.time.get_ticks()
@@ -1220,7 +1252,9 @@ def show_victory():
 
 def show_defeat():
     """패배 결과를 기록하고 패배 화면으로 전환합니다."""
-    global match_result, result_started_at, ScreenState
+    global match_result, result_started_at, ScreenState, spectator_mode
+    if match_completed:
+        spectator_mode = False
     if match_result != "defeat":
         match_result = "defeat"
         result_started_at = pygame.time.get_ticks()
@@ -1228,10 +1262,12 @@ def show_defeat():
 
 
 def GameOverView():
-    global result_started_at
+    global result_started_at, spectator_mode, spectator_selected_player_id
+    global ScreenState
     if not result_started_at:
         result_started_at = pygame.time.get_ticks()
-    _draw_result_screen("패배", (220, 50, 50), pygame.time.get_ticks() - result_started_at)
+    elapsed = pygame.time.get_ticks() - result_started_at
+    _draw_result_screen("패배", (220, 50, 50), elapsed)
 
     for event in pygame.event.get():
         if event.type == pygame.KEYDOWN:
@@ -1239,6 +1275,20 @@ def GameOverView():
                 requeue_after_match()
             elif event.key == pygame.K_ESCAPE:
                 request_game_exit()
+
+    if (
+        not match_completed
+        and not spectator_dismissed
+        and elapsed >= DEFEAT_SPECTATOR_DELAY_MS
+    ):
+        alive_players = [
+            player_id
+            for player_id, info in server_players.items()
+            if player_id != network.player_id and info.get("hp", 0) > 0
+        ]
+        spectator_selected_player_id = alive_players[0] if alive_players else None
+        spectator_mode = True
+        ScreenState = "GameView"
 
 
 def VictoryView():
@@ -1391,7 +1441,7 @@ def _finish_teleport_cycle(now):
 
 
 def activate_quick_slot(key, reinstall=False):
-    global system_message, vision_shape_override, vision_skill_until, shield_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining, revive_token, deathmatch_revive_armed, deathmatch_revive_used, deathmatch_revive_request_pending, screen_shake
+    global system_message, vision_shape_override, vision_skill_until, shield_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining, screen_shake
     slot_actions = {get_key(f"slot_{name.lower()}"): name for name in ("Q", "E", "T")}
     slot_name = slot_actions.get(key)
     slot = next((slot for slot in quick_slots if slot.key_name == slot_name), None)
@@ -1401,26 +1451,55 @@ def activate_quick_slot(key, reinstall=False):
         return
 
     skill_name = slot.assigned_skill
+    now = pygame.time.get_ticks()
     if skill_name == "부활의 차":
         if (
             selected_game_mode == GAME_MODE_DEATHMATCH
             and not local_match
         ):
-            if deathmatch_revive_used:
-                system_message = "부활의 차는 데스매치에서 한 번만 사용할 수 있습니다."
+            if now < skill_cooldowns.get(skill_name, 0):
+                remain = (skill_cooldowns[skill_name] - now) / 1000
+                system_message = f"부활의 차 재사용 대기: {remain:.1f}초"
                 return
-            if deathmatch_revive_request_pending:
-                system_message = "부활의 차 사용 요청을 확인 중입니다."
-                return
-            revive_token += 1
-            send_data["revive_token"] = revive_token
-            send_data["revive_request"] = True
-            deathmatch_revive_request_pending = True
-            system_message = "부활의 차 사용 요청 중..."
+            center_x, center_y = get_player_world_center(
+                my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
+            )
+            target_x, target_y = screen_to_world(
+                *get_aim_mouse_position(AimCameraPosX, AimCameraPosY),
+                AimCameraPosX, AimCameraPosY, camera_zoom,
+            )
+            angle = math.atan2(target_y - center_y, target_x - center_x)
+            soul_bolt = Bullet(
+                6,
+                damage=REVIVE_ATTACK_DAMAGE,
+                owner_id=network.player_id,
+                weapon_id="pistol",
+            )
+            soul_bolt.launch(
+                center_x,
+                center_y,
+                center_x + math.cos(angle) * BULLET_TARGET_DISTANCE,
+                center_y + math.sin(angle) * BULLET_TARGET_DISTANCE,
+                speed=WEAPONS["pistol"].bullet_speed,
+            )
+            soul_bolt.just_fired = True
+            bullets.append(soul_bolt)
+            skill_cooldowns[skill_name] = now + REVIVE_ATTACK_COOLDOWN_MS
+            break_stealth_on_attack()
+            particles.emit(
+                center_x + math.cos(angle) * 38,
+                center_y + math.sin(angle) * 38,
+                (255, 220, 120),
+                count=28,
+                speed=125,
+                lifetime=650,
+                size=6,
+            )
+            particles.ring(center_x, center_y, (255, 235, 155), count=26, radius=48, lifetime=500, size=4)
+            system_message = f"영혼 탄환 발사! {REVIVE_ATTACK_DAMAGE} 피해 · 10초 쿨다운"
             return
         system_message = "부활의 차는 장착 중 사망하면 자동 발동합니다."
         return
-    now = pygame.time.get_ticks()
     deathmatch_teleport = (
         skill_name == "텔포"
         and selected_game_mode == GAME_MODE_DEATHMATCH
@@ -1597,8 +1676,9 @@ def activate_quick_slot(key, reinstall=False):
         )
         destination = my_player.rect.copy()
         destination.center = (round(target_x), round(target_y))
+        # 순간이동 경로는 벽을 무시하고, 착지 지점만 안전한 바닥인지 검사합니다.
         if TileGene.check_collision(destination):
-            system_message = "벽이나 맵 밖으로는 순간이동할 수 없습니다."
+            system_message = "벽 안이나 맵 밖에는 착지할 수 없습니다."
             return
         old_x = my_player.X + my_player.rect.width / 2
         old_y = my_player.Y + my_player.rect.height / 2
@@ -2180,7 +2260,87 @@ def handle_mouse_up(event, mouse_pos):
     mouse_fire_hold = False
 
 
+def handle_settings_overlay_event(event):
+    global running, settings_key_waiting, settings_overlay_open, settings_dragging
+    global system_message
+    buttons = main_screen.draw_settings(
+        settings, key_bindings, settings_key_waiting, overlay=True
+    )
+    if event.type == pygame.QUIT:
+        running = False
+    elif event.type == pygame.KEYDOWN:
+        if settings_key_waiting:
+            if event.key == pygame.K_ESCAPE:
+                settings_key_waiting = None
+            elif event.key not in RESERVED_KEYS:
+                if (
+                    event.key in key_bindings.values()
+                    and key_bindings[settings_key_waiting] != event.key
+                ):
+                    system_message = "이미 다른 기능에 지정된 키입니다."
+                else:
+                    key_bindings[settings_key_waiting] = event.key
+                    settings_key_waiting = None
+                    save_settings()
+        elif event.key in (pygame.K_ESCAPE, pygame.K_F1):
+            settings_overlay_open = False
+            save_settings()
+    elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        if buttons["back"].collidepoint(event.pos):
+            settings_overlay_open = False
+            settings_key_waiting = None
+            settings_dragging = None
+            save_settings()
+        elif buttons["sensitivity"].collidepoint(event.pos):
+            settings_dragging = "sensitivity"
+            track = buttons["sensitivity"]
+            progress = min(
+                1.0,
+                max(0.0, (event.pos[0] - track.left - 12) / (track.width - 24)),
+            )
+            settings["mouse_sensitivity"] = round(0.25 + progress * 1.75, 2)
+        elif buttons["volume"].collidepoint(event.pos):
+            settings_dragging = "volume"
+            track = buttons["volume"]
+            progress = min(
+                1.0,
+                max(0.0, (event.pos[0] - track.left - 12) / (track.width - 24)),
+            )
+            settings["sound_volume"] = round(progress, 2)
+            set_effect_volume(settings["sound_volume"])
+        elif buttons["owned_only"].collidepoint(event.pos):
+            settings["owned_skills_only"] = not settings["owned_skills_only"]
+            refresh_skill_inventory()
+            save_settings()
+        else:
+            settings_key_waiting = next(
+                (
+                    action
+                    for action, rect in buttons["keys"].items()
+                    if rect.collidepoint(event.pos)
+                ),
+                None,
+            )
+    elif event.type == pygame.MOUSEMOTION and settings_dragging:
+        track = buttons[settings_dragging]
+        progress = min(
+            1.0,
+            max(0.0, (event.pos[0] - track.left - 12) / (track.width - 24)),
+        )
+        if settings_dragging == "sensitivity":
+            settings["mouse_sensitivity"] = round(0.25 + progress * 1.75, 2)
+        else:
+            settings["sound_volume"] = round(progress, 2)
+            set_effect_volume(settings["sound_volume"])
+    elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+        settings_dragging = None
+        save_settings()
+
+
 def handle_game_events():
+    global settings_overlay_open, settings_key_waiting, spectator_mode
+    global spectator_selected_player_id, mouse_fire_hold
+    global spectator_dismissed
     mouse_pos = pygame.mouse.get_pos()
     event_handlers = {
         pygame.QUIT: handle_quit,
@@ -2189,6 +2349,56 @@ def handle_game_events():
         pygame.MOUSEBUTTONUP: handle_mouse_up,
     }
     for event in pygame.event.get():
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_F1:
+            settings_overlay_open = not settings_overlay_open
+            settings_key_waiting = None
+            mouse_fire_hold = False
+            continue
+        if settings_overlay_open:
+            handle_settings_overlay_event(event)
+            continue
+        if (
+            event.type == pygame.KEYDOWN
+            and event.key == pygame.K_TAB
+            and not match_completed
+        ):
+            if spectator_mode and match_result == "defeat":
+                spectator_dismissed = True
+            spectator_mode = not spectator_mode
+            mouse_fire_hold = False
+            if spectator_mode:
+                spectator_selected_player_id = next(
+                    (
+                        player_id
+                        for player_id, info in server_players.items()
+                        if info.get("hp", 0) > 0
+                    ),
+                    None,
+                )
+            continue
+        if spectator_mode:
+            if event.type == pygame.QUIT:
+                handle_quit(event, mouse_pos)
+            elif event.type == pygame.KEYDOWN:
+                alive_players = [
+                    player_id
+                    for player_id, info in server_players.items()
+                    if info.get("hp", 0) > 0
+                ]
+                if event.key == pygame.K_ESCAPE or event.key == pygame.K_TAB:
+                    if match_result == "defeat":
+                        spectator_dismissed = True
+                    spectator_mode = False
+                elif alive_players and event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                    try:
+                        selected_index = alive_players.index(spectator_selected_player_id)
+                    except ValueError:
+                        selected_index = 0
+                    direction = -1 if event.key == pygame.K_LEFT else 1
+                    spectator_selected_player_id = alive_players[
+                        (selected_index + direction) % len(alive_players)
+                    ]
+            continue
         handler = event_handlers.get(event.type)
         if handler:
             handler(event, mouse_pos)
@@ -2210,15 +2420,15 @@ def GameFrame(practice_mode: bool = False):
     global selected_game_mode, debug_mode
     global lobby_notice, lobby_notice_until
     global unique_supply_notice, unique_supply_notice_until
-    global deathmatch_revive_armed, deathmatch_revive_used
-    global deathmatch_revive_request_pending
+    global active_world_weather, match_completed, spectator_mode
 
     is_practice_mode = bool(practice_mode or local_match)
     MousePos = pygame.mouse.get_pos()
     deathmatch = selected_game_mode == GAME_MODE_DEATHMATCH and not is_practice_mode
     if my_player.Hp <= 0 and not deathmatch and not use_revive_skill():
-        show_defeat()
-        return
+        if not spectator_mode or match_result != "defeat":
+            show_defeat()
+            return
     now = pygame.time.get_ticks()
     revived_after_server_update = False
     if (is_practice_mode or debug_mode) and training_dummy is None:
@@ -2449,7 +2659,7 @@ def GameFrame(practice_mode: bool = False):
     send_data["revive_armed"] = any(
         slot.assigned_skill == "부활의 차"
         for slot in quick_slots
-    ) or deathmatch_revive_armed
+    )
     send_data["hit_events"] = list(pending_hit_events) if my_player.Hp > 0 else []
     send_data["supply_spawn_requests"] = list(pending_supply_spawn_requests)
     send_data["supply_collect_ids"] = list(pending_supply_collect_ids)
@@ -2462,6 +2672,7 @@ def GameFrame(practice_mode: bool = False):
             "y": bullet.y,
             "angle": bullet.angle,
             "weapon_id": bullet.weapon_id,
+            "damage": bullet.damage,
             "stun_ms": bullet.stun_ms,
             "hold_ms": 0,
         }
@@ -2494,6 +2705,32 @@ def GameFrame(practice_mode: bool = False):
             server_players = server_response
             pending_bush_leaf_requests.clear()
             own_snapshot = server_players.get(network.player_id)
+            if spectator_mode:
+                alive_players = [
+                    player_id
+                    for player_id, info in server_players.items()
+                    if player_id != network.player_id and info.get("hp", 0) > 0
+                ]
+                if spectator_selected_player_id not in alive_players:
+                    spectator_selected_player_id = (
+                        alive_players[0] if alive_players else None
+                    )
+            if own_snapshot:
+                server_weather = own_snapshot.get("weather")
+                if (
+                    server_weather in ("rain", "snow")
+                    and server_weather != active_world_weather
+                ):
+                    world_effects.activate(
+                        selected_game_mode,
+                        (
+                            MAP_WIDTH_TILES * TileGene.tile_size,
+                            MAP_HEIGHT_TILES * TileGene.tile_size,
+                        ),
+                        force=True,
+                        weather=server_weather,
+                    )
+                    active_world_weather = server_weather
             event_snapshot = own_snapshot or {}
             for leaf_event in event_snapshot.get("bush_leaf_events", []):
                 event_id = leaf_event.get("event_id")
@@ -2525,18 +2762,6 @@ def GameFrame(practice_mode: bool = False):
                     if launch is not None:
                         bat_launch_animations[str(kill_event.get("target_id"))] = launch
             kill_feed = [event for event in kill_feed if now - event["started_at"] < 5000][-5:]
-            for revive_event in event_snapshot.get("revive_events", []):
-                event_id = revive_event.get("event_id")
-                if event_id is None or event_id in processed_revive_effect_ids:
-                    continue
-                processed_revive_effect_ids.add(event_id)
-                effect_x = revive_event.get("x", 0) + my_player.rect.width / 2
-                effect_y = revive_event.get("y", 0) + my_player.rect.height / 2
-                play_revive_effect(effect_x, effect_y)
-                if str(revive_event.get("player_id")) == str(network.player_id):
-                    deathmatch_revive_armed = False
-                    screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 12)
-                    system_message = "부활의 차가 치명상을 막았습니다!"
             for damage_event in event_snapshot.get("damage_events", []):
                 event_id = damage_event.get("event_id")
                 if event_id in processed_damage_event_ids:
@@ -2674,38 +2899,6 @@ def GameFrame(practice_mode: bool = False):
                 respawn_ms_remaining = int(own_snapshot.get("respawn_ms_remaining", 0))
                 was_dead = my_player.Hp <= 0
                 my_player.Hp = own_snapshot.get("hp", my_player.Hp)
-                if deathmatch:
-                    deathmatch_revive_armed = bool(
-                        own_snapshot.get("revive_armed", False)
-                    )
-                    deathmatch_revive_used = bool(
-                        own_snapshot.get("deathmatch_revive_used", False)
-                    )
-                    if (
-                        deathmatch_revive_request_pending
-                        and own_snapshot.get("revive_token") == revive_token
-                    ):
-                        deathmatch_revive_request_pending = False
-                        if (
-                            own_snapshot.get("revive_accepted_token")
-                            == revive_token
-                        ):
-                            owned_skills.discard("부활의 차")
-                            for revive_slot in quick_slots:
-                                if revive_slot.assigned_skill == "부활의 차":
-                                    revive_slot.assigned_skill = None
-                            refresh_skill_inventory()
-                            effect_x = my_player.X + my_player.rect.width / 2
-                            effect_y = my_player.Y + my_player.rect.height / 2
-                            play_revive_effect(effect_x, effect_y)
-                            screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 12)
-                            system_message = (
-                                "부활의 차 발동! 체력을 완전히 회복하고 사망 1회를 막습니다."
-                            )
-                        else:
-                            system_message = (
-                                "부활의 차는 데스매치에서 한 번만 사용할 수 있습니다."
-                            )
                 if deathmatch and was_dead and my_player.Hp > 0:
                     my_player.X = own_snapshot.get("posX", my_player.X)
                     my_player.Y = own_snapshot.get("posY", my_player.Y)
@@ -2734,6 +2927,8 @@ def GameFrame(practice_mode: bool = False):
                     revived_after_server_update = use_revive_skill()
             own_winner_ids = own_snapshot.get("winner_ids", []) if own_snapshot else []
             if own_winner_ids and not revived_after_server_update:
+                match_completed = True
+                spectator_mode = False
                 if str(network.player_id) in {str(winner_id) for winner_id in own_winner_ids}:
                     show_victory()
                 else:
@@ -2896,23 +3091,11 @@ def GameFrame(practice_mode: bool = False):
             destructible = TileGene.destructible_collision(bullet.collision_rect)
             if destructible:
                 tile_x, tile_y, tile_type = destructible
-                if tile_type == 9 and pygame.time.get_ticks() >= bullet.reflect_until:
-                    stone_center = pygame.Vector2(
-                        (tile_x + 0.5) * TileGene.tile_size,
-                        (tile_y + 0.5) * TileGene.tile_size,
-                    )
-                    bullet_center = pygame.Vector2(bullet.rect.center)
-                    bullet.reflect(
-                        horizontal=abs(bullet_center.x - stone_center.x) > abs(bullet_center.y - stone_center.y),
-                        vertical=abs(bullet_center.y - stone_center.y) >= abs(bullet_center.x - stone_center.x),
-                    )
-                    particles.emit(bullet.x, bullet.y, (190, 200, 215), count=10, speed=55, lifetime=280, size=3)
-                else:
-                    if TileGene.destroy_furniture(tile_x, tile_y):
-                        pending_furniture_destroys.append((tile_x, tile_y))
-                        particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
-                    bullet.is_active = False
-                    continue
+                if TileGene.destroy_furniture(tile_x, tile_y):
+                    pending_furniture_destroys.append((tile_x, tile_y))
+                    particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
+                bullet.is_active = False
+                continue
             if TileGene.segment_wall_collision(
                 bullet.previous_x, bullet.previous_y, bullet.x, bullet.y
             ):
@@ -2990,7 +3173,7 @@ def GameFrame(practice_mode: bool = False):
             config = WEAPONS.get(weapon_id, WEAPONS[DEFAULT_WEAPON_ID])
             enemy_bullet = Bullet(
                 config.bullet_size,
-                damage=config.damage,
+                damage=bullet_info.get("damage", config.damage),
                 owner_id=bullet_info.get("owner_id"),
                 weapon_id=weapon_id,
                 stun_ms=bullet_info.get("stun_ms", 0),
@@ -3012,17 +3195,7 @@ def GameFrame(practice_mode: bool = False):
             destructible = TileGene.destructible_collision(bullet.collision_rect)
             if destructible:
                 tile_x, tile_y, tile_type = destructible
-                if tile_type == 9 and pygame.time.get_ticks() >= bullet.reflect_until:
-                    stone_center = pygame.Vector2(
-                        (tile_x + 0.5) * TileGene.tile_size,
-                        (tile_y + 0.5) * TileGene.tile_size,
-                    )
-                    bullet_center = pygame.Vector2(bullet.rect.center)
-                    bullet.reflect(
-                        horizontal=abs(bullet_center.x - stone_center.x) > abs(bullet_center.y - stone_center.y),
-                        vertical=abs(bullet_center.y - stone_center.y) >= abs(bullet_center.x - stone_center.x),
-                    )
-                elif TileGene.destroy_furniture(tile_x, tile_y):
+                if TileGene.destroy_furniture(tile_x, tile_y):
                     pending_furniture_destroys.append((tile_x, tile_y))
                     particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
                     bullet.is_active = False
@@ -3053,8 +3226,9 @@ def GameFrame(practice_mode: bool = False):
     remote_bullets = [b for b in remote_bullets if b.is_active]
 
     if my_player.Hp <= 0 and not deathmatch and not use_revive_skill():
-        show_defeat()
-        return
+        if not spectator_mode or match_result != "defeat":
+            show_defeat()
+            return
 
     visible_player_ids = set()
     # 다른 플레이어 그리기
@@ -3857,6 +4031,17 @@ def GameFrame(practice_mode: bool = False):
                 HURT_FLASH_MAX_ALPHA * (1 - elapsed / HURT_FLASH_DURATION_MS)
             ))
             display.blit(hurt_image, (0, 0))
+    if spectator_mode and not settings_overlay_open:
+        MiniMapRenderer.draw_spectator(
+            display,
+            frame_server_players,
+            IML.Player,
+            spectator_selected_player_id,
+        )
+    if settings_overlay_open:
+        main_screen.draw_settings(
+            settings, key_bindings, settings_key_waiting, overlay=True
+        )
     # ------------------ [그리기 끝] ------------------
 
 

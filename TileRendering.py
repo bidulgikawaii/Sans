@@ -83,13 +83,6 @@ class TileRenderingMixin:
         pygame.draw.line(chair, (100, 55, 30), (self.tile_size - 11, 27), (self.tile_size - 8, self.tile_size - 3), 3)
         self.tile_images[8] = chair
 
-        stone = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
-        stone_points = [(5, 22), (9, 9), (20, 4), (29, 12), (26, 27), (14, 30)]
-        pygame.draw.polygon(stone, (105, 110, 120), stone_points)
-        pygame.draw.polygon(stone, (190, 195, 205), stone_points, 2)
-        pygame.draw.line(stone, (145, 150, 160), (10, 12), (22, 24), 2)
-        self.tile_images[9] = stone
-
         water = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
         water.fill((45, 145, 205, 210))
         pygame.draw.line(water, (150, 225, 255), (4, self.tile_size // 3), (self.tile_size - 4, self.tile_size // 3), 2)
@@ -144,36 +137,6 @@ class TileRenderingMixin:
                     )
                     self._scaled_world_zoom = zoom
                 surface.blit(self._scaled_world_surface, (-round(camera_x * zoom), -round(camera_y * zoom)))
-        self.draw_stones(surface, camera_x, camera_y, zoom)
-
-    def draw_stones(self, surface, camera_x, camera_y, zoom=1.0):
-        """타일과 분리된 큰 돌 오브젝트를 그립니다."""
-        for stone in self.stone_objects:
-            rect = stone["rect"]
-            screen_rect = pygame.Rect(
-                round((rect.x - camera_x) * zoom),
-                round((rect.y - camera_y) * zoom),
-                max(1, round(rect.width * zoom)),
-                max(1, round(rect.height * zoom)),
-            )
-            points = [
-                (screen_rect.left + screen_rect.width // 4, screen_rect.top),
-                (screen_rect.right - screen_rect.width // 5, screen_rect.top + screen_rect.height // 8),
-                (screen_rect.right, screen_rect.centery),
-                (screen_rect.right - screen_rect.width // 5, screen_rect.bottom),
-                (screen_rect.left + screen_rect.width // 5, screen_rect.bottom - screen_rect.height // 8),
-                (screen_rect.left, screen_rect.centery),
-            ]
-            pygame.draw.polygon(surface, (80, 85, 95), points)
-            pygame.draw.polygon(surface, (185, 190, 200), points, max(1, round(2 * zoom)))
-            pygame.draw.line(
-                surface,
-                (135, 140, 150),
-                (screen_rect.left + screen_rect.width // 4, screen_rect.top + screen_rect.height // 4),
-                (screen_rect.centerx, screen_rect.centery),
-                max(1, round(2 * zoom)),
-            )
-
     def clamp_camera(self, camera_x, camera_y, screen_width, screen_height, zoom=1.0):
         """카메라가 맵 바깥을 향하지 않도록 월드 좌표에서 제한합니다."""
         view_width = screen_width / zoom

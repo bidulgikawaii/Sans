@@ -63,8 +63,6 @@ def new_match_events():
         "kill_scores": {},
         "damage_events": [],
         "next_damage_event_id": 1,
-        "revive_events": [],
-        "next_revive_event_id": 1,
         "supply_drops": {},
         "next_supply_drop_id": 1,
         "supply_collection_events": [],
@@ -91,22 +89,6 @@ def append_kill_event(
         event["bat_launch"] = bat_launch
     events["kill_events"].append(event)
     events["next_kill_event_id"] += 1
-
-
-def consume_deathmatch_revive(events, player_id, player):
-    if player["hp"] > 0 or not player.get("revive_armed", False):
-        return False
-    player["hp"] = 1
-    player["revive_armed"] = False
-    events["revive_events"].append({
-        "event_id": events["next_revive_event_id"],
-        "player_id": player_id,
-        "x": player.get("posX", 0),
-        "y": player.get("posY", 0),
-    })
-    events["next_revive_event_id"] += 1
-    events["revive_events"] = events["revive_events"][-32:]
-    return True
 
 
 match_events = {mode.mode_id: new_match_events() for mode in get_game_modes()}
@@ -187,9 +169,7 @@ def handle_client(conn, player_id):
         "stealth_until": 0.0,
         "wards": [],
         "revive_token": 0,
-        "revive_accepted_token": 0,
         "revive_armed": False,
-        "deathmatch_revive_used": False,
         "heal_token": 0,
         "shield_active": False,
         "rune_alerts": [],
@@ -254,9 +234,7 @@ def handle_client(conn, player_id):
                             "stealth_until": 0.0,
                             "wards": [],
                             "revive_token": 0,
-                            "revive_accepted_token": 0,
                             "revive_armed": False,
-                            "deathmatch_revive_used": False,
                             "heal_token": 0,
                             "shield_active": False,
                             "rune_alerts": [],
@@ -544,6 +522,8 @@ def handle_client(conn, player_id):
                 players[player_id]["revive_armed"] = bool(
                     client_data.get("revive_armed", False)
                 )
+            else:
+                players[player_id]["revive_armed"] = False
             players[player_id]["shield_active"] = bool(client_data.get("shield_active", False))
             heal_token = int(client_data.get("heal_token", 0))
             if heal_token != players[player_id]["heal_token"]:
@@ -559,13 +539,7 @@ def handle_client(conn, player_id):
                 and revive_token != players[player_id]["revive_token"]
             ):
                 players[player_id]["revive_token"] = revive_token
-                if mode == GAME_MODE_DEATHMATCH:
-                    if not players[player_id]["deathmatch_revive_used"]:
-                        players[player_id]["hp"] = PLAYER_MAX_HP
-                        players[player_id]["revive_armed"] = True
-                        players[player_id]["deathmatch_revive_used"] = True
-                        players[player_id]["revive_accepted_token"] = revive_token
-                else:
+                if mode != GAME_MODE_DEATHMATCH:
                     players[player_id]["hp"] = max(1, round(PLAYER_MAX_HP * REVIVE_HP_RATIO))
                     players[player_id]["revive_armed"] = False
             rune_ping = client_data.get("rune_ping")
@@ -616,10 +590,6 @@ def handle_client(conn, player_id):
                     previous_hp = players[player_id]["hp"]
                     players[player_id]["hp"] = max(0, players[player_id]["hp"] - damage)
                     players[player_id]["zone_damage_credit"] -= damage
-                    if mode == GAME_MODE_DEATHMATCH:
-                        consume_deathmatch_revive(
-                            events, player_id, players[player_id]
-                        )
                     if (
                         previous_hp > 0
                         and players[player_id]["hp"] <= 0
@@ -689,10 +659,6 @@ def handle_client(conn, player_id):
                 target["hp"] = previous_hp - damage
                 if is_bat_hit:
                     target["revive_armed"] = False
-                if mode == GAME_MODE_DEATHMATCH and not is_bat_hit and consume_deathmatch_revive(
-                    events, target_id, target
-                ):
-                    damage = previous_hp - target["hp"]
                 events["damage_events"].append({
                     "event_id": events["next_damage_event_id"],
                     "attacker_id": attacker_id,
@@ -920,13 +886,6 @@ def handle_client(conn, player_id):
                 player["winner_ids"] = list(winner_ids or [])
                 player["kill_scores"] = dict(score_snapshot)
                 player["kill_count"] = score_snapshot.get(snapshot_player_id, 0)
-                player["deathmatch_revive_used"] = player.get(
-                    "deathmatch_revive_used", False
-                )
-                player["revive_token"] = player.get("revive_token", 0)
-                player["revive_accepted_token"] = player.get(
-                    "revive_accepted_token", 0
-                )
                 player["match_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
                 respawn_at = player.get("deathmatch_respawn_at")
                 player["respawn_ms_remaining"] = (
@@ -936,7 +895,6 @@ def handle_client(conn, player_id):
                 player["zone_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
                 player["kill_events"] = list(events["kill_events"][-12:])
                 player["damage_events"] = list(events["damage_events"][-32:])
-                player["revive_events"] = list(events["revive_events"])
                 player["supply_drops"] = [
                     {
                         **drop,
@@ -957,6 +915,7 @@ def handle_client(conn, player_id):
                     0, round((player.get("stunned_until", 0.0) - time.monotonic()) * 1000)
                 )
                 player["hidden"] = player.get("hp", 0) <= 0
+                player["weather"] = lobby_state.get("weather")
             conn.sendall(pickle.dumps(snapshot))
             if winner_ids is not None:
                 with player_lock:

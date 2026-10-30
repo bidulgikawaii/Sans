@@ -23,6 +23,7 @@ from MainScreen import MainScreenRenderer
 from Settings import RESERVED_KEYS, get_key, key_bindings, save_settings, settings
 from PracticeView import PracticeView
 from MiniMap import MiniMap
+from SpectatorMode import SpectatorMode
 from GameRendering import (
     create_bat_launch,
     get_bat_launch_frame,
@@ -62,9 +63,7 @@ ScreenState = "NameInputView"
 settings_key_waiting = None
 settings_overlay_open = False
 settings_dragging = None
-spectator_mode = False
-spectator_selected_player_id = None
-spectator_dismissed = False
+spectator_mode = SpectatorMode()
 match_completed = False
 active_world_weather = None
 exit_confirm_return_state = "GameView"
@@ -339,6 +338,7 @@ send_data = {
     
     # 발사한 총알 정보 (여러 개 가능)
     "bullets": [],      # [{"x": x, "y": y, "angle": angle}, ...]
+    "spectator_skill_events": [],
     "hit_events": [],   # [{"target_id": id, "damage": damage, "hit_part": part}, ...]
     "bush_leaf_requests": [],
 }
@@ -358,6 +358,7 @@ running = True
 bullets = []
 remote_bullets = []
 processed_bullet_events = set()
+pending_spectator_skill_events = []
 processed_damage_event_ids = set()
 processed_kill_event_ids = set()
 bat_launch_animations = {}
@@ -799,8 +800,6 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
     global healing_item_count, mouse_fire_hold
     global settings_overlay_open, settings_key_waiting, settings_dragging
-    global spectator_mode, spectator_selected_player_id
-    global spectator_dismissed
     global match_completed, active_world_weather
     global announced_unique_supply_ids
     global local_kill_count, match_elapsed_ms, respawn_ms_remaining
@@ -836,6 +835,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     processed_bush_leaf_event_ids.clear()
     bush_leaf_request_token = 0
     processed_bullet_events.clear()
+    pending_spectator_skill_events.clear()
     processed_damage_event_ids.clear()
     processed_kill_event_ids.clear()
     bat_launch_animations.clear()
@@ -877,9 +877,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     settings_overlay_open = False
     settings_key_waiting = None
     settings_dragging = None
-    spectator_mode = False
-    spectator_selected_player_id = None
-    spectator_dismissed = False
+    spectator_mode.reset()
     match_completed = False
     active_world_weather = None
     system_message = ""
@@ -1241,9 +1239,9 @@ def LoadingView():
 def show_victory():
     """승리 결과를 기록하고 승리 화면으로 전환합니다."""
     global match_result, result_started_at, ScreenState
-    global match_completed, spectator_mode
+    global match_completed
     match_completed = True
-    spectator_mode = False
+    spectator_mode.stop()
     if match_result != "victory":
         match_result = "victory"
         result_started_at = pygame.time.get_ticks()
@@ -1252,9 +1250,9 @@ def show_victory():
 
 def show_defeat():
     """패배 결과를 기록하고 패배 화면으로 전환합니다."""
-    global match_result, result_started_at, ScreenState, spectator_mode
+    global match_result, result_started_at, ScreenState
     if match_completed:
-        spectator_mode = False
+        spectator_mode.stop()
     if match_result != "defeat":
         match_result = "defeat"
         result_started_at = pygame.time.get_ticks()
@@ -1262,7 +1260,7 @@ def show_defeat():
 
 
 def GameOverView():
-    global result_started_at, spectator_mode, spectator_selected_player_id
+    global result_started_at
     global ScreenState
     if not result_started_at:
         result_started_at = pygame.time.get_ticks()
@@ -1276,18 +1274,13 @@ def GameOverView():
             elif event.key == pygame.K_ESCAPE:
                 request_game_exit()
 
-    if (
-        not match_completed
-        and not spectator_dismissed
-        and elapsed >= DEFEAT_SPECTATOR_DELAY_MS
+    if spectator_mode.start_after_defeat(
+        elapsed,
+        DEFEAT_SPECTATOR_DELAY_MS,
+        match_completed,
+        server_players,
+        network.player_id,
     ):
-        alive_players = [
-            player_id
-            for player_id, info in server_players.items()
-            if player_id != network.player_id and info.get("hp", 0) > 0
-        ]
-        spectator_selected_player_id = alive_players[0] if alive_players else None
-        spectator_mode = True
         ScreenState = "GameView"
 
 
@@ -1533,6 +1526,11 @@ def activate_quick_slot(key, reinstall=False):
         cooldown = STEALTH_COOLDOWN_MS if skill_name == "은신" else SKILL_COOLDOWN_MS
         skill_cooldowns[skill_name] = now + cooldown
     play_effect_sound(skill_sounds.get(skill_name), skill_name)
+    pending_spectator_skill_events.append({
+        "skill": skill_name,
+        "x": my_player.X + my_player.rect.width / 2,
+        "y": my_player.Y + my_player.rect.height / 2,
+    })
     if skill_name == "기절탄":
         if not fire_stun_bullet():
             skill_cooldowns.pop(skill_name, None)
@@ -2338,9 +2336,7 @@ def handle_settings_overlay_event(event):
 
 
 def handle_game_events():
-    global settings_overlay_open, settings_key_waiting, spectator_mode
-    global spectator_selected_player_id, mouse_fire_hold
-    global spectator_dismissed
+    global settings_overlay_open, settings_key_waiting, mouse_fire_hold
     mouse_pos = pygame.mouse.get_pos()
     event_handlers = {
         pygame.QUIT: handle_quit,
@@ -2362,42 +2358,14 @@ def handle_game_events():
             and event.key == pygame.K_TAB
             and not match_completed
         ):
-            if spectator_mode and match_result == "defeat":
-                spectator_dismissed = True
-            spectator_mode = not spectator_mode
+            spectator_mode.toggle(server_players, match_result)
             mouse_fire_hold = False
-            if spectator_mode:
-                spectator_selected_player_id = next(
-                    (
-                        player_id
-                        for player_id, info in server_players.items()
-                        if info.get("hp", 0) > 0
-                    ),
-                    None,
-                )
             continue
-        if spectator_mode:
+        if spectator_mode.active:
             if event.type == pygame.QUIT:
                 handle_quit(event, mouse_pos)
             elif event.type == pygame.KEYDOWN:
-                alive_players = [
-                    player_id
-                    for player_id, info in server_players.items()
-                    if info.get("hp", 0) > 0
-                ]
-                if event.key == pygame.K_ESCAPE or event.key == pygame.K_TAB:
-                    if match_result == "defeat":
-                        spectator_dismissed = True
-                    spectator_mode = False
-                elif alive_players and event.key in (pygame.K_LEFT, pygame.K_RIGHT):
-                    try:
-                        selected_index = alive_players.index(spectator_selected_player_id)
-                    except ValueError:
-                        selected_index = 0
-                    direction = -1 if event.key == pygame.K_LEFT else 1
-                    spectator_selected_player_id = alive_players[
-                        (selected_index + direction) % len(alive_players)
-                    ]
+                spectator_mode.handle_key(event.key, server_players, match_result)
             continue
         handler = event_handlers.get(event.type)
         if handler:
@@ -2420,13 +2388,13 @@ def GameFrame(practice_mode: bool = False):
     global selected_game_mode, debug_mode
     global lobby_notice, lobby_notice_until
     global unique_supply_notice, unique_supply_notice_until
-    global active_world_weather, match_completed, spectator_mode
+    global active_world_weather, match_completed
 
     is_practice_mode = bool(practice_mode or local_match)
     MousePos = pygame.mouse.get_pos()
     deathmatch = selected_game_mode == GAME_MODE_DEATHMATCH and not is_practice_mode
     if my_player.Hp <= 0 and not deathmatch and not use_revive_skill():
-        if not spectator_mode or match_result != "defeat":
+        if not spectator_mode.active or match_result != "defeat":
             show_defeat()
             return
     now = pygame.time.get_ticks()
@@ -2664,6 +2632,7 @@ def GameFrame(practice_mode: bool = False):
     send_data["supply_spawn_requests"] = list(pending_supply_spawn_requests)
     send_data["supply_collect_ids"] = list(pending_supply_collect_ids)
     send_data["bush_leaf_requests"] = list(pending_bush_leaf_requests)
+    send_data["spectator_skill_events"] = list(pending_spectator_skill_events)
     
     # ★ [정리] 총알 정보 - 이번 프레임에서 새로 발사된 총알만 전송
     send_data["bullets"] = [
@@ -2703,18 +2672,11 @@ def GameFrame(practice_mode: bool = False):
                 ScreenState = "ModeSelectView"
                 return
             server_players = server_response
+            pending_spectator_skill_events.clear()
+            spectator_mode.update_snapshot(server_players)
             pending_bush_leaf_requests.clear()
             own_snapshot = server_players.get(network.player_id)
-            if spectator_mode:
-                alive_players = [
-                    player_id
-                    for player_id, info in server_players.items()
-                    if player_id != network.player_id and info.get("hp", 0) > 0
-                ]
-                if spectator_selected_player_id not in alive_players:
-                    spectator_selected_player_id = (
-                        alive_players[0] if alive_players else None
-                    )
+            spectator_mode.reconcile(server_players, network.player_id)
             if own_snapshot:
                 server_weather = own_snapshot.get("weather")
                 if (
@@ -2928,7 +2890,7 @@ def GameFrame(practice_mode: bool = False):
             own_winner_ids = own_snapshot.get("winner_ids", []) if own_snapshot else []
             if own_winner_ids and not revived_after_server_update:
                 match_completed = True
-                spectator_mode = False
+                spectator_mode.stop()
                 if str(network.player_id) in {str(winner_id) for winner_id in own_winner_ids}:
                     show_victory()
                 else:
@@ -3226,7 +3188,7 @@ def GameFrame(practice_mode: bool = False):
     remote_bullets = [b for b in remote_bullets if b.is_active]
 
     if my_player.Hp <= 0 and not deathmatch and not use_revive_skill():
-        if not spectator_mode or match_result != "defeat":
+        if not spectator_mode.active or match_result != "defeat":
             show_defeat()
             return
 
@@ -4031,12 +3993,15 @@ def GameFrame(practice_mode: bool = False):
                 HURT_FLASH_MAX_ALPHA * (1 - elapsed / HURT_FLASH_DURATION_MS)
             ))
             display.blit(hurt_image, (0, 0))
-    if spectator_mode and not settings_overlay_open:
+    if spectator_mode.active and not settings_overlay_open:
         MiniMapRenderer.draw_spectator(
             display,
             frame_server_players,
             IML.Player,
-            spectator_selected_player_id,
+            spectator_mode.selected_player_id,
+            bullets=spectator_mode.get_bullet_positions(),
+            skill_effects=spectator_mode.get_skill_effects(),
+            weapon_image_getter=IML.GetWeaponImage,
         )
     if settings_overlay_open:
         main_screen.draw_settings(

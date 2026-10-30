@@ -183,8 +183,17 @@ class MiniMap:
         panel.blit(marker_surface, (map_x, 28))
         surface.blit(panel, (panel_x, panel_y))
 
-    def draw_spectator(self, surface, players, player_sprite, selected_player_id=None):
-        """전체 맵에서 생존 플레이어를 미니맵과 같은 좌표계의 스프라이트로 표시합니다."""
+    def draw_spectator(
+        self,
+        surface,
+        players,
+        player_sprite,
+        selected_player_id=None,
+        bullets=None,
+        skill_effects=None,
+        weapon_image_getter=None,
+    ):
+        """전체 맵에 생존 플레이어와 관전자 전용 전투 효과를 표시합니다."""
         if self._map_surface is None or self._map_signature != self._get_map_signature():
             self._build_map_surface()
 
@@ -229,6 +238,44 @@ class MiniMap:
 
         world_width = max(1, self.tile_generator.map_width * self.tile_generator.tile_size)
         world_height = max(1, self.tile_generator.map_height * self.tile_generator.tile_size)
+
+        def world_to_spectator(world_x, world_y):
+            return (
+                map_rect.left + round(world_x * map_rect.width / world_width),
+                map_rect.top + round(world_y * map_rect.height / world_height),
+            )
+
+        skill_colors = {
+            "폭탄받아라!": (255, 150, 70),
+            "매의 눈": (120, 220, 255),
+            "와드": (120, 240, 255),
+            "부활의 차": (255, 210, 120),
+            "보호막": (100, 220, 255),
+            "은신": (190, 190, 255),
+            "텔포": (150, 255, 170),
+            "기절탄": (255, 245, 150),
+        }
+        for effect in skill_effects or ():
+            effect_x, effect_y = world_to_spectator(effect.get("x", 0), effect.get("y", 0))
+            age_ratio = min(1.0, effect.get("age_ms", 0) / 1400)
+            radius = 8 + round(18 * age_ratio)
+            color = skill_colors.get(effect.get("skill"), (255, 225, 150))
+            pygame.draw.circle(surface, color, (effect_x, effect_y), radius, 2)
+            skill_label = self.font.render(str(effect.get("skill", "스킬")), True, color)
+            surface.blit(skill_label, skill_label.get_rect(midbottom=(effect_x, effect_y - radius - 3)))
+
+        for bullet in bullets or ():
+            bullet_x, bullet_y = world_to_spectator(bullet.get("x", 0), bullet.get("y", 0))
+            angle = bullet.get("angle", 0.0)
+            trail_length = 11
+            trail_start = (
+                round(bullet_x - math.cos(angle) * trail_length),
+                round(bullet_y - math.sin(angle) * trail_length),
+            )
+            color = (120, 230, 255) if bullet.get("stun_ms", 0) else (255, 235, 155)
+            pygame.draw.line(surface, color, trail_start, (bullet_x, bullet_y), 3)
+            pygame.draw.circle(surface, (255, 255, 235), (bullet_x, bullet_y), 2)
+
         selected_info = None
         alive_players = []
         sprite_size = max(16, min(30, round(24 * scale)))
@@ -243,15 +290,9 @@ class MiniMap:
             if player_info.get("hidden", False) or player_info.get("hp", 0) <= 0:
                 continue
             alive_players.append((player_id, player_info))
-            center_x = (
-                map_rect.left
-                + round((player_info.get("posX", 0) + player_sprite.get_width() / 2)
-                        * map_rect.width / world_width)
-            )
-            center_y = (
-                map_rect.top
-                + round((player_info.get("posY", 0) + player_sprite.get_height() / 2)
-                        * map_rect.height / world_height)
+            center_x, center_y = world_to_spectator(
+                player_info.get("posX", 0) + player_sprite.get_width() / 2,
+                player_info.get("posY", 0) + player_sprite.get_height() / 2,
             )
             player_rect = sprite.get_rect(center=(center_x, center_y))
             if str(player_id) == str(selected_player_id):
@@ -260,6 +301,37 @@ class MiniMap:
                 )
                 selected_info = player_info
             surface.blit(sprite, player_rect)
+
+            weapon_id = player_info.get("weapon_id")
+            weapon_image = (
+                weapon_image_getter(weapon_id)
+                if weapon_image_getter and weapon_id
+                else None
+            )
+            angle = math.radians(player_info.get("angle", 0.0))
+            weapon_length = max(9, round(sprite_size * 1.2))
+            weapon_tip = (
+                round(center_x + math.cos(angle) * (sprite_size * 0.9)),
+                round(center_y + math.sin(angle) * (sprite_size * 0.9)),
+            )
+            pygame.draw.line(surface, (255, 232, 155), (center_x, center_y), weapon_tip, 2)
+            if weapon_image is not None:
+                if weapon_id == "pistol":
+                    weapon_image = pygame.transform.flip(weapon_image, True, False)
+                image_width = weapon_length
+                image_height = max(
+                    3,
+                    round(weapon_image.get_height() * image_width / max(1, weapon_image.get_width())),
+                )
+                weapon_image = pygame.transform.smoothscale(
+                    weapon_image, (image_width, image_height)
+                )
+                weapon_image = pygame.transform.rotate(weapon_image, -math.degrees(angle))
+                weapon_center = (
+                    round(center_x + math.cos(angle) * sprite_size * 0.35),
+                    round(center_y + math.sin(angle) * sprite_size * 0.35),
+                )
+                surface.blit(weapon_image, weapon_image.get_rect(center=weapon_center))
 
         if selected_info is not None:
             label = (

@@ -1,4 +1,5 @@
 import copy
+import math
 import socket
 import threading
 import pickle
@@ -54,6 +55,8 @@ def new_match_events():
     return {
         "bullet_events": [],
         "next_bullet_event_id": 1,
+        "spectator_skill_events": [],
+        "next_spectator_skill_event_id": 1,
         "verified_bullet_events": {},
         "destroyed_treasures": set(),
         "destroyed_furniture": set(),
@@ -144,6 +147,10 @@ def handle_client(conn, player_id):
         # 접속 전에 발생한 총알은 새 플레이어에게 전달하지 않습니다.
         last_sent_bullet_event_ids = {
             mode: events["next_bullet_event_id"] - 1
+            for mode, events in match_events.items()
+        }
+        last_sent_skill_event_ids = {
+            mode: events["next_spectator_skill_event_id"] - 1
             for mode, events in match_events.items()
         }
 
@@ -739,6 +746,40 @@ def handle_client(conn, player_id):
                     }
                     events["next_bullet_event_id"] += 1
                     events["bullet_events"].append(bullet_event)
+                skill_events = client_data.get("spectator_skill_events", [])
+                if isinstance(skill_events, list) and players[player_id]["hp"] > 0:
+                    allowed_skills = {
+                        "폭탄받아라!", "매의 눈", "와드", "부활의 차",
+                        "보호막", "은신", "텔포", "기절탄",
+                    }
+                    for skill_event in skill_events[:8]:
+                        if not isinstance(skill_event, dict):
+                            continue
+                        skill_name = skill_event.get("skill")
+                        try:
+                            skill_x = float(skill_event.get("x"))
+                            skill_y = float(skill_event.get("y"))
+                        except (TypeError, ValueError):
+                            continue
+                        if (
+                            skill_name not in allowed_skills
+                            or not math.isfinite(skill_x)
+                            or not math.isfinite(skill_y)
+                            or not 0 <= skill_x < MAP_WIDTH_TILES * 32
+                            or not 0 <= skill_y < MAP_HEIGHT_TILES * 32
+                        ):
+                            continue
+                        events["spectator_skill_events"].append({
+                            "event_id": events["next_spectator_skill_event_id"],
+                            "player_id": player_id,
+                            "skill": skill_name,
+                            "x": skill_x,
+                            "y": skill_y,
+                        })
+                        events["next_spectator_skill_event_id"] += 1
+                    events["spectator_skill_events"][:] = events[
+                        "spectator_skill_events"
+                    ][-128:]
                 events["verified_bullet_events"] = {
                     event_id: bullet_info
                     for event_id, bullet_info
@@ -874,8 +915,15 @@ def handle_client(conn, player_id):
             ]
             if pending_bullets:
                 last_sent_bullet_event_ids[mode] = pending_bullets[-1]["event_id"]
+            pending_skill_events = [
+                event for event in events["spectator_skill_events"]
+                if event["event_id"] > last_sent_skill_event_ids[mode]
+            ]
+            if pending_skill_events:
+                last_sent_skill_event_ids[mode] = pending_skill_events[-1]["event_id"]
             for snapshot_player_id, player in snapshot.items():
                 player["bullets"] = list(pending_bullets)
+                player["spectator_skill_events"] = list(pending_skill_events)
                 player["destroyed_treasures"] = list(events["destroyed_treasures"])
                 player["destroyed_furniture"] = list(events["destroyed_furniture"])
                 player["rune_alerts"] = [

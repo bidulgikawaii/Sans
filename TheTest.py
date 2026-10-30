@@ -2372,6 +2372,93 @@ def handle_game_events():
             handler(event, mouse_pos)
 
 
+def spectator_frame():
+    global server_players, match_completed, selected_game_mode, local_match, debug_mode
+
+    if local_match:
+        spectator_mode.update_snapshot({})
+        MiniMapRenderer.draw_spectator(
+            display,
+            {},
+            IML.Player,
+            spectator_mode.selected_player_id,
+            bullets=spectator_mode.get_bullet_positions(),
+            skill_effects=spectator_mode.get_skill_effects(),
+            weapon_image_getter=IML.GetWeaponImage,
+        )
+        return
+
+    spectator_payload = dict(send_data)
+    spectator_payload.update({
+        "type": "spectator_snapshot",
+        "posX": my_player.X,
+        "posY": my_player.Y,
+        "hp": my_player.Hp,
+        "angle": Weapon_Angle,
+        "weapon_id": weapon_state.weapon_id,
+        "bullets": [],
+        "hit_events": [],
+        "destroyed_treasures": [],
+        "destroyed_furniture": [],
+        "supply_spawn_requests": [],
+        "supply_collect_ids": [],
+        "bush_leaf_requests": [],
+        "rune_ping": None,
+        "revive_request": False,
+        "spectator_skill_events": [],
+    })
+    try:
+        network.client.sendall(pickle.dumps(spectator_payload))
+        server_raw = network.client.recv(NETWORK_BUFFER_SIZE)
+        if not server_raw:
+            raise ConnectionError("서버가 관전 스냅샷 연결을 종료했습니다.")
+        server_response = pickle.loads(server_raw)
+        if server_response.get("type") == "match_cancelled":
+            selected_game_mode = GAME_MODE_NORMAL
+            local_match = False
+            debug_mode = False
+            reset_match_state()
+            ScreenState = "ModeSelectView"
+            return
+        server_players = server_response
+        spectator_mode.reconcile(server_players, network.player_id)
+        spectator_mode.update_snapshot(server_players)
+        pending_spectator_skill_events.clear()
+
+        own_snapshot = server_players.get(network.player_id, {})
+        winner_ids = own_snapshot.get("winner_ids", [])
+        if winner_ids:
+            match_completed = True
+            spectator_mode.stop()
+            if str(network.player_id) in {str(winner_id) for winner_id in winner_ids}:
+                show_victory()
+            else:
+                show_defeat()
+            return
+    except (OSError, EOFError, pickle.PickleError, KeyError) as error:
+        print(f"관전 네트워크 통신 오류: {error}")
+        if reconnect_to_server():
+            reset_match_state()
+            local_match = False
+            network.last_lobby_request_at = 0
+            ScreenState = "LoadingView"
+        return
+
+    MiniMapRenderer.draw_spectator(
+        display,
+        server_players,
+        IML.Player,
+        spectator_mode.selected_player_id,
+        bullets=spectator_mode.get_bullet_positions(),
+        skill_effects=spectator_mode.get_skill_effects(),
+        weapon_image_getter=IML.GetWeaponImage,
+    )
+    if settings_overlay_open:
+        main_screen.draw_settings(
+            settings, key_bindings, settings_key_waiting, overlay=True
+        )
+
+
 def GameFrame(practice_mode: bool = False):
     global ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, match_result, local_stun_until, zone_elapsed_ms
     global screen_shake, server_players, bullets, remote_bullets, MousePos, system_message, kill_feed
@@ -2392,6 +2479,10 @@ def GameFrame(practice_mode: bool = False):
 
     is_practice_mode = bool(practice_mode or local_match)
     MousePos = pygame.mouse.get_pos()
+    handle_game_events()
+    if spectator_mode.active:
+        spectator_frame()
+        return
     deathmatch = selected_game_mode == GAME_MODE_DEATHMATCH and not is_practice_mode
     if my_player.Hp <= 0 and not deathmatch and not use_revive_skill():
         if not spectator_mode.active or match_result != "defeat":
@@ -2419,8 +2510,6 @@ def GameFrame(practice_mode: bool = False):
             system_message = (
                 f"텔포석상이 사라졌습니다. 남은 설치 횟수: {teleport_placements_remaining}"
             )
-    handle_game_events()
-
     if my_player.Hp > 0 and mouse_fire_hold and weapon_state.config.automatic and weapon_state.can_fire():
         fire_bullet()
 

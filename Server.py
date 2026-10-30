@@ -200,6 +200,54 @@ def handle_client(conn, player_id):
 
             client_data = pickle.loads(data)
 
+            if client_data.get("type") == "spectator_snapshot":
+                with player_lock:
+                    mode = lobby.mode_for(player_id)
+                    if mode is None:
+                        snapshot = lobby.status(player_id)
+                    else:
+                        events = match_events[mode]
+                        visible_ids = lobby.visible_player_ids(player_id)
+                        snapshot = copy.deepcopy({
+                            visible_id: players[visible_id]
+                            for visible_id in visible_ids
+                            if visible_id in players
+                        })
+                        pending_bullets = [
+                            bullet for bullet in events["bullet_events"]
+                            if bullet["event_id"] > last_sent_bullet_event_ids[mode]
+                        ]
+                        pending_skills = [
+                            event for event in events["spectator_skill_events"]
+                            if event["event_id"] > last_sent_skill_event_ids[mode]
+                        ]
+                        if pending_bullets:
+                            last_sent_bullet_event_ids[mode] = pending_bullets[-1]["event_id"]
+                        if pending_skills:
+                            last_sent_skill_event_ids[mode] = pending_skills[-1]["event_id"]
+                        lobby_state = lobby.status(player_id, mode)
+                        winner_ids = list(completed_match_winner_ids.get(mode, []))
+                        scores = dict(events["kill_scores"])
+                        for snapshot_player_id, player in snapshot.items():
+                            player["bullets"] = list(pending_bullets)
+                            player["spectator_skill_events"] = list(pending_skills)
+                            player["winner_id"] = (
+                                winner_ids[0] if len(winner_ids) == 1 else None
+                            )
+                            player["winner_ids"] = winner_ids
+                            player["kill_scores"] = scores
+                            player["kill_count"] = scores.get(snapshot_player_id, 0)
+                            player["match_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
+                            player["zone_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
+                            player["stun_ms_remaining"] = max(
+                                0,
+                                round((player.get("stunned_until", 0.0) - time.monotonic()) * 1000),
+                            )
+                            player["hidden"] = player.get("hp", 0) <= 0
+                            player["weather"] = lobby_state.get("weather")
+                conn.sendall(pickle.dumps(snapshot))
+                continue
+
             if client_data.get("type") == "lobby_join":
                 with player_lock:
                     cancelled_mode = cancelled_match_notices.pop(player_id, None)
@@ -223,6 +271,9 @@ def handle_client(conn, player_id):
                     if accepted:
                         last_sent_bullet_event_ids[requested_mode] = (
                             match_events[requested_mode]["next_bullet_event_id"] - 1
+                        )
+                        last_sent_skill_event_ids[requested_mode] = (
+                            match_events[requested_mode]["next_spectator_skill_event_id"] - 1
                         )
                         requested_name = str(client_data.get("name", "")).strip()
                         player = players[player_id]

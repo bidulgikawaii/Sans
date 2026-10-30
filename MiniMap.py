@@ -332,6 +332,21 @@ class MiniMap:
                     round(center_y + math.sin(angle) * sprite_size * 0.35),
                 )
                 surface.blit(weapon_image, weapon_image.get_rect(center=weapon_center))
+            if player_info.get("shield_active", False):
+                pygame.draw.circle(
+                    surface, (100, 220, 255), (center_x, center_y),
+                    max(8, sprite_size), 2,
+                )
+            if player_info.get("stealth", False):
+                pygame.draw.circle(
+                    surface, (190, 190, 255), (center_x, center_y),
+                    max(10, sprite_size + 4), 1,
+                )
+            if player_info.get("revive_armed", False):
+                pygame.draw.circle(
+                    surface, (255, 210, 120), (center_x, center_y),
+                    max(12, sprite_size + 7), 1,
+                )
 
         if selected_info is not None:
             label = (

@@ -26,7 +26,9 @@ from MiniMap import MiniMap
 from SpectatorMode import SpectatorMode
 from GameRendering import (
     create_bat_launch,
+    create_jump_pad_animation,
     get_bat_launch_frame,
+    get_jump_pad_frame,
     draw_ammo_status,
     draw_health_bar,
     draw_local_aim_ray,
@@ -54,6 +56,23 @@ from NetworkClient import (
     reconnect_to_server,
 )
 
+
+def _load_network_dict(payload):
+    message = pickle.loads(payload)
+    if not isinstance(message, dict):
+        raise ValueError("서버 응답이 사전 형식이 아닙니다.")
+    return message
+
+
+def _snapshot_events(snapshot, key):
+    events = snapshot.get(key, [])
+    if not isinstance(events, list) or not all(
+        isinstance(event, dict) for event in events
+    ):
+        raise ValueError(f"서버 스냅샷의 {key} 항목 형식이 올바르지 않습니다.")
+    return events
+
+
 # 클라이언트는 입력과 화면을 조정하고, 경기의 공유 상태는 서버 응답으로 확정합니다.
 pygame.init()
 pygame.display.set_caption("전설적인 게임")
@@ -71,6 +90,20 @@ selected_game_mode = GAME_MODE_NORMAL
 local_match = False
 main_weapon_id = DEFAULT_WEAPON_ID
 player_name = generate_random_player_name()
+
+
+def get_map_tile_dimensions(game_mode=None):
+    game_mode = game_mode or selected_game_mode
+    if game_mode == GAME_MODE_FLAGDOWN:
+        return FLAGDOWN_MAP_WIDTH_TILES, FLAGDOWN_MAP_HEIGHT_TILES
+    return MAP_WIDTH_TILES, MAP_HEIGHT_TILES
+
+
+def get_map_world_size():
+    map_width, map_height = get_map_tile_dimensions()
+    return map_width * TileGene.tile_size, map_height * TileGene.tile_size
+
+
 # [커스텀 가능] 게임 전체에서 사용할 기본 폰트입니다. 서체와 크기를 여기서 조정합니다.
 GuiFont = pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__)
         ),"Font","HeirofLightRegular.ttf"
@@ -83,6 +116,7 @@ BannerFont = pygame.font.Font(
 )
 RuneAlertFont = pygame.font.Font(None, 24)
 _scaled_surface_cache = {}
+_deathmatch_leaderboard_text_cache = {}
 HEAL_INVENTORY_PANEL_RECT = pygame.Rect(30, 220, 330, 112)
 HEAL_ITEM_RECT = pygame.Rect(42, 236, 68, 68)
 
@@ -98,6 +132,62 @@ def _scale_cached(image, size, smooth=True):
             _scaled_surface_cache.clear()
         _scaled_surface_cache[key] = scaled
     return scaled
+
+
+def _draw_deathmatch_leaderboard(surface, scores, players, local_player_id, font, position):
+    ranked_players = sorted(
+        scores.items(), key=lambda item: (-item[1], str(item[0]))
+    )[:MAX_PLAYERS]
+    panel_rect = pygame.Rect(
+        position[0],
+        position[1],
+        HP_FRAME_SIZE[0],
+        42 + len(ranked_players) * 22,
+    )
+    pygame.draw.rect(surface, (12, 20, 32), panel_rect, border_radius=8)
+    pygame.draw.rect(surface, (90, 125, 150), panel_rect, 1, border_radius=8)
+
+    title_key = ("title",)
+    title = _deathmatch_leaderboard_text_cache.get(title_key)
+    if title is None:
+        title = font.render("킬 순위", True, (255, 235, 160))
+        _deathmatch_leaderboard_text_cache[title_key] = title
+    surface.blit(title, (panel_rect.left + 12, panel_rect.top + 6))
+    row_y = panel_rect.top + 31
+    for rank, (player_id, score) in enumerate(ranked_players, start=1):
+        player = players.get(player_id, {})
+        player_name = player.get("name", str(player_id)[:8])
+        is_local_player = str(player_id) == str(local_player_id)
+        text_color = (
+            (255, 235, 160) if is_local_player else (240, 240, 240)
+        )
+        cache_key = (rank, player_name, score, is_local_player)
+        score_text = _deathmatch_leaderboard_text_cache.get(cache_key)
+        if score_text is None:
+            score_text = font.render(
+                f"{rank}. {player_name}: {score}", True, text_color
+            )
+            score_text = pygame.transform.smoothscale(
+                score_text,
+                (
+                    max(1, round(score_text.get_width() * 0.9)),
+                    max(1, round(score_text.get_height() * 0.9)),
+                ),
+            )
+            max_width = panel_rect.width - 24
+            if score_text.get_width() > max_width:
+                scaled_height = max(
+                    1,
+                    round(score_text.get_height() * max_width / score_text.get_width()),
+                )
+                score_text = pygame.transform.smoothscale(
+                    score_text, (max_width, scaled_height)
+                )
+            if len(_deathmatch_leaderboard_text_cache) >= 192:
+                _deathmatch_leaderboard_text_cache.clear()
+            _deathmatch_leaderboard_text_cache[cache_key] = score_text
+        surface.blit(score_text, (panel_rect.left + 12, row_y))
+        row_y += 22
 
 
 def _draw_melee_weapon(surface, image, center, angle, zoom):
@@ -175,10 +265,11 @@ def leave_lobby():
     response = {}
     try:
         network.client.sendall(pickle.dumps({"type": "lobby_leave"}))
-        response = pickle.loads(network.client.recv(NETWORK_BUFFER_SIZE))
+        response = _load_network_dict(network.client.recv(NETWORK_BUFFER_SIZE))
         if response.get("type") == "match_cancelled":
             network.lobby_status["message"] = "플레이어가 나가 매치가 취소되었습니다."
-    except (OSError, EOFError, pickle.PickleError):
+    except (OSError, EOFError, pickle.PickleError, ValueError) as error:
+        print(f"로비 나가기 응답 오류: {error}")
         reconnect_to_server()
     if response.get("type") != "match_defeat":
         reset_match_state()
@@ -210,7 +301,12 @@ set_ui_assets(IML.SkillWindow, IML.QuickSlot)
 set_image_loader(IML)  # SkillAndSlot에 이미지 로더 전달
 TileGene = TileGenerator()
 # [커스텀 가능] 맵 가로/세로 타일 수입니다. 타일 크기와 곱해 전체 월드 크기가 결정됩니다.
-TileGene.generate_map(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, seed_value=network.init_data["seed"])
+TileGene.generate_map(
+    MAP_WIDTH_TILES,
+    MAP_HEIGHT_TILES,
+    seed_value=network.init_data["seed"],
+    game_mode=selected_game_mode,
+)
 MiniMapFont = pygame.font.Font(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"),
     18,
@@ -218,6 +314,7 @@ MiniMapFont = pygame.font.Font(
 MiniMapRenderer = MiniMap(TileGene, MINIMAP_SIZE, MINIMAP_MARGIN, MiniMapFont)
 register_weather(GAME_MODE_NORMAL, RainWeather)
 register_weather(GAME_MODE_DEATHMATCH, RainWeather)
+register_weather(GAME_MODE_FLAGDOWN, RainWeather)
 register_weather(GAME_MODE_DEBUG, RainWeather)
 MagneticZoneState = MagneticZone(MAP_WIDTH_TILES, MAP_HEIGHT_TILES, TileGene.tile_size)
 
@@ -237,6 +334,12 @@ WEAPON_PREVIEW_GETTERS = (
 
 def get_fixed_spawn_tiles():
     """맵 전역의 안전 지점에서 서로 멀리 떨어진 스폰 좌표를 고릅니다."""
+    if selected_game_mode == GAME_MODE_FLAGDOWN:
+        rows = (8, 18, 28, 44, 54, 64)
+        return [(9, row) for row in rows] + [
+            (FLAGDOWN_MAP_WIDTH_TILES - 12, row) for row in rows
+        ]
+
     def is_clear(x, y):
         return all(
             (tile := TileGene.get_tile_at(x + offset_x, y + offset_y)) is not None
@@ -341,6 +444,7 @@ send_data = {
     "spectator_skill_events": [],
     "hit_events": [],   # [{"target_id": id, "damage": damage, "hit_part": part}, ...]
     "bush_leaf_requests": [],
+    "jump_pad_request": None,
 }
 
 CameraPosX = 0
@@ -362,6 +466,10 @@ pending_spectator_skill_events = []
 processed_damage_event_ids = set()
 processed_kill_event_ids = set()
 bat_launch_animations = {}
+jump_pad_animations = {}
+processed_jump_pad_event_ids = set()
+jump_pad_cooldown_until = 0
+jump_pad_last_tile = None
 skill_cooldowns = {}
 vision_skill_until = 0
 shield_until = 0
@@ -806,6 +914,8 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global bush_leaf_request_token
     global next_unique_supply_drop_at, unique_supply_notice, unique_supply_notice_until
     global spawn_tiles, spawn_tile_x, spawn_tile_y
+    global jump_pad_animations, processed_jump_pad_event_ids
+    global jump_pad_cooldown_until, jump_pad_last_tile
     if regenerate_world:
         world_seed = (
             random.SystemRandom().getrandbits(32)
@@ -817,9 +927,9 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
             )
         )
         TileGene.generate_map(
-            MAP_WIDTH_TILES,
-            MAP_HEIGHT_TILES,
+            *get_map_tile_dimensions(),
             seed_value=world_seed,
+            game_mode=selected_game_mode,
         )
         spawn_tiles = get_fixed_spawn_tiles()
     for collection in (
@@ -839,6 +949,10 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     processed_damage_event_ids.clear()
     processed_kill_event_ids.clear()
     bat_launch_animations.clear()
+    jump_pad_animations.clear()
+    processed_jump_pad_event_ids.clear()
+    jump_pad_cooldown_until = 0
+    jump_pad_last_tile = None
     particles.particles.clear()
     server_players.clear()
     skill_cooldowns.clear()
@@ -944,7 +1058,8 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
         "hit_events": [],
         "supply_spawn_requests": [],
         "supply_collect_ids": [],
-            "bush_leaf_requests": [],
+        "bush_leaf_requests": [],
+        "jump_pad_request": None,
     })
 
 def MainView():
@@ -1049,9 +1164,17 @@ def SettingsView():
 
 def begin_lobby_join(mode):
     global ScreenState, selected_game_mode, debug_mode, local_match
+    global spawn_tiles, match_spawn_index
     selected_game_mode = mode
     debug_mode = mode == GAME_MODE_DEBUG
     local_match = False
+    TileGene.generate_map(
+        *get_map_tile_dimensions(),
+        seed_value=network.init_data["seed"],
+        game_mode=selected_game_mode,
+    )
+    spawn_tiles = get_fixed_spawn_tiles()
+    match_spawn_index = 0
     network.lobby_status = {
         "count": 0,
         "max_players": MAX_PLAYERS,
@@ -1067,13 +1190,13 @@ def begin_lobby_join(mode):
 def start_practice_match():
     global ScreenState, selected_game_mode, debug_mode, local_match
     global game_start_banner_until, active_world_weather
+    selected_game_mode = GAME_MODE_DEBUG
     reset_match_state(regenerate_world=True, independent_world=True)
     debug_mode = True
     local_match = True
-    selected_game_mode = GAME_MODE_DEBUG
     world_effects.activate(
         GAME_MODE_DEBUG,
-        (MAP_WIDTH_TILES * TileGene.tile_size, MAP_HEIGHT_TILES * TileGene.tile_size),
+        get_map_world_size(),
         force=True,
         weather="rain",
     )
@@ -1106,6 +1229,8 @@ def ModeSelectView():
                 begin_lobby_join(GAME_MODE_DEBUG)
             elif event.key == pygame.K_3:
                 begin_lobby_join(GAME_MODE_DEATHMATCH)
+            elif event.key == pygame.K_4:
+                begin_lobby_join(GAME_MODE_FLAGDOWN)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             selected_mode = next(
                 (
@@ -1164,9 +1289,13 @@ def LoadingView():
                 "mode": selected_game_mode,
                 "debug_enabled": debug_mode,
                 "name": player_name.strip() or default_player_name(),
-                "spawn_tiles": spawn_tiles if selected_game_mode == GAME_MODE_DEATHMATCH else [],
+                "spawn_tiles": (
+                    spawn_tiles
+                    if selected_game_mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN)
+                    else []
+                ),
             }))
-            response = pickle.loads(network.client.recv(4096))
+            response = _load_network_dict(network.client.recv(4096))
             if response.get("type") == "lobby_status":
                 network.lobby_status = response
                 match_seed = response.get("world_seed")
@@ -1176,14 +1305,23 @@ def LoadingView():
                     and match_seed != getattr(LoadingView, "_loaded_world_seed", None)
                 ):
                     TileGene.generate_map(
-                        MAP_WIDTH_TILES,
-                        MAP_HEIGHT_TILES,
+                        *get_map_tile_dimensions(),
                         seed_value=match_seed,
+                        game_mode=selected_game_mode,
                     )
                     spawn_tiles = get_fixed_spawn_tiles()
                     LoadingView._loaded_world_seed = match_seed
                 if response.get("accepted"):
-                    match_spawn_index = response.get("spawn_index", 0)
+                    team_id = response.get("team_id")
+                    team_spawn_index = response.get("team_spawn_index")
+                    if (
+                        selected_game_mode == GAME_MODE_FLAGDOWN
+                        and team_id in (0, 1)
+                        and isinstance(team_spawn_index, int)
+                    ):
+                        match_spawn_index = team_id * 6 + team_spawn_index
+                    else:
+                        match_spawn_index = response.get("spawn_index", 0)
             elif response.get("type") == "match_cancelled":
                 selected_game_mode = GAME_MODE_NORMAL
                 local_match = False
@@ -1193,7 +1331,8 @@ def LoadingView():
                 lobby_notice_until = pygame.time.get_ticks() + 5000
                 ScreenState = "ModeSelectView"
                 return
-        except (OSError, EOFError, pickle.PickleError, KeyError):
+        except (OSError, EOFError, pickle.PickleError, KeyError, ValueError) as error:
+            print(f"로비 응답 오류: {error}")
             reconnect_to_server()
             network.last_lobby_request_at = 0
         network.last_lobby_request_at = now
@@ -1209,7 +1348,7 @@ def LoadingView():
         reset_match_state(regenerate_world=True, world_seed=match_seed)
         world_effects.activate(
             selected_game_mode,
-            (MAP_WIDTH_TILES * TileGene.tile_size, MAP_HEIGHT_TILES * TileGene.tile_size),
+            get_map_world_size(),
             force=True,
             weather=network.lobby_status.get("weather"),
         )
@@ -1227,13 +1366,18 @@ def LoadingView():
                 leave_lobby()
                 ScreenState = "ModeSelectView"
             elif event.key == pygame.K_SPACE and not network.lobby_status.get("started"):
-                network.client.sendall(pickle.dumps({
-                    "type": "lobby_ready",
-                    "ready": not network.lobby_status.get("confirmed", False),
-                }))
-                response = pickle.loads(network.client.recv(NETWORK_BUFFER_SIZE))
-                if response.get("type") == "lobby_status":
-                    network.lobby_status = response
+                try:
+                    network.client.sendall(pickle.dumps({
+                        "type": "lobby_ready",
+                        "ready": not network.lobby_status.get("confirmed", False),
+                    }))
+                    response = _load_network_dict(network.client.recv(NETWORK_BUFFER_SIZE))
+                    if response.get("type") == "lobby_status":
+                        network.lobby_status = response
+                except (OSError, EOFError, pickle.PickleError, ValueError) as error:
+                    print(f"준비 상태 응답 오류: {error}")
+                    reconnect_to_server()
+                    network.last_lobby_request_at = 0
 
 
 def show_victory():
@@ -1257,6 +1401,17 @@ def show_defeat():
         match_result = "defeat"
         result_started_at = pygame.time.get_ticks()
     ScreenState = "GameOver"
+
+
+def show_draw():
+    """플래그다운 경기의 동점 결과 화면으로 전환합니다."""
+    global match_result, result_started_at, ScreenState, match_completed
+    match_completed = True
+    spectator_mode.stop()
+    if match_result != "draw":
+        match_result = "draw"
+        result_started_at = pygame.time.get_ticks()
+    ScreenState = "Draw"
 
 
 def GameOverView():
@@ -1290,6 +1445,23 @@ def VictoryView():
         result_started_at = pygame.time.get_ticks()
     _draw_result_screen("승리", (255, 220, 80), pygame.time.get_ticks() - result_started_at)
 
+    for event in pygame.event.get():
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_SPACE:
+                requeue_after_match()
+            elif event.key == pygame.K_ESCAPE:
+                request_game_exit()
+
+
+def DrawView():
+    global result_started_at
+    if not result_started_at:
+        result_started_at = pygame.time.get_ticks()
+    _draw_result_screen(
+        "무승부",
+        (125, 185, 210),
+        pygame.time.get_ticks() - result_started_at,
+    )
     for event in pygame.event.get():
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_SPACE:
@@ -1357,6 +1529,7 @@ def _draw_result_screen(title_text, color, elapsed):
     )
     display.blit(title, title.get_rect(center=(ScreenX // 2, ScreenY // 2 - 60)))
     is_deathmatch_result = selected_game_mode == GAME_MODE_DEATHMATCH
+    is_flagdown_result = selected_game_mode == GAME_MODE_FLAGDOWN
     if is_deathmatch_result:
         score_table = next(
             (info.get("kill_scores", {}) for info in server_players.values() if info.get("kill_scores") is not None),
@@ -1403,13 +1576,47 @@ def _draw_result_screen(title_text, color, elapsed):
             display.blit(rank_text, (row_rect.left + 34, row_y - rank_text.get_height() // 2))
             display.blit(name_text, (row_rect.left + 150, row_y - name_text.get_height() // 2))
             display.blit(score_text, (row_rect.right - 75, row_y - score_text.get_height() // 2))
+    elif is_flagdown_result:
+        score_table = next(
+            (
+                info.get("kill_scores", {})
+                for info in server_players.values()
+                if info.get("kill_scores") is not None
+            ),
+            {},
+        )
+        team_kills = {0: 0, 1: 0}
+        for player_id, player in server_players.items():
+            team_id = player.get("team_id")
+            if team_id not in team_kills:
+                continue
+            try:
+                team_kills[team_id] += int(
+                    score_table.get(player_id, player.get("kill_count", 0))
+                )
+            except (TypeError, ValueError):
+                continue
+        score_panel = pygame.Rect(0, 0, 580, 54)
+        score_panel.center = (ScreenX // 2, ScreenY // 2 + 55)
+        pygame.draw.rect(display, (12, 20, 32), score_panel, border_radius=8)
+        pygame.draw.rect(display, (90, 125, 150), score_panel, 1, border_radius=8)
+        for team_id, label, color, x in (
+            (0, "청팀", (105, 195, 255), score_panel.centerx - 130),
+            (1, "홍팀", (255, 125, 135), score_panel.centerx + 130),
+        ):
+            team_text = KillFeedFont.render(
+                f"{label} 팀 킬: {team_kills[team_id]}",
+                True,
+                color,
+            )
+            display.blit(team_text, team_text.get_rect(center=(x, score_panel.centery)))
 
     guide_text = "Space: 다시 대기열 참가   ESC: 메인 메뉴"
     guide = result_text_cache.get(guide_text)
     if guide is None:
         guide = GuiFont.render(guide_text, True, (255, 255, 255))
         result_text_cache[guide_text] = guide
-    guide_y = ScreenY - 36 if is_deathmatch_result else ScreenY // 2 + 70
+    guide_y = ScreenY - 36 if is_deathmatch_result else ScreenY // 2 + 110 if is_flagdown_result else ScreenY // 2 + 70
     display.blit(guide, guide.get_rect(center=(ScreenX // 2, guide_y)))
 
 
@@ -1672,14 +1879,20 @@ def activate_quick_slot(key, reinstall=False):
         target_x, target_y = screen_to_world(
             *get_aim_mouse_position(CameraPosX, CameraPosY), CameraPosX, CameraPosY, camera_zoom
         )
-        destination = my_player.rect.copy()
-        destination.center = (round(target_x), round(target_y))
-        # 순간이동 경로는 벽을 무시하고, 착지 지점만 안전한 바닥인지 검사합니다.
-        if TileGene.check_collision(destination):
-            system_message = "벽 안이나 맵 밖에는 착지할 수 없습니다."
-            return
         old_x = my_player.X + my_player.rect.width / 2
         old_y = my_player.Y + my_player.rect.height / 2
+        landing = TileGene.find_teleport_landing(
+            target_x,
+            target_y,
+            target_x - old_x,
+            target_y - old_y,
+            my_player.rect.width,
+            my_player.rect.height,
+        )
+        if landing is None:
+            system_message = "벽이나 맵 밖을 피해 착지할 위치가 없습니다."
+            return
+        target_x, target_y = landing
         my_player.X = target_x - my_player.rect.width / 2
         my_player.Y = target_y - my_player.rect.height / 2
         my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
@@ -2405,6 +2618,7 @@ def spectator_frame():
         "bush_leaf_requests": [],
         "rune_ping": None,
         "revive_request": False,
+        "jump_pad_request": None,
         "spectator_skill_events": [],
     })
     try:
@@ -2412,7 +2626,7 @@ def spectator_frame():
         server_raw = network.client.recv(NETWORK_BUFFER_SIZE)
         if not server_raw:
             raise ConnectionError("서버가 관전 스냅샷 연결을 종료했습니다.")
-        server_response = pickle.loads(server_raw)
+        server_response = _load_network_dict(server_raw)
         if server_response.get("type") == "match_cancelled":
             selected_game_mode = GAME_MODE_NORMAL
             local_match = False
@@ -2420,6 +2634,15 @@ def spectator_frame():
             reset_match_state()
             ScreenState = "ModeSelectView"
             return
+        if server_response.get("type") == "lobby_status":
+            selected_game_mode = GAME_MODE_NORMAL
+            local_match = False
+            debug_mode = False
+            reset_match_state()
+            ScreenState = "ModeSelectView"
+            return
+        if not all(isinstance(player, dict) for player in server_response.values()):
+            raise ValueError("서버 관전 스냅샷의 플레이어 형식이 올바르지 않습니다.")
         server_players = server_response
         spectator_mode.reconcile(server_players, network.player_id)
         spectator_mode.update_snapshot(server_players)
@@ -2427,6 +2650,9 @@ def spectator_frame():
 
         own_snapshot = server_players.get(network.player_id, {})
         winner_ids = own_snapshot.get("winner_ids", [])
+        if own_snapshot.get("match_draw"):
+            show_draw()
+            return
         if winner_ids:
             match_completed = True
             spectator_mode.stop()
@@ -2435,7 +2661,7 @@ def spectator_frame():
             else:
                 show_defeat()
             return
-    except (OSError, EOFError, pickle.PickleError, KeyError) as error:
+    except (OSError, EOFError, pickle.PickleError, KeyError, ValueError) as error:
         print(f"관전 네트워크 통신 오류: {error}")
         if reconnect_to_server():
             reset_match_state()
@@ -2473,6 +2699,7 @@ def GameFrame(practice_mode: bool = False):
     global bush_leaf_request_token
     global next_unique_supply_drop_at
     global selected_game_mode, debug_mode
+    global jump_pad_cooldown_until, jump_pad_last_tile
     global lobby_notice, lobby_notice_until
     global unique_supply_notice, unique_supply_notice_until
     global active_world_weather, match_completed
@@ -2484,7 +2711,9 @@ def GameFrame(practice_mode: bool = False):
         spectator_frame()
         return
     deathmatch = selected_game_mode == GAME_MODE_DEATHMATCH and not is_practice_mode
-    if my_player.Hp <= 0 and not deathmatch and not use_revive_skill():
+    flagdown = selected_game_mode == GAME_MODE_FLAGDOWN and not is_practice_mode
+    respawning_mode = deathmatch or flagdown
+    if my_player.Hp <= 0 and not respawning_mode and not use_revive_skill():
         if not spectator_mode.active or match_result != "defeat":
             show_defeat()
             return
@@ -2518,15 +2747,16 @@ def GameFrame(practice_mode: bool = False):
     haste_bonus = (
         PLAYER_HASTE_SPEED - PLAYER_NORMAL_SPEED if now < haste_until else 0
     )
-    # 근접 무기의 추가 속도는 특수 이동인 대시에만 적용합니다.
-    # 평상시 걷기와 Shift 달리기는 무기 종류와 무관하게 같은 속도를 유지합니다.
+    knife_speed_bonus = (
+        KNIFE_SPEED_BONUS if weapon_state.weapon_id == "knife" else 0
+    )
     knife_dash_bonus = (
         KNIFE_DASH_SPEED_BONUS
         if weapon_state.weapon_id in MELEE_WEAPON_IDS
         else 0
     )
-    my_player.normal_speed = PLAYER_NORMAL_SPEED + haste_bonus
-    my_player.sprint_speed = PLAYER_SPRINT_SPEED + haste_bonus
+    my_player.normal_speed = PLAYER_NORMAL_SPEED + haste_bonus + knife_speed_bonus
+    my_player.sprint_speed = PLAYER_SPRINT_SPEED + haste_bonus + knife_speed_bonus
     my_player.dash_speed = PLAYER_DASH_SPEED + haste_bonus + knife_dash_bonus
     # 근접 무기 대시는 추가 속도만 적용하며, 지속 시간은 기본 대시와 같습니다.
     if my_player.Hp > 0 and now >= local_stun_until and now >= shield_until:
@@ -2549,6 +2779,62 @@ def GameFrame(practice_mode: bool = False):
         int((my_player.X + my_player.rect.width / 2) // TileGene.tile_size),
         int((my_player.Y + my_player.rect.height / 2) // TileGene.tile_size),
     )
+    send_data["jump_pad_request"] = None
+    current_tile_data = TileGene.get_tile_at(*current_tile)
+    if current_tile_data is None or current_tile_data.tile_type != 9:
+        jump_pad_last_tile = None
+    elif (
+        flagdown
+        and current_tile != jump_pad_last_tile
+        and now >= jump_pad_cooldown_until
+    ):
+        start_x, start_y = get_player_world_center(
+            my_player.X,
+            my_player.Y,
+            IML.Player.get_width(),
+            IML.Player.get_height(),
+        )
+        direction_x = math.cos(math.radians(Weapon_Angle))
+        direction_y = math.sin(math.radians(Weapon_Angle))
+        landing = TileGene.find_jump_landing(
+            start_x,
+            start_y,
+            direction_x,
+            direction_y,
+            FLAGDOWN_JUMP_DISTANCE,
+            IML.Player.get_width(),
+            IML.Player.get_height(),
+        )
+        if landing is not None:
+            target_x, target_y = landing
+            my_player.X = target_x - IML.Player.get_width() / 2
+            my_player.Y = target_y - IML.Player.get_height() / 2
+            my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
+            my_player._update_hitboxes()
+            my_player.is_dashing = False
+            send_data["jump_pad_request"] = {
+                "start_x": start_x,
+                "start_y": start_y,
+                "target_x": target_x,
+                "target_y": target_y,
+            }
+            jump_pad_animations[str(network.player_id)] = create_jump_pad_animation(
+                {
+                    "start_x": start_x,
+                    "start_y": start_y,
+                    "target_x": target_x,
+                    "target_y": target_y,
+                    "duration_ms": FLAGDOWN_JUMP_DURATION_MS,
+                },
+                now,
+            )
+            jump_pad_cooldown_until = now + (
+                FLAGDOWN_JUMP_DURATION_MS + FLAGDOWN_JUMP_COOLDOWN_MS
+            )
+            jump_pad_last_tile = current_tile
+        else:
+            system_message = "점프대 앞에 안전한 착지 공간이 없습니다."
+            jump_pad_last_tile = current_tile
     rune_tile = next(
         (
             (current_tile[0] + offset_x, current_tile[1] + offset_y)
@@ -2746,11 +3032,12 @@ def GameFrame(practice_mode: bool = False):
         server_raw = None
         if not is_practice_mode:
             network.client.sendall(pickle.dumps(send_data))
+            send_data["jump_pad_request"] = None
             server_raw = network.client.recv(NETWORK_BUFFER_SIZE)
             if not server_raw:
                 raise ConnectionError("서버가 동기화 연결을 종료했습니다.")
         if server_raw:
-            server_response = pickle.loads(server_raw)
+            server_response = _load_network_dict(server_raw)
             if server_response.get("type") == "match_cancelled":
                 selected_game_mode = GAME_MODE_NORMAL
                 local_match = False
@@ -2760,6 +3047,16 @@ def GameFrame(practice_mode: bool = False):
                 lobby_notice_until = pygame.time.get_ticks() + 5000
                 ScreenState = "ModeSelectView"
                 return
+            if server_response.get("type") == "lobby_status":
+                selected_game_mode = GAME_MODE_NORMAL
+                local_match = False
+                debug_mode = False
+                network.lobby_status = server_response
+                reset_match_state()
+                ScreenState = "ModeSelectView"
+                return
+            if not all(isinstance(player, dict) for player in server_response.values()):
+                raise ValueError("서버 게임 스냅샷의 플레이어 형식이 올바르지 않습니다.")
             server_players = server_response
             pending_spectator_skill_events.clear()
             spectator_mode.update_snapshot(server_players)
@@ -2775,15 +3072,15 @@ def GameFrame(practice_mode: bool = False):
                     world_effects.activate(
                         selected_game_mode,
                         (
-                            MAP_WIDTH_TILES * TileGene.tile_size,
-                            MAP_HEIGHT_TILES * TileGene.tile_size,
+                            TileGene.map_width * TileGene.tile_size,
+                            TileGene.map_height * TileGene.tile_size,
                         ),
                         force=True,
                         weather=server_weather,
                     )
                     active_world_weather = server_weather
             event_snapshot = own_snapshot or {}
-            for leaf_event in event_snapshot.get("bush_leaf_events", []):
+            for leaf_event in _snapshot_events(event_snapshot, "bush_leaf_events"):
                 event_id = leaf_event.get("event_id")
                 if event_id is None or event_id in processed_bush_leaf_event_ids:
                     continue
@@ -2794,7 +3091,7 @@ def GameFrame(practice_mode: bool = False):
                     count=12,
                     seed=leaf_event.get("seed"),
                 )
-            for kill_event in event_snapshot.get("kill_events", []):
+            for kill_event in _snapshot_events(event_snapshot, "kill_events"):
                 event_id = kill_event.get("event_id")
                 if event_id is None or event_id in processed_kill_event_ids:
                     continue
@@ -2806,14 +3103,22 @@ def GameFrame(practice_mode: bool = False):
                 if kill_event.get("cause") == "bat":
                     launch = create_bat_launch(
                         kill_event,
-                        MAP_WIDTH_TILES * TileGene.tile_size,
-                        MAP_HEIGHT_TILES * TileGene.tile_size,
+                        TileGene.map_width * TileGene.tile_size,
+                        TileGene.map_height * TileGene.tile_size,
                         now,
                     )
                     if launch is not None:
                         bat_launch_animations[str(kill_event.get("target_id"))] = launch
+            for jump_event in _snapshot_events(event_snapshot, "jump_pad_events"):
+                event_id = jump_event.get("event_id")
+                if event_id is None or event_id in processed_jump_pad_event_ids:
+                    continue
+                processed_jump_pad_event_ids.add(event_id)
+                launch = create_jump_pad_animation(jump_event, now)
+                if launch is not None:
+                    jump_pad_animations[str(jump_event.get("player_id"))] = launch
             kill_feed = [event for event in kill_feed if now - event["started_at"] < 5000][-5:]
-            for damage_event in event_snapshot.get("damage_events", []):
+            for damage_event in _snapshot_events(event_snapshot, "damage_events"):
                 event_id = damage_event.get("event_id")
                 if event_id in processed_damage_event_ids:
                     continue
@@ -2887,7 +3192,7 @@ def GameFrame(practice_mode: bool = False):
             if own_snapshot:
                 synchronized_rune_alerts = own_snapshot.get("rune_alerts", [])
                 synchronized_supply_drops = []
-                for supply in own_snapshot.get("supply_drops", []):
+                for supply in _snapshot_events(own_snapshot, "supply_drops"):
                     warning_remaining_ms = supply.get("warning_remaining_ms", 0)
                     if (
                         supply.get("type") == "special_weapon"
@@ -2909,8 +3214,8 @@ def GameFrame(practice_mode: bool = False):
                 supply_drops = synchronized_supply_drops
                 pending_supply_spawn_requests.clear()
                 pending_supply_collect_ids.clear()
-                for collection_event in own_snapshot.get(
-                    "supply_collection_events", []
+                for collection_event in _snapshot_events(
+                    own_snapshot, "supply_collection_events"
                 ):
                     event_id = collection_event.get("event_id")
                     if event_id in processed_supply_collection_ids:
@@ -2950,7 +3255,7 @@ def GameFrame(practice_mode: bool = False):
                 respawn_ms_remaining = int(own_snapshot.get("respawn_ms_remaining", 0))
                 was_dead = my_player.Hp <= 0
                 my_player.Hp = own_snapshot.get("hp", my_player.Hp)
-                if deathmatch and was_dead and my_player.Hp > 0:
+                if respawning_mode and was_dead and my_player.Hp > 0:
                     my_player.X = own_snapshot.get("posX", my_player.X)
                     my_player.Y = own_snapshot.get("posY", my_player.Y)
                     my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
@@ -2974,9 +3279,16 @@ def GameFrame(practice_mode: bool = False):
                         weapon_state.reserve_ammo = own_snapshot.get(
                             "reserve_ammo", weapon_state.reserve_ammo
                         )
-                if my_player.Hp <= 0 and not deathmatch:
+                if my_player.Hp <= 0 and not respawning_mode:
                     revived_after_server_update = use_revive_skill()
             own_winner_ids = own_snapshot.get("winner_ids", []) if own_snapshot else []
+            if (
+                own_snapshot
+                and own_snapshot.get("match_draw")
+                and not revived_after_server_update
+            ):
+                show_draw()
+                return
             if own_winner_ids and not revived_after_server_update:
                 match_completed = True
                 spectator_mode.stop()
@@ -2993,7 +3305,7 @@ def GameFrame(practice_mode: bool = False):
             #     "hp": hp,           # 상대 플레이어 체력
             #     "bullets": [...]    # 상대가 발사한 총알들
             # }
-    except (OSError, EOFError, pickle.PickleError, KeyError) as e:
+    except (OSError, EOFError, pickle.PickleError, KeyError, ValueError) as e:
         print(f"네트워크 통신 오류: {e}")
         if reconnect_to_server():
             reset_match_state()
@@ -3276,7 +3588,7 @@ def GameFrame(practice_mode: bool = False):
                 bullet.is_active = False
     remote_bullets = [b for b in remote_bullets if b.is_active]
 
-    if my_player.Hp <= 0 and not deathmatch and not use_revive_skill():
+    if my_player.Hp <= 0 and not respawning_mode and not use_revive_skill():
         if not spectator_mode.active or match_result != "defeat":
             show_defeat()
             return
@@ -3312,9 +3624,21 @@ def GameFrame(practice_mode: bool = False):
             if target_in_bush and close_to_bush
             else 0
         )
-        if not is_visible(other_world_x, other_world_y, bush_fov_bonus):
+        jump_launch = jump_pad_animations.get(str(p_id))
+        target_visible = is_visible(other_world_x, other_world_y, bush_fov_bonus)
+        launch_visible = bool(
+            jump_launch
+            and is_visible(
+                jump_launch["start_x"],
+                jump_launch["start_y"],
+                bush_fov_bonus,
+            )
+        )
+        if not target_visible and not launch_visible:
             continue
         visible_player_ids.add(p_id)
+        if str(p_id) in jump_pad_animations:
+            continue
 
         other_screen_x, other_screen_y = world_to_screen(p_info["posX"], p_info["posY"], CameraPosX, CameraPosY, camera_zoom)
         stun_offset_x, stun_offset_y = (
@@ -3389,7 +3713,8 @@ def GameFrame(practice_mode: bool = False):
         if now < local_stun_until
         else (0, 0)
     )
-    if my_player.Hp > 0 and (now < stealth_until or in_bush):
+    local_airborne = str(network.player_id) in jump_pad_animations
+    if my_player.Hp > 0 and not local_airborne and (now < stealth_until or in_bush):
         stealth_image = my_player.get_display_image().copy()
         stealth_image.set_alpha(75 if now < stealth_until else 145)
         display.blit(
@@ -3397,7 +3722,7 @@ def GameFrame(practice_mode: bool = False):
             ((my_player.rect.x - CameraPosX) * camera_zoom + local_stun_offset_x,
              (my_player.rect.y - CameraPosY) * camera_zoom + local_stun_offset_y),
         )
-    elif my_player.Hp > 0:
+    elif my_player.Hp > 0 and not local_airborne:
         my_player.draw(
             display,
             CameraPosX,
@@ -3554,6 +3879,67 @@ def GameFrame(practice_mode: bool = False):
         if sprite_rect.colliderect(display.get_rect()):
             display.blit(sprite, sprite_rect)
 
+    visible_ids_as_strings = {str(player_id) for player_id in visible_player_ids}
+    for airborne_id, launch in list(jump_pad_animations.items()):
+        center_x, center_y, finished = get_jump_pad_frame(launch, now)
+        if finished:
+            jump_pad_animations.pop(airborne_id, None)
+            continue
+        if (
+            airborne_id != str(network.player_id)
+            and airborne_id not in visible_ids_as_strings
+        ):
+            continue
+        target_screen_x, target_screen_y = world_to_screen(
+            launch["target_x"],
+            launch["target_y"],
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+        )
+        pygame.draw.ellipse(
+            display,
+            (35, 185, 255),
+            pygame.Rect(
+                round(target_screen_x - 20 * camera_zoom),
+                round(target_screen_y - 7 * camera_zoom),
+                max(1, round(40 * camera_zoom)),
+                max(1, round(14 * camera_zoom)),
+            ),
+            max(1, round(2 * camera_zoom)),
+        )
+        screen_x, screen_y = world_to_screen(
+            center_x - IML.Player.get_width() / 2,
+            center_y - IML.Player.get_height() / 2,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+        )
+        sprite = IML.Player
+        if camera_zoom != 1.0:
+            sprite = pygame.transform.scale(
+                IML.Player,
+                (
+                    max(1, round(IML.Player.get_width() * camera_zoom)),
+                    max(1, round(IML.Player.get_height() * camera_zoom)),
+                ),
+            )
+        sprite_rect = sprite.get_rect(
+            center=(
+                round(screen_x + IML.Player.get_width() * camera_zoom / 2),
+                round(screen_y + IML.Player.get_height() * camera_zoom / 2),
+            )
+        )
+        if sprite_rect.colliderect(display.get_rect()):
+            display.blit(sprite, sprite_rect)
+            pygame.draw.circle(
+                display,
+                (105, 220, 255),
+                sprite_rect.center,
+                max(12, round(48 * camera_zoom)),
+                max(2, round(3 * camera_zoom)),
+            )
+
     for p_id, p_info in frame_server_players.items():
         if p_id not in visible_player_ids or p_info.get("stun_ms_remaining", 0) <= 0:
             continue
@@ -3574,7 +3960,7 @@ def GameFrame(practice_mode: bool = False):
         )
 
     # 시야 오버레이 위에 로컬 플레이어를 다시 그려 기본 시야에서도 항상 보이게 합니다.
-    if my_player.Hp > 0 and (now < stealth_until or in_bush):
+    if my_player.Hp > 0 and not local_airborne and (now < stealth_until or in_bush):
         visible_player_image = my_player.get_display_image().copy()
         visible_player_image.set_alpha(75 if now < stealth_until else 145)
         if camera_zoom != 1.0:
@@ -3592,7 +3978,7 @@ def GameFrame(practice_mode: bool = False):
                 round((my_player.rect.y - CameraPosY) * camera_zoom + local_stun_offset_y),
             ),
         )
-    elif my_player.Hp > 0:
+    elif my_player.Hp > 0 and not local_airborne:
         my_player.draw(
             display,
             CameraPosX,
@@ -3602,12 +3988,12 @@ def GameFrame(practice_mode: bool = False):
             local_stun_offset_y,
         )
 
-    if my_player.Hp > 0 and weapon_state.weapon_id != "knife":
+    if my_player.Hp > 0 and not local_airborne and weapon_state.weapon_id != "knife":
         display.blit(
             rotated_shotgun,
             Shotgun_rect.move(local_stun_offset_x, local_stun_offset_y),
         )
-    if my_player.Hp > 0:
+    if my_player.Hp > 0 and not local_airborne:
         local_name = GuiFont.render(player_name or "플레이어", True, (255, 230, 160))
         display.blit(
             local_name,
@@ -3941,25 +4327,85 @@ def GameFrame(practice_mode: bool = False):
                 respawn_timer,
                 respawn_timer.get_rect(center=(ScreenX // 2, ScreenY // 2 + 23)),
             )
-        scores = server_players.get(network.player_id, {}).get("kill_scores", {})
-        ranked_players = sorted(
-            scores.items(), key=lambda item: (-item[1], str(item[0]))
-        )[:MAX_PLAYERS]
-        for rank, (score_player_id, score) in enumerate(ranked_players):
-            score_player = server_players.get(score_player_id, {})
-            score_name = score_player.get("name", str(score_player_id)[:8])
-            score_color = (255, 235, 160) if str(score_player_id) == str(network.player_id) else (240, 240, 240)
-            score_text = KillFeedFont.render(
-                f"{rank + 1}. {score_name}: {score}", True, score_color
+    if selected_game_mode == GAME_MODE_FLAGDOWN and not is_practice_mode:
+        own_player = server_players.get(network.player_id, {})
+        progress = own_player.get("flagdown_progress", {})
+        if not isinstance(progress, dict):
+            progress = {}
+        team_id = own_player.get("team_id")
+        panel = pygame.Rect(0, 0, 620, 104)
+        panel.midtop = (ScreenX // 2, 18)
+        panel_surface = pygame.Surface(panel.size, pygame.SRCALPHA)
+        pygame.draw.rect(
+            panel_surface,
+            (12, 20, 32, 205),
+            panel_surface.get_rect(),
+            border_radius=8,
+        )
+        display.blit(panel_surface, panel)
+        pygame.draw.rect(display, (230, 205, 125), panel, 2, border_radius=8)
+        remaining_ms = max(
+            0,
+            int(
+                own_player.get(
+                    "flagdown_remaining_ms",
+                    FLAGDOWN_DURATION_MS - match_elapsed_ms,
+                )
+            ),
+        )
+        team_label = (
+            f"플래그다운  ·  내 팀: {'청팀' if team_id == 0 else '홍팀'}"
+            if team_id in (0, 1)
+            else "플래그다운"
+        )
+        team_text = KillFeedFont.render(team_label, True, (255, 240, 190))
+        display.blit(team_text, team_text.get_rect(midtop=(panel.centerx, panel.top + 4)))
+        for index, (label, color) in enumerate((
+            ("청팀", (85, 180, 255)),
+            ("홍팀", (255, 105, 115)),
+        )):
+            value = max(0.0, min(FLAGDOWN_CAPTURE_GOAL, float(progress.get(index, 0))))
+            bar = pygame.Rect(panel.left + 24 + index * 300, panel.top + 53, 260, 16)
+            pygame.draw.rect(display, (45, 50, 62), bar, border_radius=5)
+            fill = bar.copy()
+            fill.width = round(bar.width * value / FLAGDOWN_CAPTURE_GOAL)
+            if fill.width:
+                pygame.draw.rect(display, color, fill, border_radius=5)
+            label_text = KillFeedFont.render(f"{label} {value:.0f}%", True, (245, 245, 245))
+            display.blit(
+                label_text,
+                label_text.get_rect(midtop=(bar.centerx, panel.top + 29)),
             )
-            smaller_score_text = pygame.transform.smoothscale(
-                score_text,
-                (
-                    max(1, round(score_text.get_width() * 0.9)),
-                    max(1, round(score_text.get_height() * 0.9)),
-                ),
+        timer_text = KillFeedFont.render(
+            f"남은 시간  {remaining_ms // 60000:02d}:{(remaining_ms // 1000) % 60:02d}",
+            True,
+            (255, 240, 190),
+        )
+        display.blit(timer_text, timer_text.get_rect(midtop=(panel.centerx, panel.top + 78)))
+        if my_player.Hp <= 0:
+            respawn_text = KillFeedFont.render(
+                f"부활까지 {respawn_ms_remaining / 1000:.1f}초",
+                True,
+                (255, 190, 190),
             )
-            display.blit(smaller_score_text, (ScreenX - 300, 94 + rank * 22))
+            respawn_panel = pygame.Surface(
+                (respawn_text.get_width() + 40, respawn_text.get_height() + 22),
+                pygame.SRCALPHA,
+            )
+            pygame.draw.rect(
+                respawn_panel,
+                (12, 20, 32, 215),
+                respawn_panel.get_rect(),
+                border_radius=10,
+            )
+            respawn_panel_rect = respawn_panel.get_rect(
+                center=(ScreenX // 2, ScreenY // 2)
+            )
+            display.blit(respawn_panel, respawn_panel_rect)
+            display.blit(
+                respawn_text,
+                respawn_text.get_rect(center=respawn_panel_rect.center),
+            )
     if game_start_banner_until > now:
         remaining = game_start_banner_until - now
         game_start_banner.set_alpha(min(255, max(0, remaining * 2)))
@@ -4010,6 +4456,15 @@ def GameFrame(practice_mode: bool = False):
         HP_FRAME_SIZE,
         (HEALTH_GREEN_THRESHOLD, HEALTH_YELLOW_THRESHOLD),
     )
+    if deathmatch:
+        _draw_deathmatch_leaderboard(
+            display,
+            server_players.get(network.player_id, {}).get("kill_scores", {}),
+            server_players,
+            network.player_id,
+            KillFeedFont,
+            (ui_x, ui_y + HP_FRAME_SIZE[1] + 12),
+        )
     
     # [커스텀 가능] HP 텍스트 표시 폰트 (GuiFont 사용)
     hp_text = GuiFont.render(f"HP: {my_player.Hp} / {my_player.MaxHp}", True, (255, 255, 255))
@@ -4078,6 +4533,7 @@ def GameFrame(practice_mode: bool = False):
         elapsed = now - hurt_flash_started_at
         hurt_image = IML.GetHurtImage()
         if 0 <= elapsed < HURT_FLASH_DURATION_MS and hurt_image is not None:
+            hurt_image = hurt_image.copy()
             hurt_image.set_alpha(round(
                 HURT_FLASH_MAX_ALPHA * (1 - elapsed / HURT_FLASH_DURATION_MS)
             ))
@@ -4127,6 +4583,8 @@ while running:
         ExitConfirmView()
     elif ScreenState == "Victory":
         VictoryView()
+    elif ScreenState == "Draw":
+        DrawView()
     elif ScreenState == "GameOver":
         GameOverView()
     pygame.display.update() 

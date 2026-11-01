@@ -89,6 +89,33 @@ class TileRenderingMixin:
         pygame.draw.line(water, (100, 205, 245), (8, self.tile_size * 2 // 3), (self.tile_size - 6, self.tile_size * 2 // 3), 2)
         self.tile_images[6] = water
 
+        jump_pad = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
+        jump_pad.fill((38, 48, 65, 255))
+        pygame.draw.rect(
+            jump_pad,
+            (255, 155, 55),
+            (2, 2, self.tile_size - 4, self.tile_size - 4),
+            3,
+            border_radius=5,
+        )
+        pygame.draw.circle(
+            jump_pad,
+            (255, 225, 125),
+            (self.tile_size // 2, self.tile_size // 2),
+            max(4, self.tile_size // 4),
+            2,
+        )
+        pygame.draw.polygon(
+            jump_pad,
+            (255, 245, 190),
+            (
+                (self.tile_size // 2, 5),
+                (self.tile_size // 2 - 4, self.tile_size // 2),
+                (self.tile_size // 2 + 4, self.tile_size // 2),
+            ),
+        )
+        self.tile_images[9] = jump_pad
+
     def _build_world_surface(self):
         """정적인 맵을 하나의 Surface로 합쳐 반복 그리기 비용을 줄입니다."""
         world_size = (
@@ -106,6 +133,31 @@ class TileRenderingMixin:
             self.tile_images[tile.tile_type],
             (tile_x * self.tile_size, tile_y * self.tile_size),
         )
+        if tile.tile_type == 1 and getattr(self, "game_mode", None) == "flagdown":
+            tile_rng = random.Random(tile_x * 19349663 ^ tile_y * 83492791)
+            tile_left = tile_x * self.tile_size
+            tile_top = tile_y * self.tile_size
+            for _ in range(3):
+                start_x = tile_left + tile_rng.randrange(3, self.tile_size - 3)
+                start_y = tile_top + tile_rng.randrange(2, self.tile_size - 2)
+                pygame.draw.line(
+                    self.world_surface,
+                    tile_rng.choice(((70, 78, 89), (205, 200, 180), (110, 125, 135))),
+                    (start_x, start_y),
+                    (
+                        start_x + tile_rng.randrange(-7, 8),
+                        start_y + tile_rng.randrange(-6, 7),
+                    ),
+                    1,
+                )
+            pygame.draw.line(
+                self.world_surface,
+                (205, 200, 175),
+                (tile_left + 2, tile_top + 3),
+                (tile_left + self.tile_size - 3, tile_top + 2),
+                1,
+            )
+            return
         if tile.tile_type != 0:
             return
 

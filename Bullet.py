@@ -21,7 +21,7 @@ _BULLET_IMAGE_PATH = os.path.join(
 def _get_bullet_surface(size):
     """재사용 가능한 크기별 총알 이미지를 한 번만 생성합니다."""
     source = _get_bullet_image()
-    image_width = max(8, size * 4)
+    image_width = max(8, size * 32)
     image_height = max(1, round(source.get_height() * image_width / source.get_width()))
     surface = pygame.transform.smoothscale(source, (image_width, image_height))
     surface.fill((255, 255, 255, 255), special_flags=pygame.BLEND_RGBA_MULT)

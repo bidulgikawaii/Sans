@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from Config import (
     GAME_MODE_DEBUG,
     GAME_MODE_DEATHMATCH,
+    GAME_MODE_FLAGDOWN,
     GAME_MODE_NORMAL,
     NORMAL_MATCH_MIN_PLAYERS,
 )
@@ -63,5 +64,10 @@ register_game_mode(GameModeDefinition(
 register_game_mode(GameModeDefinition(
     mode_id=GAME_MODE_DEATHMATCH,
     label="데스매치",
+    min_players=NORMAL_MATCH_MIN_PLAYERS,
+))
+register_game_mode(GameModeDefinition(
+    mode_id=GAME_MODE_FLAGDOWN,
+    label="플래그다운",
     min_players=NORMAL_MATCH_MIN_PLAYERS,
 ))

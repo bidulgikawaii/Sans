@@ -16,6 +16,11 @@ from Config import (
     MAP_RUNE_COUNT,
     MAP_FURNITURE_CHANCE,
     MAP_WATER_RADIUS,
+    FLAGDOWN_CAPTURE_RADIUS,
+    FLAGDOWN_JUMP_PADS,
+    FLAGDOWN_MAP_HEIGHT_TILES,
+    FLAGDOWN_MAP_WIDTH_TILES,
+    GAME_MODE_FLAGDOWN,
 )
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
@@ -64,11 +69,19 @@ class TileGenerator(TileRenderingMixin):
         # 서버에서 시드(Seed)를 받아오기 전에 생성자가 먼저 작동하므로,
         # 인스턴스 초기화 단계에서의 임의 맵 생성(generate_map) 구문은 제거했습니다.
 
-    def generate_map(self, width_tiles, height_tiles, seed_value=None):
+    def generate_map(self, width_tiles, height_tiles, seed_value=None, game_mode=None):
         """★멀티플레이 동기화 핵심★: 서버 시드로 난수를 고정하여 모두에게 똑같은 집을 배치합니다."""
+        if game_mode == GAME_MODE_FLAGDOWN:
+            self.generate_flagdown_map(
+                FLAGDOWN_MAP_WIDTH_TILES,
+                FLAGDOWN_MAP_HEIGHT_TILES,
+            )
+            return
+
         if seed_value is not None:
             random.seed(seed_value) # 👈 이 구문이 돌면서 모든 유저 컴퓨터의 난수 발생 순서가 고정됩니다.
 
+        self.game_mode = game_mode
         self.map_data.clear() # 기존 데이터 초기화
         self.map_width = width_tiles
         self.map_height = height_tiles
@@ -156,6 +169,90 @@ class TileGenerator(TileRenderingMixin):
         self._place_central_water()
 
         self._build_world_surface()
+        self._visibility_cache.clear()
+        self._vision_wall_rects = None
+        self._vision_wall_buckets = None
+
+    def generate_flagdown_map(self, width_tiles, height_tiles):
+        """중앙 점령 구역과 좌우 대칭 엄폐물이 있는 플래그다운 전용 맵을 만듭니다."""
+        self.game_mode = GAME_MODE_FLAGDOWN
+        self.map_data.clear()
+        self.map_width = width_tiles
+        self.map_height = height_tiles
+        self.map_revision += 1
+        self.house_rects = []
+        center_x = width_tiles // 2
+        center_y = height_tiles // 2
+
+        for y in range(height_tiles):
+            for x in range(width_tiles):
+                is_border = x == 0 or x == width_tiles - 1 or y == 0 or y == height_tiles - 1
+                self.map_data[(x, y)] = Tile(
+                    tile_type=1 if is_border else 0,
+                    is_walkable=not is_border,
+                )
+
+        clear_radius = math.ceil(FLAGDOWN_CAPTURE_RADIUS / self.tile_size) + 2
+        barriers = (
+            (center_x - 15, center_y - 4, 3, 10),
+            (center_x + 12, center_y - 4, 3, 10),
+            (center_x - 28, center_y - 16, 8, 3),
+            (center_x + 20, center_y - 16, 8, 3),
+            (center_x - 28, center_y + 13, 8, 3),
+            (center_x + 20, center_y + 13, 8, 3),
+        )
+        for block_x, block_y, block_width, block_height in barriers:
+            if math.hypot(
+                block_x + block_width / 2 - center_x,
+                block_y + block_height / 2 - center_y,
+            ) <= clear_radius:
+                continue
+            for y in range(block_y, block_y + block_height):
+                for x in range(block_x, block_x + block_width):
+                    if 0 < x < width_tiles - 1 and 0 < y < height_tiles - 1:
+                        self.map_data[(x, y)] = Tile(
+                            tile_type=1,
+                            is_walkable=False,
+                        )
+
+        for pad_x, pad_y in FLAGDOWN_JUMP_PADS:
+            for y in range(pad_y, pad_y + 2):
+                for x in range(pad_x, pad_x + 2):
+                    self.map_data[(x, y)] = Tile(tile_type=9, is_walkable=True)
+
+        self._build_world_surface()
+        zone_surface = pygame.Surface(
+            (FLAGDOWN_CAPTURE_RADIUS * 2, FLAGDOWN_CAPTURE_RADIUS * 2),
+            pygame.SRCALPHA,
+        )
+        pygame.draw.circle(
+            zone_surface,
+            (45, 145, 220, 82),
+            (FLAGDOWN_CAPTURE_RADIUS, FLAGDOWN_CAPTURE_RADIUS),
+            FLAGDOWN_CAPTURE_RADIUS,
+        )
+        pygame.draw.circle(
+            zone_surface,
+            (120, 220, 255, 235),
+            (FLAGDOWN_CAPTURE_RADIUS, FLAGDOWN_CAPTURE_RADIUS),
+            FLAGDOWN_CAPTURE_RADIUS - 2,
+            max(3, self.tile_size // 6),
+        )
+        self.world_surface.blit(
+            zone_surface,
+            (
+                center_x * self.tile_size - FLAGDOWN_CAPTURE_RADIUS,
+                center_y * self.tile_size - FLAGDOWN_CAPTURE_RADIUS,
+            ),
+        )
+        pygame.draw.circle(
+            self.world_surface,
+            (235, 250, 255),
+            (center_x * self.tile_size, center_y * self.tile_size),
+            12,
+        )
+        self._scaled_world_surface = None
+        self._scaled_world_zoom = None
         self._visibility_cache.clear()
         self._vision_wall_rects = None
         self._vision_wall_buckets = None
@@ -545,6 +642,86 @@ class TileGenerator(TileRenderingMixin):
             if not self.is_walkable(x, y):
                 return True  # 충돌 감지
         return False  # 충돌 없음
+
+    def find_teleport_landing(
+        self,
+        target_x,
+        target_y,
+        direction_x,
+        direction_y,
+        width,
+        height,
+        max_distance=None,
+    ):
+        """조준점을 우선 사용하고, 벽에 겹치면 조준 방향 너머의 안전 지점을 찾습니다."""
+        if not (
+            math.isfinite(target_x)
+            and math.isfinite(target_y)
+            and 0 <= target_x < self.map_width * self.tile_size
+            and 0 <= target_y < self.map_height * self.tile_size
+        ):
+            return None
+
+        def is_clear(center_x, center_y):
+            rect = pygame.Rect(0, 0, width, height)
+            rect.center = (round(center_x), round(center_y))
+            return not self.check_collision(rect)
+
+        if is_clear(target_x, target_y):
+            return target_x, target_y
+
+        direction_length = math.hypot(direction_x, direction_y)
+        if direction_length <= 0.001:
+            return None
+        direction_x /= direction_length
+        direction_y /= direction_length
+        step = max(4, self.tile_size // 4)
+        search_distance = max_distance or self.tile_size * 8
+        for distance in range(step, search_distance + step, step):
+            landing_x = target_x + direction_x * distance
+            landing_y = target_y + direction_y * distance
+            if not (
+                0 <= landing_x < self.map_width * self.tile_size
+                and 0 <= landing_y < self.map_height * self.tile_size
+            ):
+                break
+            if is_clear(landing_x, landing_y):
+                return landing_x, landing_y
+        return None
+
+    def find_jump_landing(
+        self,
+        start_x,
+        start_y,
+        direction_x,
+        direction_y,
+        distance,
+        width,
+        height,
+    ):
+        """점프대가 벽을 넘은 뒤 착지할 수 있는 가장 먼 안전 위치를 찾습니다."""
+        values = (start_x, start_y, direction_x, direction_y, distance)
+        if not all(math.isfinite(value) for value in values):
+            return None
+        direction_length = math.hypot(direction_x, direction_y)
+        if direction_length <= 0.001:
+            return None
+        direction_x /= direction_length
+        direction_y /= direction_length
+        step = max(4, self.tile_size // 4)
+        rect = pygame.Rect(0, 0, width, height)
+        for travel in range(max(step, round(distance)), 0, -step):
+            landing_x = start_x + direction_x * travel
+            landing_y = start_y + direction_y * travel
+            if not (
+                width / 2 <= landing_x < self.map_width * self.tile_size - width / 2
+                and height / 2 <= landing_y < self.map_height * self.tile_size - height / 2
+            ):
+                continue
+            rect.center = (round(landing_x), round(landing_y))
+            if not self.check_collision(rect):
+                return landing_x, landing_y
+        return None
 
     def check_wall_collision(self, rect):
         """Rect가 벽 타일에 닿았는지 확인합니다. 문과 바닥은 통과합니다."""

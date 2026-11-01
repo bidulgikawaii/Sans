@@ -5,6 +5,7 @@ import pygame
 from Settings import key_label, settings
 from Config import (
     QUICK_SLOT_SIZE,
+    QUICK_SLOT_GAP_X,
     QUICK_SLOT_START_X,
     QUICK_SLOT_Y,
     SCREEN_HEIGHT,
@@ -264,8 +265,11 @@ def refresh_skill_inventory():
 inventory_items = []
 refresh_skill_inventory()
 quick_slots = [
-    # 스킬 장착 후 표시되는 퀵슬롯의 가로 위치와 간격입니다.
-    QuickSlot(QUICK_SLOT_START_X + index * (QUICK_SLOT_SIZE + 20), QUICK_SLOT_Y, key_name)
+    QuickSlot(
+        QUICK_SLOT_START_X + index * (QUICK_SLOT_SIZE + QUICK_SLOT_GAP_X),
+        QUICK_SLOT_Y,
+        key_name,
+    )
     for index, key_name in enumerate(("Q", "E", "T"))
 ]
 

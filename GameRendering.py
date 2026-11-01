@@ -54,7 +54,7 @@ def create_bat_launch(event, map_width, map_height, now):
         "direction_y": direction_y,
         "distance": distance,
         "started_at": now,
-        "duration": max(1200, min(2800, round(distance / 2.2))),
+        "duration": max(800, min(1800, round(distance / 3.5))),
     }
 
 
@@ -73,6 +73,40 @@ def get_bat_launch_frame(launch, now):
     rotation = math.degrees(math.atan2(launch["direction_y"], launch["direction_x"]))
     rotation += 900 * eased_progress
     return center_x, center_y, rotation, max(0, alpha), progress >= 1.0
+
+
+def create_jump_pad_animation(event, now):
+    try:
+        start_x = float(event["start_x"])
+        start_y = float(event["start_y"])
+        target_x = float(event["target_x"])
+        target_y = float(event["target_y"])
+        duration = int(event["duration_ms"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (start_x, start_y, target_x, target_y)):
+        return None
+    return {
+        "start_x": start_x,
+        "start_y": start_y,
+        "target_x": target_x,
+        "target_y": target_y,
+        "started_at": now,
+        "duration": max(300, min(1500, duration)),
+    }
+
+
+def get_jump_pad_frame(launch, now):
+    elapsed = max(0, now - launch["started_at"])
+    progress = min(1.0, elapsed / launch["duration"])
+    eased_progress = progress * progress * (3 - 2 * progress)
+    center_x = launch["start_x"] + (
+        launch["target_x"] - launch["start_x"]
+    ) * eased_progress
+    center_y = launch["start_y"] + (
+        launch["target_y"] - launch["start_y"]
+    ) * eased_progress - math.sin(progress * math.pi) * 210
+    return center_x, center_y, progress >= 1.0
 
 
 def _fit_kill_feed_text(font, text, color, max_width):

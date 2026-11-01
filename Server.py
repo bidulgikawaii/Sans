@@ -10,10 +10,23 @@ from Config import (
     DEFAULT_WEAPON_ID,
     DEATHMATCH_DURATION_MS,
     DEATHMATCH_RESPAWN_MS,
+    DEATHMATCH_RESPAWN_SAFE_DISTANCE_TILES,
+    FLAGDOWN_DURATION_MS,
+    FLAGDOWN_JUMP_COOLDOWN_MS,
+    FLAGDOWN_JUMP_DURATION_MS,
+    FLAGDOWN_JUMP_DISTANCE,
+    FLAGDOWN_JUMP_PADS,
+    FLAGDOWN_MAP_HEIGHT_TILES,
+    FLAGDOWN_MAP_WIDTH_TILES,
+    FLAGDOWN_RESPAWN_MS,
     BUSH_LEAF_INTERVAL_MS,
     GAME_MODE_DEBUG,
     GAME_MODE_DEATHMATCH,
+    GAME_MODE_FLAGDOWN,
     GAME_MODE_NORMAL,
+    FLAGDOWN_CAPTURE_GOAL,
+    FLAGDOWN_CAPTURE_RADIUS,
+    FLAGDOWN_CAPTURE_RATE,
     NETWORK_BUFFER_SIZE,
     PLAYER_MAX_HP,
     SERVER_IP,
@@ -72,6 +85,10 @@ def new_match_events():
         "next_supply_collection_id": 1,
         "bush_leaf_events": [],
         "next_bush_leaf_event_id": 1,
+        "flagdown_progress": {0: 0.0, 1: 0.0},
+        "flagdown_updated_at": None,
+        "jump_pad_events": [],
+        "next_jump_pad_event_id": 1,
     }
 
 
@@ -117,9 +134,16 @@ def generate_player_id():
     return str(uuid.uuid4())
 
 
-def validated_spawn_tiles(raw_tiles):
+def mode_map_dimensions(mode):
+    if mode == GAME_MODE_FLAGDOWN:
+        return FLAGDOWN_MAP_WIDTH_TILES, FLAGDOWN_MAP_HEIGHT_TILES
+    return MAP_WIDTH_TILES, MAP_HEIGHT_TILES
+
+
+def validated_spawn_tiles(raw_tiles, mode=GAME_MODE_NORMAL):
     if not isinstance(raw_tiles, (list, tuple)):
         return []
+    map_width, map_height = mode_map_dimensions(mode)
     spawn_tiles = []
     for raw_tile in raw_tiles:
         if not isinstance(raw_tile, (list, tuple)) or len(raw_tile) != 2:
@@ -130,8 +154,8 @@ def validated_spawn_tiles(raw_tiles):
             or isinstance(x, bool)
             or not isinstance(y, int)
             or isinstance(y, bool)
-            or not (0 <= x < MAP_WIDTH_TILES - 2)
-            or not (0 <= y < MAP_HEIGHT_TILES - 2)
+            or not (0 <= x < map_width - 2)
+            or not (0 <= y < map_height - 2)
         ):
             continue
         if (x, y) not in spawn_tiles:
@@ -139,6 +163,73 @@ def validated_spawn_tiles(raw_tiles):
         if len(spawn_tiles) >= MAX_PLAYERS:
             break
     return spawn_tiles
+
+
+def select_respawn_spawn(mode, player_id, spawn_tiles, match_player_ids, players, lobby):
+    """Choose a free fixed team slot or the safest available deathmatch spawn."""
+    if mode == GAME_MODE_FLAGDOWN:
+        team_id = lobby.team_for(player_id)
+        team_spawn_index = lobby.team_spawn_index(player_id)
+        spawn_index = (
+            team_id * 6 + team_spawn_index
+            if team_id in (0, 1) and isinstance(team_spawn_index, int)
+            else None
+        )
+        if spawn_index is None or spawn_index >= len(spawn_tiles):
+            return None
+        spawn_tiles = (spawn_tiles[spawn_index],)
+
+    available_spawns = []
+    for spawn_x, spawn_y in spawn_tiles:
+        overlaps_player = False
+        nearest_player_distance_squared = float("inf")
+        for active_id in match_player_ids:
+            if active_id == player_id:
+                continue
+            other_player = players.get(active_id)
+            if not other_player or other_player["hp"] <= 0:
+                continue
+            other_x = int(other_player["posX"] // 32)
+            other_y = int(other_player["posY"] // 32)
+            spawn_center_x = spawn_x + 1.5
+            spawn_center_y = spawn_y + 1.5
+            other_center_x = other_x + 1.5
+            other_center_y = other_y + 1.5
+            nearest_player_distance_squared = min(
+                nearest_player_distance_squared,
+                (spawn_center_x - other_center_x) ** 2
+                + (spawn_center_y - other_center_y) ** 2,
+            )
+            if (
+                spawn_x < other_x + 3
+                and spawn_x + 3 > other_x
+                and spawn_y < other_y + 3
+                and spawn_y + 3 > other_y
+            ):
+                overlaps_player = True
+                break
+        if not overlaps_player:
+            available_spawns.append(
+                (spawn_x, spawn_y, nearest_player_distance_squared)
+            )
+
+    if not available_spawns:
+        return None
+    if mode == GAME_MODE_DEATHMATCH:
+        safe_distance_squared = DEATHMATCH_RESPAWN_SAFE_DISTANCE_TILES ** 2
+        safer_spawns = [
+            spawn for spawn in available_spawns if spawn[2] >= safe_distance_squared
+        ]
+        if safer_spawns:
+            available_spawns = safer_spawns
+        else:
+            farthest_distance_squared = max(spawn[2] for spawn in available_spawns)
+            available_spawns = [
+                spawn for spawn in available_spawns
+                if spawn[2] == farthest_distance_squared
+            ]
+    spawn_x, spawn_y, _ = random.choice(available_spawns)
+    return spawn_x, spawn_y
 
 
 def handle_client(conn, player_id):
@@ -186,6 +277,8 @@ def handle_client(conn, player_id):
         "zone_last_tick": time.monotonic(),
         "bullets": [],
         "deathmatch_respawn_at": None,
+        "jump_pad_invulnerable_until": 0.0,
+        "jump_pad_next_at": 0.0,
         "spawn_index": None,
         "spawn_tiles": [],
         "kill_count": 0,
@@ -235,10 +328,23 @@ def handle_client(conn, player_id):
                                 winner_ids[0] if len(winner_ids) == 1 else None
                             )
                             player["winner_ids"] = winner_ids
+                            player["match_draw"] = (
+                                mode == GAME_MODE_FLAGDOWN
+                                and mode in completed_match_winner_ids
+                                and not winner_ids
+                            )
                             player["kill_scores"] = scores
                             player["kill_count"] = scores.get(snapshot_player_id, 0)
                             player["match_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
+                            player["flagdown_remaining_ms"] = max(
+                                0,
+                                FLAGDOWN_DURATION_MS - lobby_state.get("elapsed_ms", 0),
+                            )
                             player["zone_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
+                            player["team_id"] = lobby.team_for(snapshot_player_id)
+                            player["team_spawn_index"] = lobby.team_spawn_index(snapshot_player_id)
+                            player["flagdown_progress"] = dict(events["flagdown_progress"])
+                            player["jump_pad_events"] = list(events["jump_pad_events"][-32:])
                             player["stun_ms_remaining"] = max(
                                 0,
                                 round((player.get("stunned_until", 0.0) - time.monotonic()) * 1000),
@@ -302,44 +408,55 @@ def handle_client(conn, player_id):
                             "zone_last_tick": time.monotonic(),
                             "bullets": [],
                             "deathmatch_respawn_at": None,
+                            "jump_pad_invulnerable_until": 0.0,
+                            "jump_pad_next_at": 0.0,
                             "kill_count": 0,
                         })
-                        if requested_mode == GAME_MODE_DEATHMATCH:
+                        if requested_mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN):
                             spawn_candidates = validated_spawn_tiles(
-                                client_data.get("spawn_tiles")
+                                client_data.get("spawn_tiles"),
+                                requested_mode,
                             )
                             if not spawn_candidates:
                                 accepted = False
                                 lobby.leave(player_id)
                             else:
-                                if previous_mode != GAME_MODE_DEATHMATCH:
+                                if previous_mode != requested_mode:
                                     player["spawn_index"] = None
                                 player["spawn_tiles"] = spawn_candidates
-                                occupied_indices = {
-                                    players[active_id].get("spawn_index")
-                                    for active_id in lobby.active_player_ids(requested_mode)
-                                    if active_id != player_id and active_id in players
-                                }
-                                spawn_index = player.get("spawn_index")
-                                if (
-                                    spawn_index is None
-                                    or spawn_index >= len(spawn_candidates)
-                                    or spawn_index in occupied_indices
-                                ):
-                                    available_indices = [
-                                        index for index in range(len(spawn_candidates))
-                                        if index not in occupied_indices
-                                    ]
-                                    if not available_indices:
-                                        accepted = False
-                                        lobby.leave(player_id)
-                                    else:
-                                        player["spawn_index"] = random.choice(available_indices)
+                                if requested_mode == GAME_MODE_DEATHMATCH:
+                                    occupied_indices = {
+                                        players[active_id].get("spawn_index")
+                                        for active_id in lobby.active_player_ids(requested_mode)
+                                        if active_id != player_id and active_id in players
+                                    }
+                                    spawn_index = player.get("spawn_index")
+                                    if (
+                                        spawn_index is None
+                                        or spawn_index >= len(spawn_candidates)
+                                        or spawn_index in occupied_indices
+                                    ):
+                                        available_indices = [
+                                            index for index in range(len(spawn_candidates))
+                                            if index not in occupied_indices
+                                        ]
+                                        if not available_indices:
+                                            accepted = False
+                                            lobby.leave(player_id)
+                                        else:
+                                            player["spawn_index"] = random.choice(available_indices)
                     lobby_status = lobby.status(player_id, mode=requested_mode)
                     lobby_status["accepted"] = accepted
                     if accepted:
                         if requested_mode == GAME_MODE_DEATHMATCH:
                             lobby_status["spawn_index"] = players[player_id]["spawn_index"]
+                        elif requested_mode == GAME_MODE_FLAGDOWN:
+                            lobby_status["team_id"] = lobby.team_for(player_id)
+                            lobby_status["team_spawn_index"] = lobby.team_spawn_index(player_id)
+                            lobby_status["spawn_index"] = (
+                                (lobby_status["team_id"] or 0) * 6
+                                + (lobby_status["team_spawn_index"] or 0)
+                            )
                         else:
                             lobby_status["spawn_index"] = sorted(
                                 lobby.active_player_ids(requested_mode)
@@ -351,7 +468,7 @@ def handle_client(conn, player_id):
                             or lobby.start_at[requested_mode] is not None
                             else (
                                 "안전한 스폰 위치를 확보하지 못했습니다."
-                                if requested_mode == GAME_MODE_DEATHMATCH
+                                if requested_mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN)
                                 else f"로비가 가득 찼습니다. 최대 {MAX_PLAYERS}명까지 참가할 수 있습니다."
                             )
                         )
@@ -384,27 +501,18 @@ def handle_client(conn, player_id):
                             players[player_id]["deathmatch_respawn_at"] = None
                             lobby.leave(player_id)
                             response = {"type": "match_defeat", "mode": mode}
+                    elif mode is not None:
+                        lobby.leave(player_id)
+                        response = {"type": "lobby_left", "mode": mode}
                     else:
-                        cancelled_ids = lobby.cancel(mode) if mode is not None else set()
-                        for cancelled_id in cancelled_ids:
-                            if cancelled_id != player_id:
-                                cancelled_match_notices[cancelled_id] = mode
-                        if mode is not None:
-                            completed_match_winner_ids.pop(mode, None)
-                            result_pending_player_ids.pop(mode, None)
-                            reset_match_events(mode)
-                        for pending_mode, pending_ids in tuple(result_pending_player_ids.items()):
-                            pending_ids.discard(player_id)
-                            if not pending_ids and pending_mode in completed_match_winner_ids:
-                                lobby.finish_match(pending_mode)
-                                completed_match_winner_ids.pop(pending_mode, None)
-                                result_pending_player_ids.pop(pending_mode, None)
-                                reset_match_events(pending_mode)
-                        response = (
-                            {"type": "match_cancelled", "mode": mode}
-                            if mode is not None
-                            else lobby.status(player_id)
-                        )
+                        response = lobby.status(player_id)
+                    for pending_mode, pending_ids in tuple(result_pending_player_ids.items()):
+                        pending_ids.discard(player_id)
+                        if not pending_ids and pending_mode in completed_match_winner_ids:
+                            lobby.finish_match(pending_mode)
+                            completed_match_winner_ids.pop(pending_mode, None)
+                            result_pending_player_ids.pop(pending_mode, None)
+                            reset_match_events(pending_mode)
                 conn.sendall(pickle.dumps(response))
                 continue
 
@@ -456,7 +564,8 @@ def handle_client(conn, player_id):
                             lifetime_ms = int(request.get("lifetime_ms", 30_000))
                         except (KeyError, TypeError, ValueError):
                             continue
-                        if not (0 <= drop_x < MAP_WIDTH_TILES * 32 and 0 <= drop_y < MAP_HEIGHT_TILES * 32):
+                        map_width, map_height = mode_map_dimensions(mode)
+                        if not (0 <= drop_x < map_width * 32 and 0 <= drop_y < map_height * 32):
                             continue
                         if len(events["supply_drops"]) >= 64:
                             continue
@@ -512,7 +621,79 @@ def handle_client(conn, player_id):
                     events["destroyed_furniture"].add((int(furniture[0]), int(furniture[1])))
 
             # 3. 서버에 저장된 해당 유저 데이터 갱신
-            if mode != GAME_MODE_DEATHMATCH or players[player_id]["hp"] > 0:
+            if (
+                mode == GAME_MODE_FLAGDOWN
+                and players[player_id]["hp"] > 0
+                and now_monotonic >= players[player_id]["jump_pad_next_at"]
+            ):
+                jump_request = client_data.get("jump_pad_request")
+                if isinstance(jump_request, dict):
+                    try:
+                        target_x = float(jump_request["target_x"])
+                        target_y = float(jump_request["target_y"])
+                        request_start_x = float(jump_request["start_x"])
+                        request_start_y = float(jump_request["start_y"])
+                    except (KeyError, TypeError, ValueError):
+                        jump_request = None
+                    if jump_request is not None:
+                        current_x = float(players[player_id]["posX"]) + 36
+                        current_y = float(players[player_id]["posY"]) + 36
+                        request_coordinates_valid = all(math.isfinite(value) for value in (
+                            target_x, target_y, request_start_x, request_start_y
+                        ))
+                        request_tile = (
+                            (int(request_start_x // 32), int(request_start_y // 32))
+                            if request_coordinates_valid
+                            else (-1, -1)
+                        )
+                        map_width, map_height = mode_map_dimensions(mode)
+                        on_jump_pad = any(
+                            pad_x <= request_tile[0] < pad_x + 2
+                            and pad_y <= request_tile[1] < pad_y + 2
+                            for pad_x, pad_y in FLAGDOWN_JUMP_PADS
+                        )
+                        if (
+                            request_coordinates_valid
+                            and on_jump_pad
+                            and math.hypot(
+                                request_start_x - current_x,
+                                request_start_y - current_y,
+                            ) <= 160
+                            and math.hypot(
+                                target_x - request_start_x,
+                                target_y - request_start_y,
+                            )
+                            <= FLAGDOWN_JUMP_DISTANCE + 32
+                            and 36 <= target_x < map_width * 32 - 36
+                            and 36 <= target_y < map_height * 32 - 36
+                        ):
+                            events["jump_pad_events"].append({
+                                "event_id": events["next_jump_pad_event_id"],
+                                "player_id": player_id,
+                                "start_x": request_start_x,
+                                "start_y": request_start_y,
+                                "target_x": target_x,
+                                "target_y": target_y,
+                                "duration_ms": FLAGDOWN_JUMP_DURATION_MS,
+                            })
+                            events["next_jump_pad_event_id"] += 1
+                            events["jump_pad_events"][:] = events["jump_pad_events"][-64:]
+                            players[player_id]["jump_pad_invulnerable_until"] = (
+                                now_monotonic + FLAGDOWN_JUMP_DURATION_MS / 1000
+                            )
+                            players[player_id]["jump_pad_next_at"] = (
+                                now_monotonic
+                                + (
+                                    FLAGDOWN_JUMP_DURATION_MS
+                                    + FLAGDOWN_JUMP_COOLDOWN_MS
+                                ) / 1000
+                            )
+                            client_data["posX"] = target_x - 36
+                            client_data["posY"] = target_y - 36
+            if (
+                mode not in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN)
+                or players[player_id]["hp"] > 0
+            ):
                 players[player_id]["posX"] = client_data["posX"]
                 players[player_id]["posY"] = client_data["posY"]
             players[player_id]["angle"] = client_data["angle"]
@@ -555,9 +736,10 @@ def handle_client(conn, player_id):
                             player_y = float(client_data["posY"]) + 60
                         except (KeyError, TypeError, ValueError):
                             continue
+                        map_width, map_height = mode_map_dimensions(mode)
                         if not (
-                            0 <= player_x < MAP_WIDTH_TILES * 32
-                            and 0 <= player_y < MAP_HEIGHT_TILES * 32
+                            0 <= player_x < map_width * 32
+                            and 0 <= player_y < map_height * 32
                         ):
                             continue
                         events["bush_leaf_events"].append({
@@ -576,7 +758,7 @@ def handle_client(conn, player_id):
                 for ward in client_data.get("wards", [])
                 if isinstance(ward, (list, tuple)) and len(ward) == 2
             ]
-            if mode != GAME_MODE_DEATHMATCH:
+            if mode not in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN):
                 players[player_id]["revive_armed"] = bool(
                     client_data.get("revive_armed", False)
                 )
@@ -597,7 +779,7 @@ def handle_client(conn, player_id):
                 and revive_token != players[player_id]["revive_token"]
             ):
                 players[player_id]["revive_token"] = revive_token
-                if mode != GAME_MODE_DEATHMATCH:
+                if mode not in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN):
                     players[player_id]["hp"] = max(1, round(PLAYER_MAX_HP * REVIVE_HP_RATIO))
                     players[player_id]["revive_armed"] = False
             rune_ping = client_data.get("rune_ping")
@@ -668,13 +850,20 @@ def handle_client(conn, player_id):
             players[player_id]["zone_last_tick"] = zone_now
 
             for hit_event in client_data.get("hit_events", []):
-                if mode == GAME_MODE_DEATHMATCH and players[player_id]["hp"] <= 0:
+                if (
+                    mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN)
+                    and players[player_id]["hp"] <= 0
+                ):
                     break
                 target_id = hit_event.get("target_id")
                 if not isinstance(target_id, str) or target_id not in lobby.visible_player_ids(player_id):
                     continue
                 target = players.get(target_id)
-                if not target or target["hp"] <= 0:
+                if (
+                    not target
+                    or target["hp"] <= 0
+                    or now_monotonic < target.get("jump_pad_invulnerable_until", 0.0)
+                ):
                     continue
                 attacker_id = hit_event.get("attacker_id", player_id)
                 if (
@@ -730,16 +919,22 @@ def handle_client(conn, player_id):
                     previous_hp > 0
                     and target["hp"] <= 0
                     and (
-                        mode == GAME_MODE_DEATHMATCH
+                        mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN)
                         or not target.get("revive_armed", False)
                     )
                 ):
-                    if mode == GAME_MODE_DEATHMATCH:
+                    if mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN):
                         target["revive_armed"] = False
                         target["deathmatch_respawn_at"] = (
-                            time.monotonic() + DEATHMATCH_RESPAWN_MS / 1000
+                            now_monotonic
+                            + (
+                                FLAGDOWN_RESPAWN_MS
+                                if mode == GAME_MODE_FLAGDOWN
+                                else DEATHMATCH_RESPAWN_MS
+                            ) / 1000
                         )
-                        if attacker_id != target_id:
+                        target["jump_pad_invulnerable_until"] = 0.0
+                        if mode == GAME_MODE_DEATHMATCH and attacker_id != target_id:
                             with player_lock:
                                 events["kill_scores"][attacker_id] = (
                                     events["kill_scores"].get(attacker_id, 0) + 1
@@ -816,8 +1011,8 @@ def handle_client(conn, player_id):
                             skill_name not in allowed_skills
                             or not math.isfinite(skill_x)
                             or not math.isfinite(skill_y)
-                            or not 0 <= skill_x < MAP_WIDTH_TILES * 32
-                            or not 0 <= skill_y < MAP_HEIGHT_TILES * 32
+                            or not 0 <= skill_x < mode_map_dimensions(mode)[0] * 32
+                            or not 0 <= skill_y < mode_map_dimensions(mode)[1] * 32
                         ):
                             continue
                         events["spectator_skill_events"].append({
@@ -841,7 +1036,7 @@ def handle_client(conn, player_id):
             # 4. 현재 접속한 모든 유저들의 데이터를 통째로 패킹해서 응답
             with player_lock:
                 now_monotonic = time.monotonic()
-                if mode == GAME_MODE_DEATHMATCH:
+                if mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN):
                     for respawn_id in lobby.match_player_ids[mode]:
                         respawning_player = players.get(respawn_id)
                         respawn_at = (
@@ -854,29 +1049,16 @@ def handle_client(conn, player_id):
                             and respawn_at is not None
                             and now_monotonic >= respawn_at
                         ):
-                            available_spawns = []
-                            for spawn_x, spawn_y in respawning_player.get("spawn_tiles", ()):
-                                overlaps_player = False
-                                for active_id in lobby.match_player_ids[mode]:
-                                    if active_id == respawn_id:
-                                        continue
-                                    other_player = players.get(active_id)
-                                    if not other_player or other_player["hp"] <= 0:
-                                        continue
-                                    other_x = int(other_player["posX"] // 32)
-                                    other_y = int(other_player["posY"] // 32)
-                                    if (
-                                        spawn_x < other_x + 3
-                                        and spawn_x + 3 > other_x
-                                        and spawn_y < other_y + 3
-                                        and spawn_y + 3 > other_y
-                                    ):
-                                        overlaps_player = True
-                                        break
-                                if not overlaps_player:
-                                    available_spawns.append((spawn_x, spawn_y))
-                            if available_spawns:
-                                spawn_x, spawn_y = random.choice(available_spawns)
+                            spawn_position = select_respawn_spawn(
+                                mode,
+                                respawn_id,
+                                respawning_player.get("spawn_tiles", ()),
+                                lobby.match_player_ids[mode],
+                                players,
+                                lobby,
+                            )
+                            if spawn_position is not None:
+                                spawn_x, spawn_y = spawn_position
                                 respawning_player["posX"] = spawn_x * 32
                                 respawning_player["posY"] = spawn_y * 32
                                 respawning_player["magazine_ammo"] = WEAPONS[
@@ -884,6 +1066,8 @@ def handle_client(conn, player_id):
                                 ].magazine_size
                                 respawning_player["hp"] = PLAYER_MAX_HP
                                 respawning_player["deathmatch_respawn_at"] = None
+                                respawning_player["jump_pad_invulnerable_until"] = 0.0
+                                respawning_player["jump_pad_next_at"] = 0.0
 
                 active_ids = lobby.visible_player_ids(player_id)
                 active_players = {
@@ -905,14 +1089,108 @@ def handle_client(conn, player_id):
                 winner_ids = completed_match_winner_ids.get(mode)
                 if (
                     winner_ids is None
+                    and mode == GAME_MODE_FLAGDOWN
+                    and lobby.started[mode]
+                ):
+                    previous_update = events["flagdown_updated_at"]
+                    events["flagdown_updated_at"] = now_monotonic
+                    capture_elapsed = (
+                        min(0.25, max(0.0, now_monotonic - previous_update))
+                        if previous_update is not None
+                        else 0.0
+                    )
+                    map_width, map_height = mode_map_dimensions(mode)
+                    center_x = map_width * 32 / 2
+                    center_y = map_height * 32 / 2
+                    present_teams = set()
+                    active_match_ids = (
+                        set(match_player_ids)
+                        & lobby.active_player_ids(mode)
+                    )
+                    for active_id in active_match_ids:
+                        candidate = players.get(active_id)
+                        team_id = lobby.team_for(active_id)
+                        if (
+                            candidate is None
+                            or candidate["hp"] <= 0
+                            or now_monotonic
+                            < candidate.get("jump_pad_invulnerable_until", 0.0)
+                            or team_id not in events["flagdown_progress"]
+                        ):
+                            continue
+                        try:
+                            player_x = float(candidate.get("posX", 0)) + 36
+                            player_y = float(candidate.get("posY", 0)) + 36
+                        except (TypeError, ValueError):
+                            continue
+                        if (
+                            math.isfinite(player_x)
+                            and math.isfinite(player_y)
+                            and (player_x - center_x) ** 2 + (player_y - center_y) ** 2
+                            <= FLAGDOWN_CAPTURE_RADIUS ** 2
+                        ):
+                            present_teams.add(team_id)
+                    if len(present_teams) == 1 and capture_elapsed:
+                        capturing_team = next(iter(present_teams))
+                        events["flagdown_progress"][capturing_team] = min(
+                            FLAGDOWN_CAPTURE_GOAL,
+                            events["flagdown_progress"][capturing_team]
+                            + capture_elapsed * FLAGDOWN_CAPTURE_RATE,
+                        )
+                    winning_team = next(
+                        (
+                            team_id
+                            for team_id, progress in events["flagdown_progress"].items()
+                            if progress >= FLAGDOWN_CAPTURE_GOAL
+                        ),
+                        None,
+                    )
+                    if winning_team is not None:
+                        winner_ids = [
+                            match_id
+                            for match_id in match_player_ids
+                            if lobby.team_for(match_id) == winning_team
+                        ]
+                        completed_match_winner_ids[mode] = winner_ids
+                        result_pending_player_ids[mode] = (
+                            active_match_ids & players.keys()
+                        )
+                    elif (
+                        lobby_state.get("elapsed_ms", 0) >= FLAGDOWN_DURATION_MS
+                    ):
+                        active_match_ids = (
+                            set(match_player_ids)
+                            & lobby.active_player_ids(mode)
+                            & players.keys()
+                        )
+                        blue_score = events["flagdown_progress"][0]
+                        red_score = events["flagdown_progress"][1]
+                        if math.isclose(blue_score, red_score, abs_tol=1e-6):
+                            winner_ids = []
+                        else:
+                            winning_team = 0 if blue_score > red_score else 1
+                            winner_ids = [
+                                match_id
+                                for match_id in match_player_ids
+                                if lobby.team_for(match_id) == winning_team
+                            ]
+                        completed_match_winner_ids[mode] = winner_ids
+                        result_pending_player_ids[mode] = active_match_ids
+                if (
+                    winner_ids is None
                     and mode == GAME_MODE_DEATHMATCH
                     and lobby.started[mode]
                     and lobby.status(player_id, mode).get("elapsed_ms", 0)
                     >= DEATHMATCH_DURATION_MS
                 ):
+                    active_match_ids = (
+                        set(match_player_ids)
+                        & lobby.active_player_ids(mode)
+                        & players.keys()
+                    )
                     scores = {
                         match_id: events["kill_scores"].get(match_id, 0)
-                        for match_id in match_player_ids
+                        for match_id in active_match_ids
                     }
                     highest_score = max(scores.values(), default=0)
                     winner_ids = [
@@ -920,11 +1198,7 @@ def handle_client(conn, player_id):
                         if score == highest_score
                     ]
                     completed_match_winner_ids[mode] = winner_ids
-                    result_pending_player_ids[mode] = (
-                        set(match_player_ids)
-                        & lobby.active_player_ids(mode)
-                        & players.keys()
-                    )
+                    result_pending_player_ids[mode] = active_match_ids
                 active_match_player_ids = (
                     set(match_player_ids)
                     & lobby.active_player_ids(mode)
@@ -933,6 +1207,7 @@ def handle_client(conn, player_id):
                 if (
                     winner_ids is None
                     and mode != GAME_MODE_DEBUG
+                    and get_game_mode(mode).elimination
                     and lobby.started[mode]
                     and len(match_player_ids) >= get_game_mode(mode).min_players
                     and len(active_match_player_ids) == 1
@@ -983,9 +1258,31 @@ def handle_client(conn, player_id):
                 ]
                 player["winner_id"] = winner_ids[0] if winner_ids and len(winner_ids) == 1 else None
                 player["winner_ids"] = list(winner_ids or [])
+                player["match_draw"] = (
+                    mode == GAME_MODE_FLAGDOWN
+                    and mode in completed_match_winner_ids
+                    and not winner_ids
+                )
                 player["kill_scores"] = dict(score_snapshot)
                 player["kill_count"] = score_snapshot.get(snapshot_player_id, 0)
                 player["match_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
+                player["flagdown_remaining_ms"] = max(
+                    0,
+                    FLAGDOWN_DURATION_MS - lobby_state.get("elapsed_ms", 0),
+                )
+                player["team_id"] = lobby.team_for(snapshot_player_id)
+                player["team_spawn_index"] = lobby.team_spawn_index(snapshot_player_id)
+                player["flagdown_progress"] = dict(events["flagdown_progress"])
+                player["jump_pad_events"] = list(events["jump_pad_events"][-32:])
+                player["jump_pad_invulnerable_ms_remaining"] = max(
+                    0,
+                    round(
+                        (
+                            player.get("jump_pad_invulnerable_until", 0.0)
+                            - now_monotonic
+                        ) * 1000
+                    ),
+                )
                 respawn_at = player.get("deathmatch_respawn_at")
                 player["respawn_ms_remaining"] = (
                     max(0, round((respawn_at - now_monotonic) * 1000))

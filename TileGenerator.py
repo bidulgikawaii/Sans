@@ -251,6 +251,47 @@ class TileGenerator(TileRenderingMixin):
             (center_x * self.tile_size, center_y * self.tile_size),
             12,
         )
+        flag_x = center_x * self.tile_size
+        flag_top = center_y * self.tile_size - 48
+        flag_bottom = center_y * self.tile_size + 30
+        pygame.draw.line(
+            self.world_surface,
+            (35, 45, 58),
+            (flag_x + 2, flag_top - 2),
+            (flag_x + 2, flag_bottom + 2),
+            7,
+        )
+        pygame.draw.line(
+            self.world_surface,
+            (225, 235, 245),
+            (flag_x, flag_top),
+            (flag_x, flag_bottom),
+            4,
+        )
+        pygame.draw.circle(
+            self.world_surface,
+            (255, 215, 105),
+            (flag_x, flag_top),
+            6,
+        )
+        pygame.draw.polygon(
+            self.world_surface,
+            (35, 105, 175),
+            (
+                (flag_x + 3, flag_top + 5),
+                (flag_x + 44, flag_top + 12),
+                (flag_x + 3, flag_top + 25),
+            ),
+        )
+        pygame.draw.polygon(
+            self.world_surface,
+            (210, 65, 75),
+            (
+                (flag_x + 3, flag_top + 25),
+                (flag_x + 44, flag_top + 34),
+                (flag_x + 3, flag_top + 43),
+            ),
+        )
         self._scaled_world_surface = None
         self._scaled_world_zoom = None
         self._visibility_cache.clear()

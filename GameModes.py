@@ -70,4 +70,5 @@ register_game_mode(GameModeDefinition(
     mode_id=GAME_MODE_FLAGDOWN,
     label="플래그다운",
     min_players=NORMAL_MATCH_MIN_PLAYERS,
+    zone_enabled=False,
 ))

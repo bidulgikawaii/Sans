@@ -87,6 +87,7 @@ match_completed = False
 active_world_weather = None
 exit_confirm_return_state = "GameView"
 selected_game_mode = GAME_MODE_NORMAL
+ready_on_lobby_join = False
 local_match = False
 main_weapon_id = DEFAULT_WEAPON_ID
 player_name = generate_random_player_name()
@@ -335,10 +336,7 @@ WEAPON_PREVIEW_GETTERS = (
 def get_fixed_spawn_tiles():
     """맵 전역의 안전 지점에서 서로 멀리 떨어진 스폰 좌표를 고릅니다."""
     if selected_game_mode == GAME_MODE_FLAGDOWN:
-        rows = (8, 18, 28, 44, 54, 64)
-        return [(9, row) for row in rows] + [
-            (FLAGDOWN_MAP_WIDTH_TILES - 12, row) for row in rows
-        ]
+        return list(FLAGDOWN_SPAWN_TILES)
 
     def is_clear(x, y):
         return all(
@@ -1162,10 +1160,12 @@ def SettingsView():
             save_settings()
 
 
-def begin_lobby_join(mode):
+def begin_lobby_join(mode, ready_on_join=False):
     global ScreenState, selected_game_mode, debug_mode, local_match
+    global ready_on_lobby_join
     global spawn_tiles, match_spawn_index
     selected_game_mode = mode
+    ready_on_lobby_join = ready_on_join
     debug_mode = mode == GAME_MODE_DEBUG
     local_match = False
     TileGene.generate_map(
@@ -1274,9 +1274,10 @@ def NameInputView():
 def LoadingView():
     global running, ScreenState, game_start_banner_until, debug_mode
     global local_match, selected_game_mode
+    global ready_on_lobby_join, active_world_weather
     global lobby_notice, lobby_notice_until
     global next_unique_supply_drop_at, unique_supply_notice, unique_supply_notice_until
-    global match_spawn_index, spawn_tiles, active_world_weather
+    global match_spawn_index, spawn_tiles
     debug_mode = selected_game_mode == GAME_MODE_DEBUG
     if debug_mode:
         owned_skills.update(SKILL_BOOK)
@@ -1287,6 +1288,7 @@ def LoadingView():
             network.client.sendall(pickle.dumps({
                 "type": "lobby_join",
                 "mode": selected_game_mode,
+                "ready_on_join": ready_on_lobby_join,
                 "debug_enabled": debug_mode,
                 "name": player_name.strip() or default_player_name(),
                 "spawn_tiles": (
@@ -1298,6 +1300,19 @@ def LoadingView():
             response = _load_network_dict(network.client.recv(4096))
             if response.get("type") == "lobby_status":
                 network.lobby_status = response
+                if response.get("accepted") is True:
+                    ready_on_lobby_join = False
+                elif (
+                    response.get("started") is True
+                    and response.get("mode") == selected_game_mode
+                ):
+                    selected_game_mode = GAME_MODE_NORMAL
+                    ready_on_lobby_join = False
+                    reset_match_state()
+                    lobby_notice = "매치가 이미 진행 중입니다. 관전으로 참가할 수 없습니다."
+                    lobby_notice_until = pygame.time.get_ticks() + 5000
+                    ScreenState = "ModeSelectView"
+                    return
                 match_seed = response.get("world_seed")
                 if (
                     response.get("accepted")
@@ -1314,12 +1329,20 @@ def LoadingView():
                 if response.get("accepted"):
                     team_id = response.get("team_id")
                     team_spawn_index = response.get("team_spawn_index")
+                    team_spawn_tile = response.get("spawn_tile")
                     if (
                         selected_game_mode == GAME_MODE_FLAGDOWN
                         and team_id in (0, 1)
                         and isinstance(team_spawn_index, int)
+                        and isinstance(team_spawn_tile, (list, tuple))
+                        and len(team_spawn_tile) == 2
                     ):
-                        match_spawn_index = team_id * 6 + team_spawn_index
+                        try:
+                            match_spawn_index = spawn_tiles.index(tuple(team_spawn_tile))
+                        except ValueError:
+                            raise ValueError(
+                                "서버가 지정한 플래그다운 스폰 위치가 올바르지 않습니다."
+                            )
                     else:
                         match_spawn_index = response.get("spawn_index", 0)
             elif response.get("type") == "match_cancelled":
@@ -1343,7 +1366,15 @@ def LoadingView():
         MAX_PLAYERS,
     )
 
-    if network.lobby_status.get("started") and network.lobby_status.get("accepted", True):
+    if (
+        network.lobby_status.get("started")
+        and network.lobby_status.get("accepted") is True
+        and network.lobby_status.get("mode") == selected_game_mode
+        and network.lobby_status.get("count", 0)
+        >= get_game_mode(selected_game_mode).min_players
+        and network.lobby_status.get("ready_count", 0)
+        >= get_game_mode(selected_game_mode).min_players
+    ):
         match_seed = network.lobby_status.get("world_seed")
         reset_match_state(regenerate_world=True, world_seed=match_seed)
         world_effects.activate(
@@ -1365,7 +1396,11 @@ def LoadingView():
             if event.key == pygame.K_ESCAPE:
                 leave_lobby()
                 ScreenState = "ModeSelectView"
-            elif event.key == pygame.K_SPACE and not network.lobby_status.get("started"):
+            elif (
+                event.key == pygame.K_SPACE
+                and not (event.mod & pygame.KMOD_ALT)
+                and not network.lobby_status.get("started")
+            ):
                 try:
                     network.client.sendall(pickle.dumps({
                         "type": "lobby_ready",
@@ -1424,7 +1459,7 @@ def GameOverView():
 
     for event in pygame.event.get():
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE:
+            if event.key == pygame.K_SPACE and not (event.mod & pygame.KMOD_ALT):
                 requeue_after_match()
             elif event.key == pygame.K_ESCAPE:
                 request_game_exit()
@@ -1447,7 +1482,7 @@ def VictoryView():
 
     for event in pygame.event.get():
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE:
+            if event.key == pygame.K_SPACE and not (event.mod & pygame.KMOD_ALT):
                 requeue_after_match()
             elif event.key == pygame.K_ESCAPE:
                 request_game_exit()
@@ -1464,7 +1499,7 @@ def DrawView():
     )
     for event in pygame.event.get():
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE:
+            if event.key == pygame.K_SPACE and not (event.mod & pygame.KMOD_ALT):
                 requeue_after_match()
             elif event.key == pygame.K_ESCAPE:
                 request_game_exit()
@@ -2147,7 +2182,7 @@ def requeue_after_match():
         return
     selected_mode = selected_game_mode
     leave_lobby()
-    begin_lobby_join(selected_mode)
+    begin_lobby_join(selected_mode, ready_on_join=True)
 
 
 def request_game_exit():
@@ -2759,7 +2794,13 @@ def GameFrame(practice_mode: bool = False):
     my_player.sprint_speed = PLAYER_SPRINT_SPEED + haste_bonus + knife_speed_bonus
     my_player.dash_speed = PLAYER_DASH_SPEED + haste_bonus + knife_dash_bonus
     # 근접 무기 대시는 추가 속도만 적용하며, 지속 시간은 기본 대시와 같습니다.
-    if my_player.Hp > 0 and now >= local_stun_until and now >= shield_until:
+    jump_in_progress = flagdown and str(network.player_id) in jump_pad_animations
+    if (
+        my_player.Hp > 0
+        and not jump_in_progress
+        and now >= local_stun_until
+        and now >= shield_until
+    ):
         my_player.dash_duration = PLAYER_DASH_DURATION_MS + (
             KNIFE_DASH_DURATION_BONUS_MS
             if weapon_state.weapon_id in MELEE_WEAPON_IDS
@@ -2770,7 +2811,7 @@ def GameFrame(practice_mode: bool = False):
             and pygame.mouse.get_pressed(3)[2]
         )
         my_player.handle_input(dash_requested)
-    elif now < shield_until:
+    elif now < shield_until or jump_in_progress:
         my_player.is_dashing = False
         my_player.is_moving = False
     weapon_state.update_reload()
@@ -3419,7 +3460,11 @@ def GameFrame(practice_mode: bool = False):
     # ------------------ [게임 월드 그리기] ------------------
     display.fill((0, 0, 200))
     TileGene.draw(display, CameraPosX, CameraPosY, camera_zoom)
-    zone_enabled = not is_practice_mode and get_game_mode(selected_game_mode).zone_enabled
+    zone_enabled = (
+        not is_practice_mode
+        and selected_game_mode != GAME_MODE_FLAGDOWN
+        and get_game_mode(selected_game_mode).zone_enabled
+    )
     if zone_enabled:
         MagneticZoneState.draw(display, CameraPosX, CameraPosY, camera_zoom, zone_elapsed_ms)
     world_effects.update(effect_delta, (TileGene.map_width * TileGene.tile_size, TileGene.map_height * TileGene.tile_size))

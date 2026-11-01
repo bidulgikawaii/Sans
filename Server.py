@@ -18,6 +18,8 @@ from Config import (
     FLAGDOWN_JUMP_PADS,
     FLAGDOWN_MAP_HEIGHT_TILES,
     FLAGDOWN_MAP_WIDTH_TILES,
+    FLAGDOWN_SPAWN_TILES,
+    FLAGDOWN_TEAM_SPAWN_TILES,
     FLAGDOWN_RESPAWN_MS,
     BUSH_LEAF_INTERVAL_MS,
     GAME_MODE_DEBUG,
@@ -141,6 +143,8 @@ def mode_map_dimensions(mode):
 
 
 def validated_spawn_tiles(raw_tiles, mode=GAME_MODE_NORMAL):
+    if mode == GAME_MODE_FLAGDOWN:
+        return list(FLAGDOWN_SPAWN_TILES)
     if not isinstance(raw_tiles, (list, tuple)):
         return []
     map_width, map_height = mode_map_dimensions(mode)
@@ -169,20 +173,10 @@ def select_respawn_spawn(mode, player_id, spawn_tiles, match_player_ids, players
     """Choose a free fixed team slot or the safest available deathmatch spawn."""
     if mode == GAME_MODE_FLAGDOWN:
         team_id = lobby.team_for(player_id)
-        team_spawn_index = lobby.team_spawn_index(player_id)
-        spawn_index = (
-            team_id * 6 + team_spawn_index
-            if team_id in (0, 1) and isinstance(team_spawn_index, int)
-            else None
-        )
-        if spawn_index is None or spawn_index >= len(spawn_tiles):
+        team_spawn_tile = lobby.team_spawn_tile(player_id)
+        if team_id not in FLAGDOWN_TEAM_SPAWN_TILES or team_spawn_tile is None:
             return None
-        spawn_tiles = (spawn_tiles[spawn_index],)
-
-    available_spawns = []
-    for spawn_x, spawn_y in spawn_tiles:
-        overlaps_player = False
-        nearest_player_distance_squared = float("inf")
+        spawn_x, spawn_y = team_spawn_tile
         for active_id in match_player_ids:
             if active_id == player_id:
                 continue
@@ -191,45 +185,83 @@ def select_respawn_spawn(mode, player_id, spawn_tiles, match_player_ids, players
                 continue
             other_x = int(other_player["posX"] // 32)
             other_y = int(other_player["posY"] // 32)
-            spawn_center_x = spawn_x + 1.5
-            spawn_center_y = spawn_y + 1.5
-            other_center_x = other_x + 1.5
-            other_center_y = other_y + 1.5
-            nearest_player_distance_squared = min(
-                nearest_player_distance_squared,
-                (spawn_center_x - other_center_x) ** 2
-                + (spawn_center_y - other_center_y) ** 2,
-            )
             if (
                 spawn_x < other_x + 3
                 and spawn_x + 3 > other_x
                 and spawn_y < other_y + 3
                 and spawn_y + 3 > other_y
             ):
-                overlaps_player = True
-                break
-        if not overlaps_player:
-            available_spawns.append(
-                (spawn_x, spawn_y, nearest_player_distance_squared)
-            )
+                return None
+        return team_spawn_tile
 
-    if not available_spawns:
-        return None
     if mode == GAME_MODE_DEATHMATCH:
-        safe_distance_squared = DEATHMATCH_RESPAWN_SAFE_DISTANCE_TILES ** 2
-        safer_spawns = [
-            spawn for spawn in available_spawns if spawn[2] >= safe_distance_squared
+        enemy_positions = [
+            (other_player["posX"] / 32, other_player["posY"] / 32)
+            for active_id in match_player_ids
+            if active_id != player_id
+            and (other_player := players.get(active_id)) is not None
+            and other_player["hp"] > 0
         ]
-        if safer_spawns:
-            available_spawns = safer_spawns
-        else:
-            farthest_distance_squared = max(spawn[2] for spawn in available_spawns)
-            available_spawns = [
-                spawn for spawn in available_spawns
-                if spawn[2] == farthest_distance_squared
-            ]
-    spawn_x, spawn_y, _ = random.choice(available_spawns)
-    return spawn_x, spawn_y
+        player = players.get(player_id, {})
+        return choose_respawn(
+            spawn_tiles,
+            enemy_positions,
+            safe_radius=DEATHMATCH_RESPAWN_SAFE_DISTANCE_TILES,
+            recent_spawns=player.get("recent_spawn_points", ()),
+            weighted=True,
+        )
+
+    return random.choice(spawn_tiles) if spawn_tiles else None
+
+
+def choose_respawn(
+    spawn_points,
+    enemies,
+    safe_radius=DEATHMATCH_RESPAWN_SAFE_DISTANCE_TILES,
+    recent_spawns=(),
+    weighted=False,
+):
+    """Choose a safe spawn, preferring locations not used in recent respawns."""
+    if safe_radius <= 0:
+        raise ValueError("safe_radius must be positive")
+    radius_squared = safe_radius ** 2
+    candidates = [
+        point
+        for point in spawn_points
+        if all(
+            (point[0] - enemy[0]) ** 2 + (point[1] - enemy[1]) ** 2
+            >= radius_squared
+            for enemy in enemies
+        )
+    ]
+    if not candidates:
+        return None
+
+    recent = set(recent_spawns)
+    fresh_candidates = [point for point in candidates if point not in recent]
+    pool = fresh_candidates or candidates
+    if not weighted or not enemies:
+        return random.choice(pool)
+
+    weights = [
+        min(math.dist(point, enemy) for enemy in enemies)
+        for point in pool
+    ]
+    return random.choices(pool, weights=weights, k=1)[0]
+
+
+def is_friendly_fire(mode, attacker_id, target_id, lobby):
+    return (
+        mode == GAME_MODE_FLAGDOWN
+        and attacker_id != target_id
+        and lobby.team_for(attacker_id) == lobby.team_for(target_id)
+    )
+
+
+def get_last_match_player(mode, match_started, active_match_player_ids):
+    if mode == GAME_MODE_DEBUG or not match_started or len(active_match_player_ids) != 1:
+        return None
+    return next(iter(active_match_player_ids))
 
 
 def handle_client(conn, player_id):
@@ -281,6 +313,8 @@ def handle_client(conn, player_id):
         "jump_pad_next_at": 0.0,
         "spawn_index": None,
         "spawn_tiles": [],
+        "recent_spawn_points": [],
+        "spawn_history_initialized": False,
         "kill_count": 0,
     }
 
@@ -383,35 +417,40 @@ def handle_client(conn, player_id):
                         )
                         requested_name = str(client_data.get("name", "")).strip()
                         player = players[player_id]
-                        player.update({
-                            "name": (requested_name or f"유저_{player_id}")[:16],
-                            "hp": PLAYER_MAX_HP,
-                            "weapon_id": DEFAULT_WEAPON_ID,
-                            "weapon_name": WEAPONS[DEFAULT_WEAPON_ID].name,
-                            "magazine_ammo": WEAPONS[DEFAULT_WEAPON_ID].magazine_size,
-                            "reserve_ammo": WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo,
-                            "stealth": False,
-                            "in_bush": False,
-                            "last_bush_leaf_token": 0,
-                            "last_bush_leaf_at": 0.0,
-                            "stealth_token": 0,
-                            "stealth_until": 0.0,
-                            "wards": [],
-                            "revive_token": 0,
-                            "revive_armed": False,
-                            "heal_token": 0,
-                            "shield_active": False,
-                            "rune_alerts": [],
-                            "stunned_until": 0.0,
-                            "zone_outside_since": None,
-                            "zone_damage_credit": 0.0,
-                            "zone_last_tick": time.monotonic(),
-                            "bullets": [],
-                            "deathmatch_respawn_at": None,
-                            "jump_pad_invulnerable_until": 0.0,
-                            "jump_pad_next_at": 0.0,
-                            "kill_count": 0,
-                        })
+                        player["name"] = (
+                            requested_name or f"유저_{player_id}"
+                        )[:16]
+                        if previous_mode != requested_mode:
+                            player.update({
+                                "hp": PLAYER_MAX_HP,
+                                "weapon_id": DEFAULT_WEAPON_ID,
+                                "weapon_name": WEAPONS[DEFAULT_WEAPON_ID].name,
+                                "magazine_ammo": WEAPONS[DEFAULT_WEAPON_ID].magazine_size,
+                                "reserve_ammo": WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo,
+                                "stealth": False,
+                                "in_bush": False,
+                                "last_bush_leaf_token": 0,
+                                "last_bush_leaf_at": 0.0,
+                                "stealth_token": 0,
+                                "stealth_until": 0.0,
+                                "wards": [],
+                                "revive_token": 0,
+                                "revive_armed": False,
+                                "heal_token": 0,
+                                "shield_active": False,
+                                "rune_alerts": [],
+                                "stunned_until": 0.0,
+                                "zone_outside_since": None,
+                                "zone_damage_credit": 0.0,
+                                "zone_last_tick": time.monotonic(),
+                                "bullets": [],
+                                "deathmatch_respawn_at": None,
+                                "recent_spawn_points": [],
+                                "spawn_history_initialized": False,
+                                "jump_pad_invulnerable_until": 0.0,
+                                "jump_pad_next_at": 0.0,
+                                "kill_count": 0,
+                            })
                         if requested_mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN):
                             spawn_candidates = validated_spawn_tiles(
                                 client_data.get("spawn_tiles"),
@@ -445,6 +484,8 @@ def handle_client(conn, player_id):
                                             lobby.leave(player_id)
                                         else:
                                             player["spawn_index"] = random.choice(available_indices)
+                    if accepted and client_data.get("ready_on_join", False):
+                        accepted = lobby.set_ready(player_id, True)
                     lobby_status = lobby.status(player_id, mode=requested_mode)
                     lobby_status["accepted"] = accepted
                     if accepted:
@@ -453,9 +494,9 @@ def handle_client(conn, player_id):
                         elif requested_mode == GAME_MODE_FLAGDOWN:
                             lobby_status["team_id"] = lobby.team_for(player_id)
                             lobby_status["team_spawn_index"] = lobby.team_spawn_index(player_id)
-                            lobby_status["spawn_index"] = (
-                                (lobby_status["team_id"] or 0) * 6
-                                + (lobby_status["team_spawn_index"] or 0)
+                            lobby_status["spawn_tile"] = lobby.team_spawn_tile(player_id)
+                            lobby_status["spawn_index"] = spawn_candidates.index(
+                                lobby_status["spawn_tile"]
                             )
                         else:
                             lobby_status["spawn_index"] = sorted(
@@ -513,6 +554,10 @@ def handle_client(conn, player_id):
                             completed_match_winner_ids.pop(pending_mode, None)
                             result_pending_player_ids.pop(pending_mode, None)
                             reset_match_events(pending_mode)
+                    if mode is not None and not lobby.active_player_ids(mode):
+                        completed_match_winner_ids.pop(mode, None)
+                        result_pending_player_ids.pop(mode, None)
+                        reset_match_events(mode)
                 conn.sendall(pickle.dumps(response))
                 continue
 
@@ -696,6 +741,15 @@ def handle_client(conn, player_id):
             ):
                 players[player_id]["posX"] = client_data["posX"]
                 players[player_id]["posY"] = client_data["posY"]
+                if (
+                    mode == GAME_MODE_DEATHMATCH
+                    and not players[player_id]["spawn_history_initialized"]
+                ):
+                    players[player_id]["recent_spawn_points"].append((
+                        int(players[player_id]["posX"] // 32),
+                        int(players[player_id]["posY"] // 32),
+                    ))
+                    players[player_id]["spawn_history_initialized"] = True
             players[player_id]["angle"] = client_data["angle"]
             weapon_id = client_data.get("weapon_id", DEFAULT_WEAPON_ID)
             if weapon_id not in WEAPONS:
@@ -870,6 +924,8 @@ def handle_client(conn, player_id):
                     not isinstance(attacker_id, str)
                     or attacker_id not in lobby.visible_player_ids(player_id)
                 ):
+                    continue
+                if is_friendly_fire(mode, attacker_id, target_id, lobby):
                     continue
                 if attacker_id != player_id:
                     try:
@@ -1061,6 +1117,12 @@ def handle_client(conn, player_id):
                                 spawn_x, spawn_y = spawn_position
                                 respawning_player["posX"] = spawn_x * 32
                                 respawning_player["posY"] = spawn_y * 32
+                                if mode == GAME_MODE_DEATHMATCH:
+                                    recent_spawns = respawning_player[
+                                        "recent_spawn_points"
+                                    ]
+                                    recent_spawns.append((spawn_x, spawn_y))
+                                    del recent_spawns[:-3]
                                 respawning_player["magazine_ammo"] = WEAPONS[
                                     respawning_player["weapon_id"]
                                 ].magazine_size
@@ -1204,15 +1266,13 @@ def handle_client(conn, player_id):
                     & lobby.active_player_ids(mode)
                     & players.keys()
                 )
-                if (
-                    winner_ids is None
-                    and mode != GAME_MODE_DEBUG
-                    and get_game_mode(mode).elimination
-                    and lobby.started[mode]
-                    and len(match_player_ids) >= get_game_mode(mode).min_players
-                    and len(active_match_player_ids) == 1
-                ):
-                    winner_ids = [next(iter(active_match_player_ids))]
+                last_match_player = get_last_match_player(
+                    mode,
+                    lobby.started[mode],
+                    active_match_player_ids,
+                )
+                if winner_ids is None and last_match_player is not None:
+                    winner_ids = [last_match_player]
                     completed_match_winner_ids[mode] = winner_ids
                     result_pending_player_ids[mode] = set(active_match_player_ids)
                 if winner_ids is None and get_game_mode(mode).elimination and (

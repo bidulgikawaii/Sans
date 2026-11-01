@@ -21,16 +21,19 @@ _BULLET_IMAGE_PATH = os.path.join(
 def _get_bullet_surface(size):
     """재사용 가능한 크기별 총알 이미지를 한 번만 생성합니다."""
     source = _get_bullet_image()
-    image_width = max(8, size * 32)
+    image_width = max(8, round(size * 8))
     image_height = max(1, round(source.get_height() * image_width / source.get_width()))
     surface = pygame.transform.smoothscale(source, (image_width, image_height))
-    surface.fill((255, 255, 255, 255), special_flags=pygame.BLEND_RGBA_MULT)
     return surface
 
 
 @lru_cache(maxsize=1)
 def _get_bullet_image():
-    return pygame.image.load(_BULLET_IMAGE_PATH).convert_alpha()
+    image = pygame.image.load(_BULLET_IMAGE_PATH).convert_alpha()
+    visible_bounds = image.get_bounding_rect(min_alpha=8)
+    if visible_bounds.width == 0 or visible_bounds.height == 0:
+        raise ValueError(f"총알 이미지에 표시할 픽셀이 없습니다: {_BULLET_IMAGE_PATH}")
+    return image.subsurface(visible_bounds).copy()
 
 # 발사 시점의 원점과 조준 방향으로 궤적을 고정해, 이후 플레이어 이동과 분리합니다.
 class Bullet:
@@ -66,7 +69,9 @@ class Bullet:
 
     @property
     def rect(self):
-        return pygame.Rect(round(self.x), round(self.y), self.surface.get_width(), self.surface.get_height())
+        rect = self.surface.get_rect()
+        rect.center = (round(self.x), round(self.y))
+        return rect
 
     @property
     def collision_rect(self):
@@ -124,7 +129,7 @@ class Bullet:
     def draw(self, display, camera_x=0, camera_y=0, zoom=1.0, force_visible=False):
         # 활성화 상태일 때만 메인 화면(display)에 총알 그리기
         if self.is_active:
-            image = pygame.transform.rotate(self.surface, self.angle + 35)
+            image = pygame.transform.rotate(self.surface, -self.angle)
             if zoom != 1.0:
                 image = pygame.transform.smoothscale(
                     image,
@@ -134,8 +139,8 @@ class Bullet:
                     ),
                 )
 
-            center_x = (self.x - camera_x + self.surface.get_width() / 2) * zoom
-            center_y = (self.y - camera_y + self.surface.get_height() / 2) * zoom
+            center_x = (self.x - camera_x) * zoom
+            center_y = (self.y - camera_y) * zoom
             if self.stun_ms:
                 pulse = 1.0 + 0.15 * math.sin(pygame.time.get_ticks() * 0.025)
                 glow_radius = max(4, round(7 * zoom * pulse))

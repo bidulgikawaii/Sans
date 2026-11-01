@@ -5,6 +5,7 @@ from Config import (
     GAME_MODE_DEBUG,
     GAME_MODE_FLAGDOWN,
     GAME_MODE_NORMAL,
+    FLAGDOWN_TEAM_SPAWN_TILES,
     LOBBY_START_DELAY_MS,
     MAX_PLAYERS,
 )
@@ -81,9 +82,11 @@ class LobbyState:
         current_mode = self.modes.get(player_id)
         if current_mode != mode and len(self._player_ids(mode)) >= MAX_PLAYERS:
             return False
-        if current_mode != mode and (
-            self.started[mode] or self.start_at[mode] is not None
+        if self.started[mode] and (
+            current_mode != mode or player_id not in self.match_player_ids[mode]
         ):
+            return False
+        if current_mode != mode and self.start_at[mode] is not None:
             return False
         if current_mode is not None and current_mode != mode:
             self.ready_players.discard(player_id)
@@ -112,6 +115,7 @@ class LobbyState:
         self.ready_players.discard(player_id)
         if mode is None:
             return
+        self.match_player_ids[mode].discard(player_id)
         self._refresh_start_countdown(mode)
         if not self._player_ids(mode):
             self.started[mode] = False
@@ -191,6 +195,14 @@ class LobbyState:
         except ValueError:
             return None
 
+    def team_spawn_tile(self, player_id):
+        team_id = self.team_for(player_id)
+        spawn_index = self.team_spawn_index(player_id)
+        team_spawns = FLAGDOWN_TEAM_SPAWN_TILES.get(team_id)
+        if team_spawns is None or spawn_index is None or spawn_index >= len(team_spawns):
+            return None
+        return team_spawns[spawn_index]
+
     def active_player_ids(self, mode=None):
         return self._player_ids(mode) if mode is not None else set(self.modes)
 
@@ -224,6 +236,7 @@ class LobbyState:
             "type": "lobby_status",
             "count": total_players,
             "max_players": MAX_PLAYERS,
+            "min_players": min_required,
             "mode": mode,
             "started": self.started[mode],
             "world_seed": self.world_seeds[mode],
@@ -237,5 +250,10 @@ class LobbyState:
             "team_id": self.team_for(player_id) if player_id is not None else None,
             "team_spawn_index": (
                 self.team_spawn_index(player_id) if player_id is not None else None
+            ),
+            "spawn_tile": (
+                self.team_spawn_tile(player_id)
+                if mode == GAME_MODE_FLAGDOWN and player_id is not None
+                else None
             ),
         }

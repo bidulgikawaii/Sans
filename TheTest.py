@@ -1735,14 +1735,16 @@ def activate_quick_slot(key, reinstall=False):
             particles.emit(
                 center_x + math.cos(angle) * 38,
                 center_y + math.sin(angle) * 38,
-                (255, 220, 120),
-                count=28,
-                speed=125,
-                lifetime=650,
-                size=6,
+                (95, 220, 255),
+                count=34,
+                speed=150,
+                lifetime=750,
+                size=7,
+                gravity=-18,
             )
-            particles.ring(center_x, center_y, (255, 235, 155), count=26, radius=48, lifetime=500, size=4)
-            system_message = f"영혼 탄환 발사! {REVIVE_ATTACK_DAMAGE} 피해 · 10초 쿨다운"
+            particles.ring(center_x, center_y, (110, 225, 255), count=32, radius=58, lifetime=600, size=5)
+            particles.ring(center_x, center_y, (220, 255, 255), count=18, radius=30, lifetime=420, size=3)
+            system_message = f"영혼 탄환 발사! 벽 관통 · {REVIVE_ATTACK_DAMAGE} 피해 · 10초 쿨다운"
             return
         system_message = "부활의 차는 장착 중 사망하면 자동 발동합니다."
         return
@@ -3454,7 +3456,7 @@ def GameFrame(practice_mode: bool = False):
         bullet.update()
 
         if bullet.is_active:
-            if bullet.weapon_id != "soul_bolt":
+            if not bullet.pierces_walls:
                 destructible = TileGene.destructible_collision(bullet.collision_rect)
                 if destructible:
                     tile_x, tile_y, tile_type = destructible
@@ -3588,7 +3590,7 @@ def GameFrame(practice_mode: bool = False):
                     bullet.is_active = False
         if (
             bullet.is_active
-            and bullet.weapon_id != "soul_bolt"
+            and not bullet.pierces_walls
             and TileGene.segment_wall_collision(
                 bullet.previous_x, bullet.previous_y, bullet.x, bullet.y
             )
@@ -4069,16 +4071,14 @@ def GameFrame(practice_mode: bool = False):
         pulse = 28 + round(8 * math.sin(now * 0.02))
         pygame.draw.circle(
             display,
-                (95, 220, 255),
-                count=34,
-                speed=150,
-                lifetime=750,
-                size=7,
-                gravity=-18,
+            (255, 225, 100),
+            (round(alert_screen_x), round(alert_screen_y)),
+            max(10, round(pulse * camera_zoom)),
+            3,
+        )
         pygame.draw.line(
-            particles.ring(center_x, center_y, (110, 225, 255), count=32, radius=58, lifetime=600, size=5)
-            particles.ring(center_x, center_y, (220, 255, 255), count=18, radius=30, lifetime=420, size=3)
-            system_message = f"영혼 탄환 발사! 벽 관통 · {REVIVE_ATTACK_DAMAGE} 피해 · 10초 쿨다운"
+            display,
+            (255, 235, 130),
             (round(alert_screen_x), max(0, round(alert_screen_y - 150 * camera_zoom))),
             (round(alert_screen_x), round(alert_screen_y)),
             2,

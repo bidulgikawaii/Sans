@@ -85,6 +85,10 @@ class Bullet:
         rect.center = self.rect.center
         return rect
 
+    @property
+    def pierces_walls(self):
+        return self.weapon_id == "soul_bolt"
+
     def launch(self, start_x, start_y, target_x, target_y, speed=15, hold_ms=0):
         # 발사 위치 설정 (보통 플레이어의 화면 중심 좌표)
         self.x = start_x

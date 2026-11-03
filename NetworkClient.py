@@ -62,7 +62,7 @@ class NetworkState:
     last_lobby_request_at: int = 0
 
 
-def connect_to_server():
+def connect_to_server(allow_offline=True):
     """설정된 주소 순서대로 연결하고, 실패하면 오프라인 클라이언트를 반환합니다."""
     last_error = None
     for host in (SERVER_IP, SERVER_IP_FALLBACK):
@@ -70,10 +70,13 @@ def connect_to_server():
         client_socket.settimeout(2.0)
         try:
             client_socket.connect((host, SERVER_PORT))
+            client_socket.settimeout(None)
             return FramedSocket(client_socket)
         except (OSError, socket.timeout) as exc:
             last_error = exc
             client_socket.close()
+    if not allow_offline:
+        raise last_error or ConnectionError("서버에 연결할 수 없습니다.")
     print(f"서버 연결 실패, 로컬 모드로 실행합니다: {last_error}")
     return OfflineClient()
 
@@ -106,9 +109,14 @@ def reconnect_to_server():
         pass
 
     try:
-        network.client = connect_to_server()
-        network.init_data = pickle.loads(network.client.recv(NETWORK_BUFFER_SIZE))
-        network.player_id = network.init_data["init_id"]
+        client = connect_to_server(allow_offline=False)
+        init_data = pickle.loads(client.recv(NETWORK_BUFFER_SIZE))
+        if not isinstance(init_data, dict) or not init_data.get("init_id"):
+            client.close()
+            return False
+        network.client = client
+        network.init_data = init_data
+        network.player_id = init_data["init_id"]
         network.lobby_status = {
             "count": 0,
             "max_players": MAX_PLAYERS,
@@ -118,5 +126,5 @@ def reconnect_to_server():
         }
         network.last_lobby_request_at = 0
         return True
-    except (OSError, EOFError, pickle.PickleError, KeyError):
+    except (OSError, EOFError, pickle.PickleError, KeyError, TypeError, ValueError):
         return False

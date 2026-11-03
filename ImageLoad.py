@@ -58,6 +58,9 @@ class Imageload:
         self.Gigwan = self._load_scaled_image("Gigwan.png", (128, 64))
         self.HBlade = self._load_animation("karambit", (128, 128))
         self.Bat = self._load_animation("hyeonminbat", (128, 128))
+        self.Blink = self._load_animation(
+            "blink_", (256, 144), directory="blink-frames"
+        )
         self.BatIcon = self.Bat[0] if self.Bat else self._create_flaregun_image()
         self.Expo = self._load_animation("Expo", (128, 128))
         flaregun = self._load_scaled_image("flaregun.png", (96, 48))
@@ -140,17 +143,20 @@ class Imageload:
         frame.blit(visible_image, visible_image.get_rect(center=frame.get_rect().center))
         return frame
 
-    def _load_animation(self, prefix, target_size=None):
-        """파일 이름의 괄호 숫자 순서대로 프레임을 로드합니다."""
+    def _load_animation(self, prefix, target_size=None, directory=None):
+        """괄호 또는 밑줄 뒤의 숫자를 기준으로 프레임을 정렬해 로드합니다."""
+        animation_dir = self.root / directory if directory else self.root
+        if not animation_dir.is_dir():
+            return []
         paths = [
-            path for path in self.root.iterdir()
+            path for path in animation_dir.iterdir()
             if path.is_file() and path.suffix.lower() == ".png"
             and path.name.lower().startswith(prefix.lower())
         ]
 
         def frame_number(path):
-            match = re.search(r"\((\d+)\)", path.name)
-            return int(match.group(1)) if match else -1
+            match = re.search(r"\((\d+)\)|_(\d+)$", path.stem)
+            return int(match.group(1) or match.group(2)) if match else -1
 
         ordered_paths = sorted(paths, key=frame_number)
         if target_size is None:
@@ -275,6 +281,9 @@ class Imageload:
 
     def GetBatFrames(self):
         return self.Bat
+
+    def GetBlinkFrames(self):
+        return self.Blink
 
     def GetHurtImage(self):
         return self.Hurt

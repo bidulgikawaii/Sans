@@ -465,6 +465,7 @@ processed_damage_event_ids = set()
 processed_kill_event_ids = set()
 bat_launch_animations = {}
 jump_pad_animations = {}
+teleport_animations = []
 processed_jump_pad_event_ids = set()
 jump_pad_cooldown_until = 0
 jump_pad_last_tile = None
@@ -948,6 +949,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     processed_kill_event_ids.clear()
     bat_launch_animations.clear()
     jump_pad_animations.clear()
+    teleport_animations.clear()
     processed_jump_pad_event_ids.clear()
     jump_pad_cooldown_until = 0
     jump_pad_last_tile = None
@@ -1675,6 +1677,15 @@ def _finish_teleport_cycle(now):
     teleport_placements_remaining = 0
 
 
+def _start_teleport_visual(x, y, now):
+    frames = IML.GetBlinkFrames()
+    if not frames:
+        return
+    animation = FrameAnimation(frames, max(1, 900 // len(frames)), loop=False)
+    animation.start(now)
+    teleport_animations.append({"x": x, "y": y, "animation": animation})
+
+
 def activate_quick_slot(key, reinstall=False):
     global system_message, vision_shape_override, vision_skill_until, shield_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining, screen_shake
     slot_actions = {get_key(f"slot_{name.lower()}"): name for name in ("Q", "E", "T")}
@@ -1735,24 +1746,8 @@ def activate_quick_slot(key, reinstall=False):
             return
         system_message = "부활의 차는 장착 중 사망하면 자동 발동합니다."
         return
-    deathmatch_teleport = (
-        skill_name == "텔포"
-        and selected_game_mode == GAME_MODE_DEATHMATCH
-        and not local_match
-    )
-    if (
-        skill_name == "텔포"
-        and not deathmatch_teleport
-        and teleport_anchor is None
-        and now >= skill_cooldowns.get(skill_name, 0)
-        and teleport_placements_remaining == 0
-    ):
-        teleport_placements_remaining = TELEPORT_MAX_PLACEMENTS
-    if (
-        skill_name == "텔포"
-        and (deathmatch_teleport or teleport_anchor is None)
-        and now < skill_cooldowns.get(skill_name, 0)
-    ):
+    direct_teleport = skill_name == "텔포"
+    if direct_teleport and now < skill_cooldowns.get(skill_name, 0):
         remain = (skill_cooldowns[skill_name] - now) / 1000
         system_message = f"텔포 재사용 대기: {remain:.1f}초"
         return
@@ -1907,7 +1902,7 @@ def activate_quick_slot(key, reinstall=False):
             wards.pop(0)
         particles.ring(target_x, target_y, (120, 240, 255), count=18, radius=28, lifetime=650, size=4)
         system_message = f"와드를 설치했습니다. 현재 {len(wards)}/{WARD_MAX_COUNT}개"
-    elif deathmatch_teleport:
+    elif direct_teleport:
         if now < shield_until:
             system_message = "보호막이 유지되는 동안에는 순간이동할 수 없습니다."
             return
@@ -1928,6 +1923,8 @@ def activate_quick_slot(key, reinstall=False):
             system_message = "벽이나 맵 밖을 피해 착지할 위치가 없습니다."
             return
         target_x, target_y = landing
+        _start_teleport_visual(old_x, old_y, now)
+        _start_teleport_visual(target_x, target_y, now)
         my_player.X = target_x - my_player.rect.width / 2
         my_player.Y = target_y - my_player.rect.height / 2
         my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
@@ -1950,48 +1947,9 @@ def activate_quick_slot(key, reinstall=False):
         )
         skill_cooldowns["텔포"] = now + TELEPORT_COOLDOWN_MS
         system_message = (
-            f"데스매치 순간이동: 지정한 위치로 이동했습니다. "
+            f"순간이동: 지정한 위치로 이동했습니다. "
             f"{TELEPORT_COOLDOWN_MS / 1000:g}초 후 다시 사용할 수 있습니다."
         )
-    elif skill_name == "텔포":
-        if teleport_anchor is None or reinstall:
-            if teleport_placements_remaining <= 0:
-                system_message = "텔포 설치 횟수를 모두 사용했습니다."
-                return
-            target_x, target_y = get_player_world_center(
-                my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
-            )
-            target_rect = my_player.rect.copy()
-            target_rect.center = (round(target_x), round(target_y))
-            if TileGene.check_collision(target_rect):
-                system_message = "벽 안에는 텔포석상을 설치할 수 없습니다."
-                return
-            teleport_anchor = (target_x, target_y)
-            teleport_anchor_expires_at = now + TELEPORT_DURATION_MS
-            teleport_placements_remaining -= 1
-            particles.emit(target_x, target_y, (180, 255, 180), count=30, speed=90, lifetime=700, size=6)
-            particles.ring(target_x, target_y, (180, 255, 180), count=20, radius=38, lifetime=900, size=5)
-            system_message = (
-                f"텔포석상을 설치했습니다. 남은 설치 횟수: {teleport_placements_remaining}"
-                + (" (Shift+슬롯키로 재설치)" if teleport_placements_remaining else "")
-            )
-        else:
-            old_x = my_player.X + my_player.rect.width / 2
-            old_y = my_player.Y + my_player.rect.height / 2
-            my_player.X = teleport_anchor[0] - my_player.rect.width / 2
-            my_player.Y = teleport_anchor[1] - my_player.rect.height / 2
-            my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
-            my_player._update_hitboxes()
-            particles.emit(old_x, old_y, (180, 255, 180), count=24, speed=80, lifetime=600, size=5)
-            particles.emit(teleport_anchor[0], teleport_anchor[1], (180, 255, 180), count=30, speed=90, lifetime=700, size=6)
-            teleport_anchor = None
-            teleport_anchor_expires_at = 0
-            if teleport_placements_remaining <= 0:
-                _finish_teleport_cycle(now)
-                cooldown_message = f"{TELEPORT_COOLDOWN_MS / 1000:g}초 후 다시 사용할 수 있습니다."
-            else:
-                cooldown_message = f"남은 설치 횟수: {teleport_placements_remaining}"
-            system_message = f"텔레포트했습니다. {cooldown_message}"
 def select_weapon(weapon_id):
     global system_message, vision_shape_override, main_weapon_id
     global weapon_fire_until, weapon_smoke_until, knife_attack_until, screen_shake
@@ -2182,7 +2140,7 @@ def requeue_after_match():
         return
     selected_mode = selected_game_mode
     leave_lobby()
-    begin_lobby_join(selected_mode, ready_on_join=True)
+    begin_lobby_join(selected_mode)
 
 
 def request_game_exit():
@@ -2231,7 +2189,7 @@ def fire_knife():
         IML.Player.get_height(),
     )
 
-    knife_range = MELEE_RANGE
+    knife_range = 125 if weapon_state.weapon_id == "bat" else MELEE_RANGE
 
     treasure_rect = pygame.Rect(
         center_x - knife_range,
@@ -3985,6 +3943,27 @@ def GameFrame(practice_mode: bool = False):
                 max(2, round(3 * camera_zoom)),
             )
 
+    for effect in list(teleport_animations):
+        animation = effect["animation"]
+        if now - animation.started_at >= animation.duration_ms:
+            teleport_animations.remove(effect)
+            continue
+        frame = animation.frame_at(now)
+        screen_x, screen_y = world_to_screen(
+            effect["x"], effect["y"], CameraPosX, CameraPosY, camera_zoom
+        )
+        if camera_zoom != 1.0:
+            frame = pygame.transform.smoothscale(
+                frame,
+                (
+                    max(1, round(frame.get_width() * camera_zoom)),
+                    max(1, round(frame.get_height() * camera_zoom)),
+                ),
+            )
+        frame_rect = frame.get_rect(center=(round(screen_x), round(screen_y)))
+        if frame_rect.colliderect(display.get_rect()):
+            display.blit(frame, frame_rect)
+
     for p_id, p_info in frame_server_players.items():
         if p_id not in visible_player_ids or p_info.get("stun_ms_remaining", 0) <= 0:
             continue
@@ -4033,7 +4012,7 @@ def GameFrame(practice_mode: bool = False):
             local_stun_offset_y,
         )
 
-    if my_player.Hp > 0 and not local_airborne and weapon_state.weapon_id != "knife":
+    if my_player.Hp > 0 and not local_airborne and weapon_state.weapon_id not in MELEE_WEAPON_IDS:
         display.blit(
             rotated_shotgun,
             Shotgun_rect.move(local_stun_offset_x, local_stun_offset_y),

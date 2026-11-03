@@ -1719,14 +1719,14 @@ def activate_quick_slot(key, reinstall=False):
                 6,
                 damage=REVIVE_ATTACK_DAMAGE,
                 owner_id=network.player_id,
-                weapon_id="pistol",
+                weapon_id="soul_bolt",
             )
             soul_bolt.launch(
                 center_x,
                 center_y,
                 center_x + math.cos(angle) * BULLET_TARGET_DISTANCE,
                 center_y + math.sin(angle) * BULLET_TARGET_DISTANCE,
-                speed=WEAPONS["pistol"].bullet_speed,
+                speed=WEAPONS["soul_bolt"].bullet_speed,
             )
             soul_bolt.just_fired = True
             bullets.append(soul_bolt)
@@ -3454,19 +3454,20 @@ def GameFrame(practice_mode: bool = False):
         bullet.update()
 
         if bullet.is_active:
-            destructible = TileGene.destructible_collision(bullet.collision_rect)
-            if destructible:
-                tile_x, tile_y, tile_type = destructible
-                if TileGene.destroy_furniture(tile_x, tile_y):
-                    pending_furniture_destroys.append((tile_x, tile_y))
-                    particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
-                bullet.is_active = False
-                continue
-            if TileGene.segment_wall_collision(
-                bullet.previous_x, bullet.previous_y, bullet.x, bullet.y
-            ):
-                bullet.is_active = False
-                continue
+            if bullet.weapon_id != "soul_bolt":
+                destructible = TileGene.destructible_collision(bullet.collision_rect)
+                if destructible:
+                    tile_x, tile_y, tile_type = destructible
+                    if TileGene.destroy_furniture(tile_x, tile_y):
+                        pending_furniture_destroys.append((tile_x, tile_y))
+                        particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
+                    bullet.is_active = False
+                    continue
+                if TileGene.segment_wall_collision(
+                    bullet.previous_x, bullet.previous_y, bullet.x, bullet.y
+                ):
+                    bullet.is_active = False
+                    continue
             treasure_position = TileGene.treasure_at(bullet.rect)
             if treasure_position:
                 collect_treasure(treasure_position, from_bullet=True)
@@ -3489,12 +3490,24 @@ def GameFrame(practice_mode: bool = False):
                         "weapon_id": bullet.weapon_id,
                     })
                     bullet.is_active = False
-                    impact_color = (100, 225, 255) if bullet.stun_ms else (255, 70, 70)
+                    impact_color = (
+                        (100, 225, 255)
+                        if bullet.stun_ms or bullet.weapon_id == "soul_bolt"
+                        else (255, 70, 70)
+                    )
                     particles.emit(
                         bullet.x, bullet.y, impact_color,
-                        count=12, speed=65, lifetime=350, size=4,
+                        count=24 if bullet.weapon_id == "soul_bolt" else 12,
+                        speed=95 if bullet.weapon_id == "soul_bolt" else 65,
+                        lifetime=500 if bullet.weapon_id == "soul_bolt" else 350,
+                        size=5 if bullet.weapon_id == "soul_bolt" else 4,
                     )
-                    if bullet.stun_ms:
+                    if bullet.weapon_id == "soul_bolt":
+                        particles.ring(
+                            bullet.x, bullet.y, (150, 240, 255),
+                            count=24, radius=44, lifetime=550, size=4,
+                        )
+                    elif bullet.stun_ms:
                         particles.ring(
                             bullet.x, bullet.y, (160, 240, 255),
                             count=20, radius=38, lifetime=650, size=4,
@@ -3513,7 +3526,15 @@ def GameFrame(practice_mode: bool = False):
                         "started_at": now,
                         "lifetime": DAMAGE_TEXT_LIFETIME_MS,
                     })
-                    particles.emit(bullet.x, bullet.y, (255, 210, 70), count=12, speed=65, lifetime=350, size=4)
+                    particles.emit(
+                        bullet.x,
+                        bullet.y,
+                        (105, 220, 255) if bullet.weapon_id == "soul_bolt" else (255, 210, 70),
+                        count=20 if bullet.weapon_id == "soul_bolt" else 12,
+                        speed=90 if bullet.weapon_id == "soul_bolt" else 65,
+                        lifetime=500 if bullet.weapon_id == "soul_bolt" else 350,
+                        size=5 if bullet.weapon_id == "soul_bolt" else 4,
+                    )
                     bullet.is_active = False
                     if training_dummy.Hp <= 0:
                         training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
@@ -3565,8 +3586,12 @@ def GameFrame(practice_mode: bool = False):
                     pending_furniture_destroys.append((tile_x, tile_y))
                     particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
                     bullet.is_active = False
-        if bullet.is_active and TileGene.segment_wall_collision(
-            bullet.previous_x, bullet.previous_y, bullet.x, bullet.y
+        if (
+            bullet.is_active
+            and bullet.weapon_id != "soul_bolt"
+            and TileGene.segment_wall_collision(
+                bullet.previous_x, bullet.previous_y, bullet.x, bullet.y
+            )
         ):
             bullet.is_active = False
         if bullet.is_active and shield_until <= pygame.time.get_ticks():
@@ -4044,14 +4069,16 @@ def GameFrame(practice_mode: bool = False):
         pulse = 28 + round(8 * math.sin(now * 0.02))
         pygame.draw.circle(
             display,
-            (255, 225, 100),
-            (round(alert_screen_x), round(alert_screen_y)),
-            max(10, round(pulse * camera_zoom)),
-            3,
-        )
+                (95, 220, 255),
+                count=34,
+                speed=150,
+                lifetime=750,
+                size=7,
+                gravity=-18,
         pygame.draw.line(
-            display,
-            (255, 235, 130),
+            particles.ring(center_x, center_y, (110, 225, 255), count=32, radius=58, lifetime=600, size=5)
+            particles.ring(center_x, center_y, (220, 255, 255), count=18, radius=30, lifetime=420, size=3)
+            system_message = f"영혼 탄환 발사! 벽 관통 · {REVIVE_ATTACK_DAMAGE} 피해 · 10초 쿨다운"
             (round(alert_screen_x), max(0, round(alert_screen_y - 150 * camera_zoom))),
             (round(alert_screen_x), round(alert_screen_y)),
             2,

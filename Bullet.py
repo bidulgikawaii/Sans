@@ -45,7 +45,13 @@ class Bullet:
         weapon_id=DEFAULT_WEAPON_ID,
         stun_ms=0,
     ):
-        self.surface = _get_bullet_surface(size)
+        if weapon_id == "soul_bolt":
+            self.surface = pygame.Surface((34, 16), pygame.SRCALPHA)
+            pygame.draw.ellipse(self.surface, (40, 185, 255, 75), (0, 1, 34, 14))
+            pygame.draw.ellipse(self.surface, (110, 230, 255, 210), (4, 4, 25, 8))
+            pygame.draw.ellipse(self.surface, (235, 255, 255), (10, 5, 15, 6))
+        else:
+            self.surface = _get_bullet_surface(size)
         
         # 좌표 및 속도 초기화
         self.x = 0
@@ -141,7 +147,25 @@ class Bullet:
 
             center_x = (self.x - camera_x) * zoom
             center_y = (self.y - camera_y) * zoom
-            if self.stun_ms:
+            if self.weapon_id == "soul_bolt":
+                previous_x = (self.previous_x - camera_x) * zoom
+                previous_y = (self.previous_y - camera_y) * zoom
+                pulse = 1.0 + 0.18 * math.sin(pygame.time.get_ticks() * 0.025)
+                pygame.draw.line(
+                    display,
+                    (60, 190, 255),
+                    (round(previous_x), round(previous_y)),
+                    (round(center_x), round(center_y)),
+                    max(2, round(7 * zoom * pulse)),
+                )
+                pygame.draw.circle(
+                    display,
+                    (130, 225, 255),
+                    (round(center_x), round(center_y)),
+                    max(5, round(10 * zoom * pulse)),
+                    max(1, round(2 * zoom)),
+                )
+            elif self.stun_ms:
                 pulse = 1.0 + 0.15 * math.sin(pygame.time.get_ticks() * 0.025)
                 glow_radius = max(4, round(7 * zoom * pulse))
                 pygame.draw.circle(

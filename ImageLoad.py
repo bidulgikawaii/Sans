@@ -22,7 +22,7 @@ SKILL_ICON_FILES = {
     "은신": "Invis.png",
     "텔포": "Tp.png",
     "기절탄": "Stun_Icon.png",
-    "영혼의 시험": "Retry.png",
+    "자폭": "Bomb.png",
     "와드": "Ward.png",
 }
 PLAYER_FRAME_SIZE = (72, 72)
@@ -102,6 +102,10 @@ class Imageload:
             name: self._load_scaled_image(filename, (SKILL_ICON_SIZE, SKILL_ICON_SIZE))
             for name, filename in SKILL_ICON_FILES.items()
         }
+        if self.Comet:
+            self.skill_icons["영혼의 시험"] = pygame.transform.smoothscale(
+                self.Comet[0], (SKILL_ICON_SIZE, SKILL_ICON_SIZE)
+            )
         self.Protect = self._load_image_file(self.root / "Protect.png")
         self.GrassTile = self._load_scaled_image("GrassTile.png", (64, 64))
 

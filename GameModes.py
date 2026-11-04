@@ -48,13 +48,13 @@ def is_game_mode_registered(mode_id):
     return mode_id in _game_modes
 
 
-register_game_mode(GameModeDefinition(
-    mode_id=GAME_MODE_NORMAL,
-    label="일반 모드",
-    min_players=NORMAL_MATCH_MIN_PLAYERS,
-    zone_enabled=True,
-    elimination=True,
-))
+#register_game_mode(GameModeDefinition(
+    #mode_id=GAME_MODE_NORMAL,
+   # label="일반 모드",
+   # min_players=NORMAL_MATCH_MIN_PLAYERS,
+   # zone_enabled=True,
+   # elimination=True,
+#))
 register_game_mode(GameModeDefinition(
     mode_id=GAME_MODE_DEBUG,
     label="연습 모드",

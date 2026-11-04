@@ -15,7 +15,6 @@ from Config import (
     FLAGDOWN_MAP_HEIGHT_TILES,
     FLAGDOWN_MAP_WIDTH_TILES,
     FLAGDOWN_SPAWN_TILES,
-    FLAGDOWN_TEAM_SPAWN_TILES,
     FLAGDOWN_RESPAWN_MS,
     BUSH_LEAF_INTERVAL_MS,
     GAME_MODE_DEBUG,
@@ -169,29 +168,9 @@ def validated_spawn_tiles(raw_tiles, mode=GAME_MODE_NORMAL):
 
 
 def select_respawn_spawn(mode, player_id, spawn_tiles, match_player_ids, players, lobby):
-    """Choose a free fixed team slot or the safest available deathmatch spawn."""
+    """Choose the player's fixed team slot or the safest deathmatch spawn."""
     if mode == GAME_MODE_FLAGDOWN:
-        team_id = lobby.team_for(player_id)
-        team_spawn_tile = lobby.team_spawn_tile(player_id)
-        if team_id not in FLAGDOWN_TEAM_SPAWN_TILES or team_spawn_tile is None:
-            return None
-        spawn_x, spawn_y = team_spawn_tile
-        for active_id in match_player_ids:
-            if active_id == player_id:
-                continue
-            other_player = players.get(active_id)
-            if not other_player or other_player["hp"] <= 0:
-                continue
-            other_x = int(other_player["posX"] // 32)
-            other_y = int(other_player["posY"] // 32)
-            if (
-                spawn_x < other_x + 3
-                and spawn_x + 3 > other_x
-                and spawn_y < other_y + 3
-                and spawn_y + 3 > other_y
-            ):
-                return None
-        return team_spawn_tile
+        return lobby.team_spawn_tile(player_id)
 
     if mode == GAME_MODE_DEATHMATCH:
         enemy_positions = [
@@ -805,6 +784,7 @@ def handle_client(conn, player_id):
                 players[player_id]["zone_damage_credit"] = 0.0
             players[player_id]["zone_last_tick"] = zone_now
 
+            suicide_detonated = False
             for hit_event in client_data.get("hit_events", []):
                 if (
                     mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN)
@@ -855,14 +835,15 @@ def handle_client(conn, player_id):
                     if spirit_shot_key in events["consumed_spirit_shots"]:
                         continue
                     target_id = hit_event.get("target_id")
-                    target = players.get(target_id)
                     if (
                         not isinstance(target_id, str)
                         or target_id not in lobby.visible_player_ids(player_id)
-                        or target is None
-                        or target["hp"] <= 0
                         or is_friendly_fire(mode, attacker_id, target_id, lobby)
+                        or target_id == attacker_id
                     ):
+                        continue
+                    target = players.get(target_id)
+                    if target is None or target["hp"] <= 0:
                         continue
                     try:
                         clone_x = float(hit_event["impact_x"])
@@ -957,6 +938,9 @@ def handle_client(conn, player_id):
                     clone["hp"] -= clone_damage
                     linked_target_id = clone["linked_player_id"]
                     linked_target = players.get(linked_target_id)
+                    previous_linked_hp = (
+                        linked_target["hp"] if linked_target is not None else 0
+                    )
                     linked_damage = 0
                     if linked_target is not None and linked_target["hp"] > 0:
                         if not linked_target.get("shield_active", False):
@@ -986,6 +970,7 @@ def handle_client(conn, player_id):
                     events["next_damage_event_id"] += 1
                     if (
                         linked_target is not None
+                        and previous_linked_hp > 0
                         and linked_target["hp"] <= 0
                     ):
                         if mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN):
@@ -1064,6 +1049,13 @@ def handle_client(conn, player_id):
                 previous_hp = target["hp"]
                 damage = previous_hp if is_bat_hit else min(damage, previous_hp)
                 target["hp"] = previous_hp - damage
+                if (
+                    hit_event.get("skill_source") == "자폭"
+                    and attacker_id == player_id
+                    and target_id == player_id
+                    and previous_hp > 0
+                ):
+                    suicide_detonated = True
                 events["damage_events"].append({
                     "event_id": events["next_damage_event_id"],
                     "attacker_id": attacker_id,
@@ -1155,9 +1147,11 @@ def handle_client(conn, player_id):
                     events["next_bullet_event_id"] += 1
                     events["bullet_events"].append(bullet_event)
                 skill_events = client_data.get("spectator_skill_events", [])
-                if isinstance(skill_events, list) and players[player_id]["hp"] > 0:
+                if isinstance(skill_events, list) and (
+                    players[player_id]["hp"] > 0 or suicide_detonated
+                ):
                     allowed_skills = {
-                        "폭탄받아라!", "매의 눈", "와드", "영혼의 시험",
+                        "폭탄받아라!", "자폭", "매의 눈", "와드", "영혼의 시험",
                         "보호막", "은신", "텔포", "기절탄",
                     }
                     for skill_event in skill_events[:8]:

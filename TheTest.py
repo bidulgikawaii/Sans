@@ -457,9 +457,11 @@ bullets = []
 remote_bullets = []
 processed_bullet_events = set()
 linked_clones = []
+known_linked_clone_ids = set()
 pending_spectator_skill_events = []
 processed_damage_event_ids = set()
 processed_kill_event_ids = set()
+processed_suicide_effect_ids = set()
 bat_launch_animations = {}
 teleport_animations = []
 skill_cooldowns = {}
@@ -505,6 +507,7 @@ lobby_notice = ""
 lobby_notice_until = 0
 game_start_banner_until = 0
 show_hitboxes = True
+coordinate_overlay_enabled = False
 local_stun_until = 0
 zone_elapsed_ms = 0
 local_kill_count = 0
@@ -815,6 +818,7 @@ def collect_treasure(tile_position, from_bullet=False):
 
 skill_sounds = {
     "폭탄받아라!": load_effect_sound("skill_bomb.wav"),
+    "자폭": load_effect_sound("skill_bomb.wav"),
     "매의 눈": load_effect_sound("skill_vision.wav"),
     "보호막": load_effect_sound("skill_shield.wav"),
     "은신": load_effect_sound("skill_stealth.wav"),
@@ -835,7 +839,7 @@ vision_shape_override = None
 
 def reset_match_state(regenerate_world=False, independent_world=False, world_seed=None):
     """새 경기에 들어갈 때 이전 경기의 클라이언트 상태를 초기화합니다."""
-    global match_result, result_started_at, system_message, revive_token, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
+    global match_result, result_started_at, system_message, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
     global pending_heal_amount, vision_skill_until, shield_until, haste_until
     global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
     global teleport_placements_remaining, third_weapon_id, special_weapon_crate
@@ -887,9 +891,11 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     bush_leaf_request_token = 0
     processed_bullet_events.clear()
     linked_clones.clear()
+    known_linked_clone_ids.clear()
     pending_spectator_skill_events.clear()
     processed_damage_event_ids.clear()
     processed_kill_event_ids.clear()
+    processed_suicide_effect_ids.clear()
     bat_launch_animations.clear()
     teleport_animations.clear()
     particles.particles.clear()
@@ -900,7 +906,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     for slot in quick_slots:
         slot.assigned_skill = None
     refresh_skill_inventory()
-    revive_token = heal_token = pending_heal_amount = 0
+    heal_token = pending_heal_amount = 0
     healing_item_count = 0
     vision_skill_until = shield_until = haste_until = stealth_until = 0
     stealth_token = 0
@@ -1404,7 +1410,6 @@ def show_draw():
 
 def GameOverView():
     global result_started_at
-    global ScreenState
     if not result_started_at:
         result_started_at = pygame.time.get_ticks()
     elapsed = pygame.time.get_ticks() - result_started_at
@@ -1416,15 +1421,6 @@ def GameOverView():
                 requeue_after_match()
             elif event.key == pygame.K_ESCAPE:
                 request_game_exit()
-
-    if spectator_mode.start_after_defeat(
-        elapsed,
-        DEFEAT_SPECTATOR_DELAY_MS,
-        match_completed,
-        server_players,
-        network.player_id,
-    ):
-        ScreenState = "GameView"
 
 
 def VictoryView():
@@ -1649,6 +1645,9 @@ def activate_quick_slot(key, reinstall=False):
 
     skill_name = slot.assigned_skill
     now = pygame.time.get_ticks()
+    if skill_name == "자폭" and my_player.Hp <= 0:
+        system_message = "사망 또는 리스폰 중에는 자폭을 사용할 수 없습니다."
+        return
     if skill_name == "영혼의 시험":
         if local_match or debug_mode:
             system_message = "영혼의 시험은 온라인 대전에서 사용할 수 있습니다."
@@ -1667,7 +1666,7 @@ def activate_quick_slot(key, reinstall=False):
         angle = math.atan2(target_y - center_y, target_x - center_x)
         spirit_bullet = Bullet(
             6,
-            damage=0,
+            damage=WEAPONS["spirit_trial"].damage,
             owner_id=network.player_id,
             weapon_id="spirit_trial",
         )
@@ -1713,14 +1712,21 @@ def activate_quick_slot(key, reinstall=False):
         return
 
     if skill_name != "텔포":
-        cooldown = STEALTH_COOLDOWN_MS if skill_name == "은신" else SKILL_COOLDOWN_MS
+        cooldown = (
+            STEALTH_COOLDOWN_MS
+            if skill_name == "은신"
+            else SUICIDE_COOLDOWN_MS
+            if skill_name == "자폭"
+            else SKILL_COOLDOWN_MS
+        )
         skill_cooldowns[skill_name] = now + cooldown
     play_effect_sound(skill_sounds.get(skill_name), skill_name)
-    pending_spectator_skill_events.append({
-        "skill": skill_name,
-        "x": my_player.X + my_player.rect.width / 2,
-        "y": my_player.Y + my_player.rect.height / 2,
-    })
+    if skill_name != "자폭":
+        pending_spectator_skill_events.append({
+            "skill": skill_name,
+            "x": my_player.X + my_player.rect.width / 2,
+            "y": my_player.Y + my_player.rect.height / 2,
+        })
     if skill_name == "기절탄":
         if not fire_stun_bullet():
             skill_cooldowns.pop(skill_name, None)
@@ -1763,6 +1769,43 @@ def activate_quick_slot(key, reinstall=False):
         particles.emit(target_x, target_y, (255, 190, 40), count=18, speed=55, lifetime=500, size=6)
         particles.ring(target_x, target_y, (255, 220, 80), radius=35, lifetime=450)
         system_message = "폭탄을 설치했습니다."
+    elif skill_name == "자폭":
+        center_x, center_y = get_player_world_center(
+            my_player.X,
+            my_player.Y,
+            IML.Player.get_width(),
+            IML.Player.get_height(),
+        )
+        active_bombs.append({
+            "x": center_x,
+            "y": center_y,
+            "explode_at": now + SUICIDE_FUSE_MS,
+            "fuse_ms": SUICIDE_FUSE_MS,
+            "radius": SUICIDE_RADIUS,
+            "damage": SUICIDE_DAMAGE,
+            "self_destruct": True,
+        })
+        break_stealth_on_attack()
+        particles.emit(
+            center_x,
+            center_y,
+            (255, 75, 45),
+            count=36,
+            speed=95,
+            lifetime=SUICIDE_FUSE_MS,
+            size=7,
+            gravity=-12,
+        )
+        particles.ring(
+            center_x,
+            center_y,
+            (255, 170, 65),
+            count=40,
+            radius=SUICIDE_RADIUS,
+            lifetime=SUICIDE_FUSE_MS,
+            size=5,
+        )
+        system_message = "자폭 준비! 1초 후 넓은 범위에 큰 피해를 주고 자신도 사망합니다."
     elif skill_name == "매의 눈":
         vision_shape_override = VISION_CIRCLE
         vision_skill_until = now + VISION_DURATION_MS
@@ -1972,7 +2015,10 @@ def remove_ward_at_cursor():
 
 def handle_key_event(event, _mouse_pos):
     global inventory_open, debug_mode, system_message, show_hitboxes
-    global healing_inventory_open
+    global healing_inventory_open, coordinate_overlay_enabled
+    if event.key == pygame.K_F8:
+        coordinate_overlay_enabled = not coordinate_overlay_enabled
+        return
     if (
         my_player.Hp <= 0
         and selected_game_mode == GAME_MODE_DEATHMATCH
@@ -2723,10 +2769,14 @@ def GameFrame(practice_mode: bool = False):
     my_player.sprint_speed = PLAYER_SPRINT_SPEED + haste_bonus + knife_speed_bonus
     my_player.dash_speed = PLAYER_DASH_SPEED + haste_bonus + knife_dash_bonus
     # 근접 무기 대시는 추가 속도만 적용하며, 지속 시간은 기본 대시와 같습니다.
+    self_destruct_arming = any(
+        bomb.get("self_destruct", False) for bomb in active_bombs
+    )
     if (
         my_player.Hp > 0
         and now >= local_stun_until
         and now >= shield_until
+        and not self_destruct_arming
     ):
         my_player.dash_duration = PLAYER_DASH_DURATION_MS + (
             KNIFE_DASH_DURATION_BONUS_MS
@@ -2738,7 +2788,7 @@ def GameFrame(practice_mode: bool = False):
             and pygame.mouse.get_pressed(3)[2]
         )
         my_player.handle_input(dash_requested)
-    elif now < shield_until:
+    elif now < shield_until or self_destruct_arming:
         my_player.is_dashing = False
         my_player.is_moving = False
     weapon_state.update_reload()
@@ -2817,8 +2867,11 @@ def GameFrame(practice_mode: bool = False):
         if now < bomb["explode_at"]:
             pending_bombs.append(bomb)
             continue
+        explosion_radius = bomb.get("radius", BOMB_RADIUS)
+        explosion_damage = bomb.get("damage", BOMB_DAMAGE)
         active_explosions.append({
             "x": bomb["x"], "y": bomb["y"],
+            "radius": explosion_radius,
             "started_at": now, "until": now + EXPLOSION_DURATION_MS,
             "animation": FrameAnimation(
                 IML.GetExplosionFrames(),
@@ -2826,46 +2879,76 @@ def GameFrame(practice_mode: bool = False):
                 loop=False,
             ),
         })
+        explosion_color = (255, 75, 35) if bomb.get("self_destruct") else (255, 100, 30)
         particles.emit(
-            bomb["x"], bomb["y"], (255, 100, 30),
-            count=45, speed=180, lifetime=700, size=8, gravity=90,
+            bomb["x"], bomb["y"], explosion_color,
+            count=80 if bomb.get("self_destruct") else 45,
+            speed=240 if bomb.get("self_destruct") else 180,
+            lifetime=950 if bomb.get("self_destruct") else 700,
+            size=10 if bomb.get("self_destruct") else 8,
+            gravity=90,
         )
         particles.ring(
-            bomb["x"], bomb["y"], (255, 220, 80),
-            count=24, radius=BOMB_RADIUS, lifetime=500, size=6,
+            bomb["x"], bomb["y"], (255, 210, 85),
+            count=40 if bomb.get("self_destruct") else 24,
+            radius=explosion_radius,
+            lifetime=750 if bomb.get("self_destruct") else 500,
+            size=8 if bomb.get("self_destruct") else 6,
         )
-        screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 8)
+        screen_shake = min(
+            SCREEN_SHAKE_MAX,
+            screen_shake + (SCREEN_SHAKE_MAX if bomb.get("self_destruct") else 8),
+        )
+        if bomb.get("self_destruct"):
+            pending_spectator_skill_events.append({
+                "skill": "자폭",
+                "x": bomb["x"],
+                "y": bomb["y"],
+            })
         for p_id, p_info in frame_server_players.items():
             if is_hidden_player(p_info):
+                continue
+            if bomb.get("self_destruct") and str(p_id) == str(network.player_id):
                 continue
             player_center_x = p_info["posX"] + IML.Player.get_width() / 2
             player_center_y = p_info["posY"] + IML.Player.get_height() / 2
             distance = math.hypot(player_center_x - bomb["x"], player_center_y - bomb["y"])
-            if distance <= BOMB_RADIUS:
+            if distance <= explosion_radius:
                 pending_hit_events.append({
                     "target_id": p_id,
-                    "damage": BOMB_DAMAGE,
+                    "damage": explosion_damage,
                     "hit_part": "body",
                     "attacker_id": network.player_id,
                     "weapon_id": weapon_state.weapon_id,
                 })
         for clone in linked_clones:
-            if math.hypot(clone["x"] - bomb["x"], clone["y"] - bomb["y"]) <= BOMB_RADIUS:
+            if math.hypot(clone["x"] - bomb["x"], clone["y"] - bomb["y"]) <= explosion_radius:
                 pending_hit_events.append({
                     "target_id": f"clone:{clone['clone_id']}",
                     "target_kind": "clone",
                     "clone_id": clone["clone_id"],
                     "attacker_id": network.player_id,
-                    "damage": BOMB_DAMAGE,
+                    "damage": explosion_damage,
                     "hit_part": "body",
                     "weapon_id": weapon_state.weapon_id,
                 })
+        if bomb.get("self_destruct"):
+            pending_hit_events.append({
+                "target_id": network.player_id,
+                "attacker_id": network.player_id,
+                "damage": max(PLAYER_MAX_HP * 2, my_player.Hp),
+                "hit_part": "body",
+                "weapon_id": weapon_state.weapon_id,
+                "skill_source": "자폭",
+            })
+            if is_practice_mode:
+                my_player.Hp = 0
         if (is_practice_mode or debug_mode) and training_dummy is not None and training_dummy.Hp > 0:
             dummy_center_x = training_dummy.rect.centerx
             dummy_center_y = training_dummy.rect.centery
-            if math.hypot(dummy_center_x - bomb["x"], dummy_center_y - bomb["y"]) <= BOMB_RADIUS:
+            if math.hypot(dummy_center_x - bomb["x"], dummy_center_y - bomb["y"]) <= explosion_radius:
                 previous_hp = training_dummy.Hp
-                training_dummy.Hp = max(0, training_dummy.Hp - BOMB_DAMAGE)
+                training_dummy.Hp = max(0, training_dummy.Hp - explosion_damage)
                 damage_numbers.append({
                     "x": dummy_center_x,
                     "y": training_dummy.rect.top,
@@ -2918,14 +3001,9 @@ def GameFrame(practice_mode: bool = False):
     send_data["wards"] = list(wards)
     send_data["destroyed_treasures"] = list(pending_treasure_destroys)
     send_data["destroyed_furniture"] = list(pending_furniture_destroys)
-    send_data["revive_token"] = revive_token
     send_data["heal_token"] = heal_token
     send_data["heal_amount"] = pending_heal_amount
     send_data["shield_active"] = shield_until > now
-    send_data["revive_armed"] = any(
-        slot.assigned_skill == "부활의 차"
-        for slot in quick_slots
-    )
     send_data["hit_events"] = list(pending_hit_events) if my_player.Hp > 0 else []
     send_data["supply_spawn_requests"] = list(pending_supply_spawn_requests)
     send_data["supply_collect_ids"] = list(pending_supply_collect_ids)
@@ -3006,6 +3084,74 @@ def GameFrame(practice_mode: bool = False):
                     active_world_weather = server_weather
             event_snapshot = own_snapshot or {}
             linked_clones[:] = event_snapshot.get("linked_clones", [])
+            current_clone_ids = {
+                clone["clone_id"] for clone in linked_clones
+            }
+            for clone in linked_clones:
+                if clone["clone_id"] in known_linked_clone_ids:
+                    continue
+                particles.ring(
+                    clone["x"], clone["y"], (115, 225, 255),
+                    count=36, radius=52, lifetime=800, size=5,
+                )
+                particles.emit(
+                    clone["x"], clone["y"], (190, 250, 255),
+                    count=28, speed=100, lifetime=650, size=5,
+                    gravity=-18,
+                )
+            known_linked_clone_ids.clear()
+            known_linked_clone_ids.update(current_clone_ids)
+            for effect_event in _snapshot_events(
+                event_snapshot, "spectator_skill_events"
+            ):
+                event_id = effect_event.get("event_id")
+                if (
+                    effect_event.get("skill") != "자폭"
+                    or event_id is None
+                    or event_id in processed_suicide_effect_ids
+                ):
+                    continue
+                processed_suicide_effect_ids.add(event_id)
+                if str(effect_event.get("player_id")) == str(network.player_id):
+                    continue
+                effect_x = effect_event.get("x", 0)
+                effect_y = effect_event.get("y", 0)
+                active_explosions.append({
+                    "x": effect_x,
+                    "y": effect_y,
+                    "radius": SUICIDE_RADIUS,
+                    "started_at": now,
+                    "until": now + EXPLOSION_DURATION_MS,
+                    "animation": FrameAnimation(
+                        IML.GetExplosionFrames(),
+                        max(
+                            1,
+                            EXPLOSION_DURATION_MS
+                            // max(1, len(IML.GetExplosionFrames())),
+                        ),
+                        loop=False,
+                    ),
+                })
+                particles.emit(
+                    effect_x,
+                    effect_y,
+                    (255, 75, 35),
+                    count=80,
+                    speed=240,
+                    lifetime=950,
+                    size=10,
+                    gravity=90,
+                )
+                particles.ring(
+                    effect_x,
+                    effect_y,
+                    (255, 210, 85),
+                    count=40,
+                    radius=SUICIDE_RADIUS,
+                    lifetime=750,
+                    size=8,
+                )
+                screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + SCREEN_SHAKE_MAX)
             for leaf_event in _snapshot_events(event_snapshot, "bush_leaf_events"):
                 event_id = leaf_event.get("event_id")
                 if event_id is None or event_id in processed_bush_leaf_event_ids:
@@ -3057,7 +3203,7 @@ def GameFrame(practice_mode: bool = False):
                         "damage": damage_event.get("damage", 0),
                         "color": (
                             (105, 220, 255)
-                            if damage_event.get("weapon_id") == "soul_bolt"
+                            if damage_event.get("weapon_id") == "spirit_trial"
                             else (255, 235, 100)
                             if damage_event.get("hit_part") == "head"
                             else (255, 255, 255)
@@ -3481,10 +3627,7 @@ def GameFrame(practice_mode: bool = False):
                     pending_hit_events.append({
                         "target_id": p_id,
                         "attacker_id": bullet.owner_id,
-                        "damage": (
-                            0 if bullet.weapon_id == "spirit_trial"
-                            else bullet.damage
-                        ),
+                        "damage": 0 if bullet.weapon_id == "spirit_trial" else bullet.damage,
                         "hit_part": hit_part,
                         "stun_ms": bullet.stun_ms,
                         "weapon_id": bullet.weapon_id,
@@ -3763,7 +3906,10 @@ def GameFrame(practice_mode: bool = False):
         if not is_visible(clone["x"], clone["y"]):
             continue
         linked_player = frame_server_players.get(clone["linked_player_id"])
-        if clone["linked_player_id"] not in visible_player_ids:
+        if (
+            str(clone["linked_player_id"]) != str(network.player_id)
+            and clone["linked_player_id"] not in visible_player_ids
+        ):
             linked_player = None
         draw_linked_clone(
             display,
@@ -4155,22 +4301,25 @@ def GameFrame(practice_mode: bool = False):
 
     for bomb in active_bombs:
         bomb_screen = world_to_screen(bomb["x"], bomb["y"], CameraPosX, CameraPosY, camera_zoom)
-        remaining_ratio = max(0.0, (bomb["explode_at"] - now) / BOMB_DELAY_MS)
+        fuse_ms = bomb.get("fuse_ms", BOMB_DELAY_MS)
+        bomb_radius = bomb.get("radius", BOMB_RADIUS)
+        bomb_color = (255, 75, 55) if bomb.get("self_destruct") else (255, 150, 35)
+        remaining_ratio = max(0.0, (bomb["explode_at"] - now) / fuse_ms)
         pulse = 1.0 + 0.06 * math.sin(now * 0.025)
         draw_skill_range(
             display,
             bomb["x"],
             bomb["y"],
-            BOMB_RADIUS,
+            bomb_radius,
             CameraPosX,
             CameraPosY,
             camera_zoom,
-            (255, 150, 35),
+            bomb_color,
             pulse,
         )
         pygame.draw.arc(
             display,
-            (255, 245, 180),
+            (255, 225, 190) if bomb.get("self_destruct") else (255, 245, 180),
             pygame.Rect(
                 round(bomb_screen[0] - 20 * camera_zoom),
                 round(bomb_screen[1] - 20 * camera_zoom),
@@ -4181,7 +4330,7 @@ def GameFrame(practice_mode: bool = False):
             -math.pi / 2 + math.tau * (1 - remaining_ratio),
             max(2, round(3 * camera_zoom)),
         )
-        pygame.draw.circle(display, (255, 170, 40), (round(bomb_screen[0]), round(bomb_screen[1])),
+        pygame.draw.circle(display, bomb_color, (round(bomb_screen[0]), round(bomb_screen[1])),
                            max(5, round(12 * camera_zoom)), 3)
     for explosion in active_explosions:
         explosion_screen = world_to_screen(
@@ -4192,7 +4341,7 @@ def GameFrame(practice_mode: bool = False):
             display,
             explosion["x"],
             explosion["y"],
-            BOMB_RADIUS * min(1.0, max(0.15, progress)),
+            explosion.get("radius", BOMB_RADIUS) * min(1.0, max(0.15, progress)),
             CameraPosX,
             CameraPosY,
             camera_zoom,
@@ -4508,6 +4657,34 @@ def GameFrame(practice_mode: bool = False):
     # [커스텀 가능] 플레이어 ID 표시 폰트 (GuiFont 사용)
     id_text = GuiFont.render(f"ID: {network.player_id}", True, (255, 255, 255))
     display.blit(id_text, (20, 20))
+
+    if coordinate_overlay_enabled:
+        player_world_x, player_world_y = get_player_world_center(
+            my_player.X,
+            my_player.Y,
+            IML.Player.get_width(),
+            IML.Player.get_height(),
+        )
+        mouse_world_x, mouse_world_y = screen_to_world(
+            *pygame.mouse.get_pos(),
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+        )
+        coordinate_lines = (
+            f"플레이어 월드: {round(player_world_x)}, {round(player_world_y)} px",
+            f"플레이어 타일: {int(player_world_x // TileGene.tile_size)}, {int(player_world_y // TileGene.tile_size)}",
+            f"마우스 타일: {int(mouse_world_x // TileGene.tile_size)}, {int(mouse_world_y // TileGene.tile_size)}",
+        )
+        coordinate_panel = pygame.Rect(ScreenX - 350, 20, 330, 88)
+        pygame.draw.rect(display, (12, 20, 32), coordinate_panel, border_radius=6)
+        pygame.draw.rect(display, (100, 190, 220), coordinate_panel, 1, border_radius=6)
+        for line_index, line in enumerate(coordinate_lines):
+            coordinate_text = KillFeedFont.render(line, True, (220, 240, 245))
+            display.blit(
+                coordinate_text,
+                (coordinate_panel.left + 12, coordinate_panel.top + 8 + line_index * 24),
+            )
     
     # --- [퀵슬롯 배경과 스킬 소스창] ---
     draw_skill_panel(display)

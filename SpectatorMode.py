@@ -63,18 +63,6 @@ class SpectatorMode:
                 (selected_index + direction) % len(alive_players)
             ]
 
-    def start_after_defeat(self, elapsed, delay_ms, match_completed, players, local_player_id):
-        if match_completed or self.dismissed or elapsed < delay_ms:
-            return False
-        alive_players = [
-            player_id
-            for player_id, info in players.items()
-            if player_id != local_player_id and info.get("hp", 0) > 0
-        ]
-        self.selected_player_id = alive_players[0] if alive_players else None
-        self.active = True
-        return True
-
     def reconcile(self, players, local_player_id):
         if not self.active:
             return

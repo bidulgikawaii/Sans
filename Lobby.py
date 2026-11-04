@@ -25,8 +25,8 @@ class LobbyState:
         self.match_player_ids = {mode_id: set() for mode_id in self.started}
         self.world_seeds = {mode_id: None for mode_id in self.started}
         self.world_weather = {mode_id: None for mode_id in self.started}
+        # Player ID is the key so team lookup stays direct and stable for the match.
         self.team_assignments = {}
-        self.team_members = {0: [], 1: []}
 
     def _player_ids(self, mode):
         return {player_id for player_id, player_mode in self.modes.items() if player_mode == mode}
@@ -63,14 +63,9 @@ class LobbyState:
                 shuffled_ids = list(self.match_player_ids[mode])
                 random.SystemRandom().shuffle(shuffled_ids)
                 split_at = (len(shuffled_ids) + 1) // 2
-                self.team_members = {
-                    0: shuffled_ids[:split_at],
-                    1: shuffled_ids[split_at:],
-                }
                 self.team_assignments = {
-                    player_id: team_id
-                    for team_id, members in self.team_members.items()
-                    for player_id in members
+                    player_id: 0 if index < split_at else 1
+                    for index, player_id in enumerate(shuffled_ids)
                 }
 
     def join(self, player_id, mode, debug_enabled=False):
@@ -126,7 +121,6 @@ class LobbyState:
             self.world_weather[mode] = None
             if mode == GAME_MODE_FLAGDOWN:
                 self.team_assignments.clear()
-                self.team_members = {0: [], 1: []}
 
     def cancel(self, mode):
         """해당 모드의 대기열과 진행 중 매치를 전체 참가자 대상으로 취소합니다."""
@@ -142,7 +136,6 @@ class LobbyState:
         self.world_weather[mode] = None
         if mode == GAME_MODE_FLAGDOWN:
             self.team_assignments.clear()
-            self.team_members = {0: [], 1: []}
         return player_ids
 
     def finish_match(self, mode=GAME_MODE_NORMAL):
@@ -158,7 +151,6 @@ class LobbyState:
         self.world_weather[mode] = None
         if mode == GAME_MODE_FLAGDOWN:
             self.team_assignments.clear()
-            self.team_members = {0: [], 1: []}
 
     def mode_for(self, player_id):
         return self.modes.get(player_id)
@@ -181,15 +173,17 @@ class LobbyState:
         team_id = self.team_for(player_id)
         if team_id is None:
             return None
-        members = (
-            self.team_members[team_id]
-            if self.started[GAME_MODE_FLAGDOWN]
-            else sorted(
+        members = sorted(
+            player_id
+            for player_id, assigned_team in self.team_assignments.items()
+            if assigned_team == team_id
+        )
+        if not self.started[GAME_MODE_FLAGDOWN]:
+            members = sorted(
                 player_id
                 for player_id in self._player_ids(GAME_MODE_FLAGDOWN)
                 if self.team_for(player_id) == team_id
             )
-        )
         try:
             return members.index(player_id)
         except ValueError:

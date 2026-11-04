@@ -247,9 +247,10 @@ class MiniMap:
 
         skill_colors = {
             "폭탄받아라!": (255, 150, 70),
+            "자폭": (255, 80, 55),
             "매의 눈": (120, 220, 255),
             "와드": (120, 240, 255),
-            "부활의 차": (255, 210, 120),
+            "영혼의 시험": (125, 225, 255),
             "보호막": (100, 220, 255),
             "은신": (190, 190, 255),
             "텔포": (150, 255, 170),
@@ -341,11 +342,6 @@ class MiniMap:
                 pygame.draw.circle(
                     surface, (190, 190, 255), (center_x, center_y),
                     max(10, sprite_size + 4), 1,
-                )
-            if player_info.get("revive_armed", False):
-                pygame.draw.circle(
-                    surface, (255, 210, 120), (center_x, center_y),
-                    max(12, sprite_size + 7), 1,
                 )
 
         if selected_info is not None:

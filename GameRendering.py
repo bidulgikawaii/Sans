@@ -75,40 +75,6 @@ def get_bat_launch_frame(launch, now):
     return center_x, center_y, rotation, max(0, alpha), progress >= 1.0
 
 
-def create_jump_pad_animation(event, now):
-    try:
-        start_x = float(event["start_x"])
-        start_y = float(event["start_y"])
-        target_x = float(event["target_x"])
-        target_y = float(event["target_y"])
-        duration = int(event["duration_ms"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    if not all(math.isfinite(value) for value in (start_x, start_y, target_x, target_y)):
-        return None
-    return {
-        "start_x": start_x,
-        "start_y": start_y,
-        "target_x": target_x,
-        "target_y": target_y,
-        "started_at": now,
-        "duration": max(300, min(1500, duration)),
-    }
-
-
-def get_jump_pad_frame(launch, now):
-    elapsed = max(0, now - launch["started_at"])
-    progress = min(1.0, elapsed / launch["duration"])
-    eased_progress = progress * progress * (3 - 2 * progress)
-    center_x = launch["start_x"] + (
-        launch["target_x"] - launch["start_x"]
-    ) * eased_progress
-    center_y = launch["start_y"] + (
-        launch["target_y"] - launch["start_y"]
-    ) * eased_progress - math.sin(progress * math.pi) * 210
-    return center_x, center_y, progress >= 1.0
-
-
 def _fit_kill_feed_text(font, text, color, max_width):
     """긴 닉네임을 카드 안에 맞추고, 잘린 이름에는 말줄임표를 붙입니다."""
     rendered = font.render(text, True, color)
@@ -415,42 +381,62 @@ def draw_stun_effect(surface, center_x, center_y, zoom, now):
         pygame.draw.lines(surface, (225, 255, 255), False, points, max(1, round(1.5 * zoom)))
 
 
-def draw_stun_bolt(surface, center_x, center_y, angle, zoom, now):
-    """기절탄 주위에 빠르게 깜빡이는 짧은 번개 가지를 그립니다."""
-    angle = math.radians(angle)
-    direction = (math.cos(angle), math.sin(angle))
-    perpendicular = (-direction[1], direction[0])
-    center = (round(center_x), round(center_y))
-    flicker = 0.65 + 0.35 * abs(math.sin(now * 0.07))
-    for side in (-1, 1):
-        start = (
-            center_x - direction[0] * 8 * zoom,
-            center_y - direction[1] * 8 * zoom,
+def draw_stun_bolt(surface, center_x, center_y, angle, zoom, now, frames):
+    """코멧 프레임 애니메이션을 기절탄의 발광 효과로 표시합니다."""
+    if not frames:
+        return
+    frame = frames[(now // 40) % len(frames)]
+    size = max(1, round(72 * zoom))
+    cache_key = (id(frame), (size, size))
+    sprite = _scaled_images.get(cache_key)
+    if sprite is None:
+        sprite = pygame.transform.smoothscale(frame, (size, size))
+        if len(_scaled_images) >= 96:
+            _scaled_images.clear()
+        _scaled_images[cache_key] = sprite
+    sprite = pygame.transform.rotate(sprite, -angle)
+    surface.blit(sprite, sprite.get_rect(center=(round(center_x), round(center_y))))
+
+
+def draw_linked_clone(
+    surface, clone, player_image, camera_x, camera_y, zoom, now,
+    linked_player=None,
+):
+    """연결된 플레이어 위치로 이어지는 분신과 체력 막대를 그립니다."""
+    clone_x = float(clone["x"])
+    clone_y = float(clone["y"])
+    screen_x = round((clone_x - camera_x) * zoom)
+    screen_y = round((clone_y - camera_y) * zoom)
+    sprite_size = (
+        max(1, round(player_image.get_width() * zoom)),
+        max(1, round(player_image.get_height() * zoom)),
+    )
+    sprite = pygame.transform.scale(player_image, sprite_size)
+    sprite.set_alpha(145 + round(25 * math.sin(now * 0.012)))
+    sprite.fill((55, 150, 255, 0), special_flags=pygame.BLEND_RGBA_ADD)
+    sprite_rect = sprite.get_rect(center=(screen_x, screen_y))
+
+    if linked_player is not None and linked_player.get("hp", 0) > 0:
+        target_x = round((linked_player["posX"] + 36 - camera_x) * zoom)
+        target_y = round((linked_player["posY"] + 36 - camera_y) * zoom)
+        pygame.draw.line(surface, (90, 205, 255), (screen_x, screen_y), (target_x, target_y), max(1, round(2 * zoom)))
+
+    if sprite_rect.colliderect(surface.get_rect()):
+        surface.blit(sprite, sprite_rect)
+        pygame.draw.rect(surface, (130, 225, 255), sprite_rect, max(1, round(2 * zoom)))
+        bar_width = max(24, round(54 * zoom))
+        bar_height = max(3, round(5 * zoom))
+        bar_rect = pygame.Rect(
+            screen_x - bar_width // 2,
+            sprite_rect.top - bar_height - max(2, round(4 * zoom)),
+            bar_width,
+            bar_height,
         )
-        points = [start]
-        for step in range(1, 4):
-            distance = (step - 1.5) * 9 * zoom
-            jitter = math.sin(now * 0.09 + step * 5 + side) * 7 * zoom
-            points.append((
-                center_x + perpendicular[0] * (distance + jitter * side)
-                + direction[0] * step * 5 * zoom,
-                center_y + perpendicular[1] * (distance + jitter * side)
-                + direction[1] * step * 5 * zoom,
-            ))
-        points.append((
-            center_x + direction[0] * 11 * zoom,
-            center_y + direction[1] * 11 * zoom,
-        ))
-        points = [tuple(map(round, point)) for point in points]
-        pygame.draw.lines(
-            surface, (45, 165, 255, round(190 * flicker)), False, points,
-            max(2, round(4 * zoom)),
-        )
-        pygame.draw.lines(
-            surface, (220, 255, 255, round(255 * flicker)), False, points,
-            max(1, round(2 * zoom)),
-        )
-    pygame.draw.circle(surface, (180, 245, 255), center, max(2, round(3 * zoom)))
+        health_ratio = max(0.0, min(1.0, clone["hp"] / max(1, clone["max_hp"])))
+        pygame.draw.rect(surface, (20, 35, 50), bar_rect)
+        fill_rect = bar_rect.copy()
+        fill_rect.width = round(bar_width * health_ratio)
+        pygame.draw.rect(surface, (90, 230, 255), fill_rect)
 
 
 def draw_skill_range(surface, world_x, world_y, world_radius, camera_x, camera_y, zoom, color, pulse=1.0):

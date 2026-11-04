@@ -17,7 +17,6 @@ from Config import (
     MAP_FURNITURE_CHANCE,
     MAP_WATER_RADIUS,
     FLAGDOWN_CAPTURE_RADIUS,
-    FLAGDOWN_JUMP_PADS,
     FLAGDOWN_MAP_HEIGHT_TILES,
     FLAGDOWN_MAP_WIDTH_TILES,
     GAME_MODE_FLAGDOWN,
@@ -214,11 +213,6 @@ class TileGenerator(TileRenderingMixin):
                             tile_type=1,
                             is_walkable=False,
                         )
-
-        for pad_x, pad_y in FLAGDOWN_JUMP_PADS:
-            for y in range(pad_y, pad_y + 2):
-                for x in range(pad_x, pad_x + 2):
-                    self.map_data[(x, y)] = Tile(tile_type=9, is_walkable=True)
 
         self._build_world_surface()
         zone_surface = pygame.Surface(
@@ -727,40 +721,6 @@ class TileGenerator(TileRenderingMixin):
             ):
                 break
             if is_clear(landing_x, landing_y):
-                return landing_x, landing_y
-        return None
-
-    def find_jump_landing(
-        self,
-        start_x,
-        start_y,
-        direction_x,
-        direction_y,
-        distance,
-        width,
-        height,
-    ):
-        """점프대가 벽을 넘은 뒤 착지할 수 있는 가장 먼 안전 위치를 찾습니다."""
-        values = (start_x, start_y, direction_x, direction_y, distance)
-        if not all(math.isfinite(value) for value in values):
-            return None
-        direction_length = math.hypot(direction_x, direction_y)
-        if direction_length <= 0.001:
-            return None
-        direction_x /= direction_length
-        direction_y /= direction_length
-        step = max(4, self.tile_size // 4)
-        rect = pygame.Rect(0, 0, width, height)
-        for travel in range(max(step, round(distance)), 0, -step):
-            landing_x = start_x + direction_x * travel
-            landing_y = start_y + direction_y * travel
-            if not (
-                width / 2 <= landing_x < self.map_width * self.tile_size - width / 2
-                and height / 2 <= landing_y < self.map_height * self.tile_size - height / 2
-            ):
-                continue
-            rect.center = (round(landing_x), round(landing_y))
-            if not self.check_collision(rect):
                 return landing_x, landing_y
         return None
 

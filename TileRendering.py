@@ -89,64 +89,6 @@ class TileRenderingMixin:
         pygame.draw.line(water, (100, 205, 245), (8, self.tile_size * 2 // 3), (self.tile_size - 6, self.tile_size * 2 // 3), 2)
         self.tile_images[6] = water
 
-        jump_pad = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
-        jump_pad.fill((28, 38, 48, 255))
-        pygame.draw.rect(
-            jump_pad,
-            (72, 91, 101),
-            (1, 1, self.tile_size - 2, self.tile_size - 2),
-            border_radius=5,
-        )
-        pygame.draw.rect(
-            jump_pad,
-            (22, 33, 41),
-            (4, 4, self.tile_size - 8, self.tile_size - 8),
-            border_radius=4,
-        )
-        pygame.draw.rect(
-            jump_pad,
-            (255, 154, 57),
-            (4, 4, self.tile_size - 8, self.tile_size - 8),
-            2,
-            border_radius=5,
-        )
-        pygame.draw.circle(
-            jump_pad,
-            (18, 27, 35),
-            (self.tile_size // 2, self.tile_size // 2),
-            max(5, self.tile_size // 3),
-        )
-        pygame.draw.circle(
-            jump_pad,
-            (255, 187, 72),
-            (self.tile_size // 2, self.tile_size // 2),
-            max(4, self.tile_size // 4),
-            2,
-        )
-        pygame.draw.circle(
-            jump_pad,
-            (255, 225, 137),
-            (self.tile_size // 2, self.tile_size // 2),
-            max(2, self.tile_size // 8),
-        )
-        for bolt_x, bolt_y in (
-            (7, 7),
-            (self.tile_size - 8, 7),
-            (7, self.tile_size - 8),
-            (self.tile_size - 8, self.tile_size - 8),
-        ):
-            pygame.draw.circle(jump_pad, (194, 207, 204), (bolt_x, bolt_y), 1)
-        pygame.draw.polygon(
-            jump_pad,
-            (255, 247, 205),
-            (
-                (self.tile_size // 2, 5),
-                (self.tile_size // 2 - 4, self.tile_size // 2 - 1),
-                (self.tile_size // 2 + 4, self.tile_size // 2 - 1),
-            ),
-        )
-        self.tile_images[9] = jump_pad
-
     def _build_world_surface(self):
         """정적인 맵을 하나의 Surface로 합쳐 반복 그리기 비용을 줄입니다."""
         world_size = (

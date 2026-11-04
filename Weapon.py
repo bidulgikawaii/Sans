@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import random
 import time
-from Config import DEFAULT_WEAPON_ID, REVIVE_ATTACK_DAMAGE, WEAPON_VISION_RADIUS
+from Config import DEFAULT_WEAPON_ID, WEAPON_VISION_RADIUS
 
 
 @dataclass(frozen=True)
@@ -80,8 +80,8 @@ SPECIAL_CRATE_WEAPONS = {
     ),
 }
 WEAPONS.update(SPECIAL_CRATE_WEAPONS)
-WEAPONS["soul_bolt"] = WeaponConfig(
-    "영혼 탄환", damage=REVIVE_ATTACK_DAMAGE, magazine_size=0, reserve_ammo=0,
+WEAPONS["spirit_trial"] = WeaponConfig(
+    "영혼의 시험", damage=0, magazine_size=0, reserve_ammo=0,
     fire_interval=0.0, bullet_size=5, bullet_speed=20.0,
     projectile=True, recoil=0.0, bullet_lifetime=2.5,
     vision_radius=WEAPON_VISION_RADIUS, vision_fov=180, vision_width=420,

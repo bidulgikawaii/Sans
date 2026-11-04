@@ -45,7 +45,7 @@ class Bullet:
         weapon_id=DEFAULT_WEAPON_ID,
         stun_ms=0,
     ):
-        if weapon_id == "soul_bolt":
+        if weapon_id == "spirit_trial":
             self.surface = pygame.Surface((34, 16), pygame.SRCALPHA)
             pygame.draw.ellipse(self.surface, (40, 185, 255, 75), (0, 1, 34, 14))
             pygame.draw.ellipse(self.surface, (110, 230, 255, 210), (4, 4, 25, 8))
@@ -87,7 +87,7 @@ class Bullet:
 
     @property
     def pierces_walls(self):
-        return self.weapon_id == "soul_bolt"
+        return False
 
     def launch(self, start_x, start_y, target_x, target_y, speed=15, hold_ms=0):
         # 발사 위치 설정 (보통 플레이어의 화면 중심 좌표)
@@ -151,7 +151,7 @@ class Bullet:
 
             center_x = (self.x - camera_x) * zoom
             center_y = (self.y - camera_y) * zoom
-            if self.weapon_id == "soul_bolt":
+            if self.weapon_id == "spirit_trial":
                 previous_x = (self.previous_x - camera_x) * zoom
                 previous_y = (self.previous_y - camera_y) * zoom
                 pulse = 1.0 + 0.18 * math.sin(pygame.time.get_ticks() * 0.025)

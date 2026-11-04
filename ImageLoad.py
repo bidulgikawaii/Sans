@@ -22,7 +22,7 @@ SKILL_ICON_FILES = {
     "은신": "Invis.png",
     "텔포": "Tp.png",
     "기절탄": "Stun_Icon.png",
-    "부활의 차": "Retry.png",
+    "영혼의 시험": "Retry.png",
     "와드": "Ward.png",
 }
 PLAYER_FRAME_SIZE = (72, 72)
@@ -60,6 +60,11 @@ class Imageload:
         self.Bat = self._load_animation("hyeonminbat", (128, 128))
         self.Blink = self._load_animation(
             "blink_", (256, 144), directory="blink-frames"
+        )
+        self.Comet = self._load_animation(
+            "comet-on-a-path_",
+            (72, 72),
+            directory="comet-on-a-path-frames (1)",
         )
         self.BatIcon = self.Bat[0] if self.Bat else self._create_flaregun_image()
         self.Expo = self._load_animation("Expo", (128, 128))
@@ -284,6 +289,9 @@ class Imageload:
 
     def GetBlinkFrames(self):
         return self.Blink
+
+    def GetCometFrames(self):
+        return self.Comet
 
     def GetHurtImage(self):
         return self.Hurt

@@ -24,6 +24,7 @@ SKILL_ICON_FILES = {
     "기절탄": "Stun_Icon.png",
     "자폭": "Bomb.png",
     "와드": "Ward.png",
+    "지뢰": "Bomb.png",
 }
 PLAYER_FRAME_SIZE = (72, 72)
 PLAYER_VISIBLE_SIZE = (44, 64)

@@ -1,6 +1,7 @@
 import math
 
 import pygame
+from FontAssets import get_game_font
 
 
 class MiniMap:
@@ -22,7 +23,7 @@ class MiniMap:
         self.tile_generator = tile_generator
         self.size = size
         self.margin = margin
-        self.font = font or pygame.font.Font(None, 20)
+        self.font = font or get_game_font(20)
         self._map_surface = None
         self._map_signature = None
         self._panel_surface = None

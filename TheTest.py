@@ -19,6 +19,7 @@ from Weapon import (
     WEAPON_KEYS,
 )
 from Effects import ParticleSystem
+from FontAssets import get_game_font
 from MainScreen import MainScreenRenderer
 from Settings import RESERVED_KEYS, get_key, key_bindings, save_settings, settings
 from PracticeView import PracticeView
@@ -105,16 +106,10 @@ def get_map_world_size():
 
 
 # [커스텀 가능] 게임 전체에서 사용할 기본 폰트입니다. 서체와 크기를 여기서 조정합니다.
-GuiFont = pygame.font.Font(os.path.join(os.path.dirname(os.path.abspath(__file__)
-        ),"Font","HeirofLightRegular.ttf"
-            ), 30)
-KillFeedFont = pygame.font.Font(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"), 20
-)
-BannerFont = pygame.font.Font(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"), 54
-)
-RuneAlertFont = pygame.font.Font(None, 24)
+GuiFont = get_game_font(30)
+KillFeedFont = get_game_font(20)
+BannerFont = get_game_font(54)
+RuneAlertFont = get_game_font(24)
 _scaled_surface_cache = {}
 _deathmatch_leaderboard_text_cache = {}
 HEAL_INVENTORY_PANEL_RECT = pygame.Rect(30, 220, 330, 112)
@@ -308,10 +303,7 @@ TileGene.generate_map(
     seed_value=network.init_data["seed"],
     game_mode=selected_game_mode,
 )
-MiniMapFont = pygame.font.Font(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"),
-    18,
-)
+MiniMapFont = get_game_font(18)
 MiniMapRenderer = MiniMap(TileGene, MINIMAP_SIZE, MINIMAP_MARGIN, MiniMapFont)
 register_weather(GAME_MODE_NORMAL, RainWeather)
 register_weather(GAME_MODE_DEATHMATCH, RainWeather)
@@ -466,7 +458,8 @@ bat_launch_animations = {}
 teleport_animations = []
 skill_cooldowns = {}
 vision_skill_until = 0
-shield_until = 0
+shield_hp = 0
+shield_token = 0
 haste_until = 0
 stealth_until = 0
 stealth_token = 0
@@ -684,7 +677,7 @@ def apply_supply_reward(reward_type):
     """보급품 종류에 따라 회복, 스킬, 탄약 또는 특수 무기를 지급합니다."""
     # 보급품은 서버에 아이템 자체를 동기화하지 않고,
     # 획득한 클라이언트의 플레이어 상태에만 효과를 적용합니다.
-    global healing_item_count, haste_until, shield_until, third_weapon_id
+    global healing_item_count, haste_until, shield_hp, third_weapon_id
     center_x, center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
@@ -840,7 +833,7 @@ vision_shape_override = None
 def reset_match_state(regenerate_world=False, independent_world=False, world_seed=None):
     """새 경기에 들어갈 때 이전 경기의 클라이언트 상태를 초기화합니다."""
     global match_result, result_started_at, system_message, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
-    global pending_heal_amount, vision_skill_until, shield_until, haste_until
+    global pending_heal_amount, vision_skill_until, shield_hp, shield_token, haste_until
     global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
     global teleport_placements_remaining, third_weapon_id, special_weapon_crate
     global training_dummy, preserve_magazine_after_chest
@@ -908,7 +901,9 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     refresh_skill_inventory()
     heal_token = pending_heal_amount = 0
     healing_item_count = 0
-    vision_skill_until = shield_until = haste_until = stealth_until = 0
+    vision_skill_until = haste_until = stealth_until = 0
+    shield_hp = 0
+    shield_token = 0
     stealth_token = 0
     active_rune_tile = None
     teleport_anchor = None
@@ -1000,6 +995,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
         "heal_token": 0,
         "heal_amount": 0,
         "shield_active": False,
+        "shield_token": 0,
         "stealth": False,
         "in_bush": False,
         "stealth_token": 0,
@@ -1634,7 +1630,7 @@ def _start_teleport_visual(x, y, now):
 
 
 def activate_quick_slot(key, reinstall=False):
-    global system_message, vision_shape_override, vision_skill_until, shield_until, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining, screen_shake
+    global system_message, vision_shape_override, vision_skill_until, shield_hp, shield_token, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining, screen_shake
     slot_actions = {get_key(f"slot_{name.lower()}"): name for name in ("Q", "E", "T")}
     slot_name = slot_actions.get(key)
     slot = next((slot for slot in quick_slots if slot.key_name == slot_name), None)
@@ -1715,6 +1711,8 @@ def activate_quick_slot(key, reinstall=False):
         cooldown = (
             STEALTH_COOLDOWN_MS
             if skill_name == "은신"
+            else SHIELD_COOLDOWN_MS
+            if skill_name == "보호막"
             else SUICIDE_COOLDOWN_MS
             if skill_name == "자폭"
             else SKILL_COOLDOWN_MS
@@ -1834,9 +1832,8 @@ def activate_quick_slot(key, reinstall=False):
         )
         system_message = "3초 동안 최대 사거리의 360도 시야를 확보합니다."
     elif skill_name == "보호막":
-        shield_until = now + SHIELD_DURATION_MS
-        my_player.is_dashing = False
-        my_player.is_moving = False
+        shield_token += 1
+        shield_hp = SHIELD_HP
         particles.ring(
             my_player.X + my_player.rect.width / 2,
             my_player.Y + my_player.rect.height / 2,
@@ -1856,7 +1853,7 @@ def activate_quick_slot(key, reinstall=False):
             lifetime=800,
             size=4,
         )
-        system_message = "3초 동안 피해를 받지 않지만 움직일 수 없습니다."
+        system_message = f"보호막 {SHIELD_HP} 생성. 보호막이 깨지면 {SHIELD_COOLDOWN_MS // 1000}초 후 다시 사용할 수 있습니다."
     elif skill_name == "은신":
         stealth_until = now + STEALTH_DURATION_MS
         stealth_token += 1
@@ -1899,9 +1896,6 @@ def activate_quick_slot(key, reinstall=False):
         particles.ring(target_x, target_y, (120, 240, 255), count=18, radius=28, lifetime=650, size=4)
         system_message = f"와드를 설치했습니다. 현재 {len(wards)}/{WARD_MAX_COUNT}개"
     elif direct_teleport:
-        if now < shield_until:
-            system_message = "보호막이 유지되는 동안에는 순간이동할 수 없습니다."
-            return
         target_x, target_y = screen_to_world(
             *get_aim_mouse_position(CameraPosX, CameraPosY), CameraPosX, CameraPosY, camera_zoom
         )
@@ -2775,7 +2769,6 @@ def GameFrame(practice_mode: bool = False):
     if (
         my_player.Hp > 0
         and now >= local_stun_until
-        and now >= shield_until
         and not self_destruct_arming
     ):
         my_player.dash_duration = PLAYER_DASH_DURATION_MS + (
@@ -2788,7 +2781,7 @@ def GameFrame(practice_mode: bool = False):
             and pygame.mouse.get_pressed(3)[2]
         )
         my_player.handle_input(dash_requested)
-    elif now < shield_until or self_destruct_arming:
+    elif self_destruct_arming:
         my_player.is_dashing = False
         my_player.is_moving = False
     weapon_state.update_reload()
@@ -3003,7 +2996,8 @@ def GameFrame(practice_mode: bool = False):
     send_data["destroyed_furniture"] = list(pending_furniture_destroys)
     send_data["heal_token"] = heal_token
     send_data["heal_amount"] = pending_heal_amount
-    send_data["shield_active"] = shield_until > now
+    send_data["shield_token"] = shield_token
+    send_data["shield_active"] = shield_hp > 0
     send_data["hit_events"] = list(pending_hit_events) if my_player.Hp > 0 else []
     send_data["supply_spawn_requests"] = list(pending_supply_spawn_requests)
     send_data["supply_collect_ids"] = list(pending_supply_collect_ids)
@@ -3773,7 +3767,7 @@ def GameFrame(practice_mode: bool = False):
                     })
                     bullet.is_active = False
                     break
-        if bullet.is_active and shield_until <= pygame.time.get_ticks():
+        if bullet.is_active:
             if my_player.head_hitbox.colliderect(bullet.rect):
                 hit_part = "head"
             elif my_player.body_hitbox.colliderect(bullet.rect):
@@ -4414,7 +4408,7 @@ def GameFrame(practice_mode: bool = False):
                     IML.GetWardImage(),
                 )
 
-    if my_player.Hp > 0 and shield_until > pygame.time.get_ticks():
+    if my_player.Hp > 0 and shield_hp > 0:
         shield_center = get_player_screen_center(
             my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height(),
             CameraPosX, CameraPosY, camera_zoom

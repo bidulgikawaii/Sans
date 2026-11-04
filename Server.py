@@ -278,6 +278,8 @@ def handle_client(conn, player_id):
         "wards": [],
         "heal_token": 0,
         "shield_active": False,
+        "shield_hp": 0,
+        "shield_token": 0,
         "rune_alerts": [],
         "stunned_until": 0.0,
         "zone_outside_since": None,
@@ -410,6 +412,8 @@ def handle_client(conn, player_id):
                                 "wards": [],
                                 "heal_token": 0,
                                 "shield_active": False,
+                                "shield_hp": 0,
+                                "shield_token": 0,
                                 "rune_alerts": [],
                                 "stunned_until": 0.0,
                                 "zone_outside_since": None,
@@ -712,7 +716,17 @@ def handle_client(conn, player_id):
                 for ward in client_data.get("wards", [])
                 if isinstance(ward, (list, tuple)) and len(ward) == 2
             ]
-            players[player_id]["shield_active"] = bool(client_data.get("shield_active", False))
+            try:
+                reported_shield_token = max(0, int(client_data.get("shield_token", 0)))
+            except (TypeError, ValueError):
+                reported_shield_token = players[player_id]["shield_token"]
+            if (
+                reported_shield_token > players[player_id]["shield_token"]
+                and players[player_id]["hp"] > 0
+            ):
+                players[player_id]["shield_token"] = reported_shield_token
+                players[player_id]["shield_hp"] = SHIELD_HP
+            players[player_id]["shield_active"] = players[player_id]["shield_hp"] > 0
             heal_token = int(client_data.get("heal_token", 0))
             if heal_token != players[player_id]["heal_token"]:
                 players[player_id]["heal_token"] = heal_token
@@ -942,10 +956,18 @@ def handle_client(conn, player_id):
                         linked_target["hp"] if linked_target is not None else 0
                     )
                     linked_damage = 0
+                    linked_shield_damage = 0
                     if linked_target is not None and linked_target["hp"] > 0:
-                        if not linked_target.get("shield_active", False):
-                            linked_damage = min(clone_damage, linked_target["hp"])
-                            linked_target["hp"] -= linked_damage
+                        linked_shield_damage = min(
+                            linked_target.get("shield_hp", 0), clone_damage
+                        )
+                        linked_target["shield_hp"] -= linked_shield_damage
+                        linked_target["shield_active"] = linked_target["shield_hp"] > 0
+                        linked_damage = min(
+                            clone_damage - linked_shield_damage,
+                            linked_target["hp"],
+                        )
+                        linked_target["hp"] -= linked_damage
                     hit_weapon_id = (
                         token_bullet["weapon_id"]
                         if token_bullet is not None
@@ -958,6 +980,7 @@ def handle_client(conn, player_id):
                         "attacker_id": attacker_id,
                         "target_id": linked_target_id,
                         "damage": linked_damage,
+                        "shield_damage": linked_shield_damage,
                         "hit_part": "body",
                         "stun_ms": 0,
                         "weapon_id": hit_weapon_id,
@@ -1032,8 +1055,6 @@ def handle_client(conn, player_id):
                         or now_monotonic - source_bullet["created_at"] > 5000
                     ):
                         continue
-                if target.get("shield_active", False):
-                    continue
                 damage = max(0, int(hit_event.get("damage", 0)))
                 if hit_event.get("hit_part") == "head":
                     damage *= HEADSHOT_DAMAGE_MULTIPLIER
@@ -1047,8 +1068,16 @@ def handle_client(conn, player_id):
                 )
                 stun_ms = max(0, int(hit_event.get("stun_ms", 0)))
                 previous_hp = target["hp"]
-                damage = previous_hp if is_bat_hit else min(damage, previous_hp)
-                target["hp"] = previous_hp - damage
+                if is_bat_hit:
+                    damage = previous_hp + target.get("shield_hp", 0)
+                else:
+                    damage = min(damage, previous_hp + target.get("shield_hp", 0))
+                shield_damage = min(target.get("shield_hp", 0), damage)
+                target["shield_hp"] -= shield_damage
+                target["shield_active"] = target["shield_hp"] > 0
+                health_damage = min(damage - shield_damage, previous_hp)
+                target["hp"] = previous_hp - health_damage
+                damage = shield_damage + health_damage
                 if (
                     hit_event.get("skill_source") == "자폭"
                     and attacker_id == player_id
@@ -1061,6 +1090,7 @@ def handle_client(conn, player_id):
                     "attacker_id": attacker_id,
                     "target_id": target_id,
                     "damage": damage,
+                    "shield_damage": shield_damage,
                     "hit_part": hit_event.get("hit_part", "body"),
                     "stun_ms": stun_ms,
                     "weapon_id": hit_weapon_id,

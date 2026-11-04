@@ -36,7 +36,7 @@ def register_game_mode(definition):
 
 def get_game_mode(mode_id):
     """등록되지 않은 모드는 안전하게 일반전 설정으로 대체합니다."""
-    return _game_modes.get(mode_id, _game_modes[GAME_MODE_NORMAL])
+    return _game_modes.get(mode_id, _game_modes[GAME_MODE_DEATHMATCH])
 
 
 def get_game_modes():

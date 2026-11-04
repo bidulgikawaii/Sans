@@ -1,14 +1,6 @@
 import math
-import os
-from functools import lru_cache
 import pygame
-
-
-# 매 프레임 같은 폰트·크기·텍스트 결과를 재사용해 반복 렌더링 비용을 줄입니다.
-@lru_cache(maxsize=8)
-def _get_font(path, size):
-    """경고 표시용 폰트를 프레임마다 다시 만들지 않도록 캐시합니다."""
-    return pygame.font.Font(path, size)
+from FontAssets import get_game_font
 
 
 _scaled_images = {}
@@ -535,15 +527,12 @@ def draw_supply_drop(surface, supply, camera_x, camera_y, zoom, colors, now):
             (x, beam_y),
             max(3, round(6 * zoom)),
         )
-        font_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"
-        )
         warning_label = (
             "유니크 보급품 낙하"
             if supply["type"] == "special_weapon"
             else "보급품 낙하"
         )
-        label = _get_font(font_path, 26).render(warning_label, True, (255, 240, 150))
+        label = get_game_font(26).render(warning_label, True, (255, 240, 150))
         surface.blit(label, label.get_rect(center=(x, max(18, y - round(165 * zoom)))))
     box = pygame.Rect(0, 0, max(22, round(36 * zoom)), max(18, round(28 * zoom)))
     box.center = (x, y)
@@ -557,7 +546,7 @@ def draw_supply_drop(surface, supply, camera_x, camera_y, zoom, colors, now):
     }
     label_text = labels.get(supply["type"])
     if label_text:
-        label = pygame.font.SysFont(None, max(12, round(18 * zoom))).render(
+        label = get_game_font(max(12, round(18 * zoom))).render(
             label_text,
             True,
             (255, 255, 255),

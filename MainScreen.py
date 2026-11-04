@@ -1,6 +1,6 @@
 import pygame
-import os
 from Config import MAIN_SCREEN_BACKGROUND_COLOR
+from FontAssets import get_game_font
 from GameModes import get_game_mode, get_game_modes
 from Settings import KEY_ACTION_LABELS
 
@@ -20,10 +20,7 @@ class MainScreenRenderer:
             if self.background is not None else None
         )
         self._weapon_previews = {}
-        font_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "Font", "HeirofLightRegular.ttf"
-        )
-        self._credit_text = pygame.font.Font(font_path, 30).render(
+        self._credit_text = get_game_font(30).render(
             "By PGM.", True, (190, 200, 220)
         )
 

@@ -61,7 +61,7 @@ def register_mine_placements(
             "detonates_at": None,
         })
         accepted_ids.append(request_id)
-    return accepted_ids
+    return player.get("last_mine_request_id", 0)
 
 
 def advance_mines(
@@ -84,6 +84,9 @@ def advance_mines(
     ]
 
     for mine in tuple(events["mines"]):
+        if mine["owner_id"] not in players:
+            events["mines"].remove(mine)
+            continue
         if mine["detonates_at"] is None:
             if now < mine["armed_at"]:
                 continue

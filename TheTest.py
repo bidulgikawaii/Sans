@@ -449,6 +449,7 @@ send_data = {
     "bullets": [],      # [{"x": x, "y": y, "angle": angle}, ...]
     "spectator_skill_events": [],
     "hit_events": [],   # [{"target_id": id, "damage": damage, "hit_part": part}, ...]
+    "mine_placement_requests": [],
     "bush_leaf_requests": [],
 }
 
@@ -489,11 +490,15 @@ heal_token = 0
 pending_heal_amount = 0
 next_client_bullet_token = 1
 debug_mode = False
+practice_mode_active = False
 active_bombs = []
 active_explosions = []
 active_black_holes = []
 active_plasma_beams = []
 active_mines = []
+pending_mine_placements = []
+next_mine_request_id = 1
+processed_mine_blast_ids = set()
 last_processed_flagdown_reward_id = 0
 knife_attack_until = 0
 hurt_flash_started_at = 0
@@ -682,7 +687,7 @@ def launch_flare_supplies(center_x, center_y, now):
         pending_supply_spawn_requests.append({
             "x": drop_position[0],
             "y": drop_position[1],
-            "type": "flare_skill" if index == FLARE_SUPPLY_DROP_COUNT - 1 else "flare_ammo",
+            "type": "flare_ammo",
             "warning_ms": SUPPLY_DROP_WARNING_MS + index * 250,
             "lifetime_ms": SUPPLY_DROP_LIFETIME_MS,
         })
@@ -697,17 +702,13 @@ def launch_flare_supplies(center_x, center_y, now):
 
 
 def apply_supply_reward(reward_type):
-    """보급품 종류에 따라 회복, 스킬, 탄약 또는 특수 무기를 지급합니다."""
+    """보급품 종류에 따라 회복, 탄약 또는 특수 무기를 지급합니다."""
     # 보급품은 서버에 아이템 자체를 동기화하지 않고,
     # 획득한 클라이언트의 플레이어 상태에만 효과를 적용합니다.
     global healing_item_count, haste_until, shield_hp, third_weapon_id
     center_x, center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
-    available = [
-        name for name in SKILL_BOOK
-        if name not in owned_skills
-    ]
     if reward_type == "heal":
         healing_item_count += 1
         message = f"회복 아이템 획득: 보유 {healing_item_count}개"
@@ -729,23 +730,13 @@ def apply_supply_reward(reward_type):
             else weapon_state.weapon_id
         )
         weapon_state.add_reserve_ammo(FLARE_SUPPLY_AMMO_PER_DROP, ammo_weapon_id)
-        if available and random.random() >= FLARE_SKILL_HEAL_CHANCE:
-            obtained_skill = random.choice(available)
-            add_skill_to_inventory(obtained_skill)
-            message = (
-                f"탄약 +{FLARE_SUPPLY_AMMO_PER_DROP}, "
-                f"스킬 [{obtained_skill}] 획득"
-            )
-            color = (180, 120, 255)
-        else:
-            healing_item_count += 1
-            message = f"탄약 +{FLARE_SUPPLY_AMMO_PER_DROP}, 회복 아이템 획득"
-            color = (100, 255, 130)
-    elif reward_type == "skill" and available:
-        obtained_skill = random.choice(available)
-        add_skill_to_inventory(obtained_skill)
-        message = f"보급품 획득: [{obtained_skill}] 스킬을 얻었습니다."
-        color = (180, 120, 255)
+        healing_item_count += 1
+        message = f"탄약 +{FLARE_SUPPLY_AMMO_PER_DROP}, 회복 아이템 획득"
+        color = (100, 255, 130)
+    elif reward_type == "skill":
+        healing_item_count += 1
+        message = "보급 스킬 대신 회복 아이템을 획득했습니다."
+        color = (100, 255, 130)
     elif reward_type == "special_weapon":
         weapon_id = special_weapon_crate.open()
         if weapon_id is None:
@@ -894,6 +885,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global local_kill_count, match_elapsed_ms, respawn_ms_remaining
     global bush_leaf_request_token
     global next_unique_supply_drop_at, unique_supply_notice, unique_supply_notice_until
+    global next_mine_request_id
     global spawn_tiles, spawn_tile_x, spawn_tile_y
     if regenerate_world:
         world_seed = (
@@ -920,6 +912,9 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     ):
         collection.clear()
     pending_supply_spawn_requests.clear()
+    pending_mine_placements.clear()
+    processed_mine_blast_ids.clear()
+    next_mine_request_id = 1
     pending_supply_collect_ids.clear()
     pending_bush_leaf_requests.clear()
     processed_supply_collection_ids.clear()
@@ -1665,7 +1660,7 @@ def _start_teleport_visual(x, y, now):
 
 
 def activate_quick_slot(key, reinstall=False):
-    global system_message, vision_shape_override, vision_skill_until, shield_hp, shield_token, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining, screen_shake
+    global system_message, vision_shape_override, vision_skill_until, shield_hp, shield_token, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining, screen_shake, next_mine_request_id
     slot_actions = {get_key(f"slot_{name.lower()}"): name for name in ("Q", "E", "T")}
     slot_name = slot_actions.get(key)
     slot = next((slot for slot in quick_slots if slot.key_name == slot_name), None)
@@ -1810,18 +1805,26 @@ def activate_quick_slot(key, reinstall=False):
             skill_cooldowns.pop(skill_name, None)
             system_message = "벽 안에는 지뢰를 설치할 수 없습니다."
             return
-        if len(active_mines) >= MINE_MAX_COUNT:
+        if (practice_mode_active or debug_mode) and len(active_mines) >= MINE_MAX_COUNT:
             oldest_mine = active_mines.pop(0)
             particles.emit(
                 oldest_mine["x"], oldest_mine["y"], (150, 150, 155),
                 count=14, speed=55, lifetime=320, size=4,
             )
         break_stealth_on_attack()
-        active_mines.append({
-            "x": target_x,
-            "y": target_y,
-            "armed_at": now + MINE_ARM_DELAY_MS,
-        })
+        if practice_mode_active or debug_mode:
+            active_mines.append({
+                "x": target_x,
+                "y": target_y,
+                "armed_at": now + MINE_ARM_DELAY_MS,
+            })
+        else:
+            pending_mine_placements.append({
+                "request_id": next_mine_request_id,
+                "x": target_x,
+                "y": target_y,
+            })
+            next_mine_request_id += 1
         particles.emit(
             target_x, target_y, (230, 175, 85),
             count=26, speed=65, lifetime=650, size=5,
@@ -2957,13 +2960,14 @@ def GameFrame(practice_mode: bool = False):
     global screen_shake, server_players, bullets, remote_bullets, MousePos, system_message, kill_feed
     global vision_shape_override, vision_skill_until, local_match
     global active_bombs, active_explosions, active_black_holes, active_plasma_beams
-    global active_mines, healing_item_count
+    global active_mines, healing_item_count, practice_mode_active
     global supply_drops, next_supply_drop_at, pending_heal_amount, active_rune_tile, rune_alerts
     global last_effect_tick, preserve_magazine_after_chest
     global teleport_anchor, teleport_anchor_expires_at
     global damage_numbers, easter_egg_found, easter_egg_flash_until
     global local_kill_count, match_elapsed_ms, respawn_ms_remaining
     global hurt_flash_started_at, shield_hp
+    global practice_mode_active
     global bush_entered_at, next_bush_leaf_at
     global bush_leaf_request_token
     global next_unique_supply_drop_at
@@ -2974,6 +2978,7 @@ def GameFrame(practice_mode: bool = False):
     global last_processed_flagdown_reward_id
 
     is_practice_mode = bool(practice_mode or local_match)
+    practice_mode_active = is_practice_mode
     MousePos = pygame.mouse.get_pos()
     handle_game_events()
     if spectator_mode.active:
@@ -3265,6 +3270,7 @@ def GameFrame(practice_mode: bool = False):
     send_data["shield_token"] = shield_token
     send_data["shield_active"] = shield_hp > 0
     send_data["hit_events"] = list(pending_hit_events) if my_player.Hp > 0 else []
+    send_data["mine_placement_requests"] = list(pending_mine_placements)
     send_data["owned_skills"] = [
         skill_name for skill_name in FLAGDOWN_SKILL_NAMES
         if skill_name in owned_skills
@@ -3348,6 +3354,69 @@ def GameFrame(practice_mode: bool = False):
                     )
                     active_world_weather = server_weather
             event_snapshot = own_snapshot or {}
+            if own_snapshot:
+                active_mines[:] = [
+                    {
+                        **mine,
+                        "armed_at": now + int(mine.get("armed_in_ms", 0)),
+                        **(
+                            {
+                                "detonates_at": now + int(
+                                    mine["detonates_in_ms"]
+                                )
+                            }
+                            if mine.get("detonates_in_ms") is not None
+                            else {}
+                        ),
+                    }
+                    for mine in _snapshot_events(event_snapshot, "active_mines")
+                ]
+                mine_ack_id = own_snapshot.get("mine_ack_id", 0)
+                if isinstance(mine_ack_id, int) and not isinstance(mine_ack_id, bool):
+                    pending_mine_placements[:] = [
+                        request
+                        for request in pending_mine_placements
+                        if request["request_id"] > mine_ack_id
+                    ]
+                for blast in _snapshot_events(
+                    event_snapshot, "mine_blast_events"
+                ):
+                    mine_id = blast.get("mine_id")
+                    if mine_id is None or mine_id in processed_mine_blast_ids:
+                        continue
+                    processed_mine_blast_ids.add(mine_id)
+                    blast_x = blast.get("x", 0)
+                    blast_y = blast.get("y", 0)
+                    active_explosions.append({
+                        "x": blast_x,
+                        "y": blast_y,
+                        "radius": blast.get("radius", MINE_BLAST_RADIUS),
+                        "started_at": now,
+                        "until": now + EXPLOSION_DURATION_MS,
+                        "animation": FrameAnimation(
+                            IML.GetExplosionFrames(),
+                            max(
+                                1,
+                                EXPLOSION_DURATION_MS
+                                // max(1, len(IML.GetExplosionFrames())),
+                            ),
+                            loop=False,
+                        ),
+                    })
+                    particles.emit(
+                        blast_x, blast_y, (255, 115, 40),
+                        count=90, speed=210, lifetime=900, size=9, gravity=60,
+                    )
+                    particles.ring(
+                        blast_x, blast_y, (255, 225, 125),
+                        count=48, radius=blast.get("radius", MINE_BLAST_RADIUS),
+                        lifetime=700, size=6,
+                    )
+                    particles.emit(
+                        blast_x, blast_y, (245, 245, 220),
+                        count=30, speed=110, lifetime=520, size=5,
+                    )
+                    screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 7)
             for reward in _snapshot_events(
                 event_snapshot, "flagdown_skill_rewards"
             ):
@@ -4096,6 +4165,9 @@ def GameFrame(practice_mode: bool = False):
     mine_trigger_distance = MINE_TRIGGER_RADIUS + IML.Player.get_width() / 2
     mine_trigger_distance_squared = mine_trigger_distance ** 2
     for mine in active_mines:
+        if not (is_practice_mode or debug_mode):
+            remaining_mines.append(mine)
+            continue
         if now < mine["armed_at"]:
             remaining_mines.append(mine)
             continue
@@ -4930,7 +5002,7 @@ def GameFrame(practice_mode: bool = False):
             protect_size = max(50, int(90 * camera_zoom))
             protect_scaled = _scale_cached(
                 IML.Protect, (protect_size, protect_size), smooth=False
-            )
+            ).copy()
             protect_scaled.set_alpha(SHIELD_ALPHA)
             protect_rect = protect_scaled.get_rect(center=shield_center)
             display.blit(protect_scaled, protect_rect)

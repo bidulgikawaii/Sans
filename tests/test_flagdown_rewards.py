@@ -9,6 +9,9 @@ from FlagdownRewards import (
 
 
 class FlagdownRewardTests(unittest.TestCase):
+    def test_rewards_are_scheduled_every_fifteen_seconds(self):
+        self.assertEqual(FLAGDOWN_SKILL_REWARD_INTERVAL_MS, 15_000)
+
     def test_rewards_are_due_every_interval_without_repeats(self):
         state = {}
         skills = ("스킬 A", "스킬 B")

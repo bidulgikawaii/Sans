@@ -19,6 +19,12 @@ from Config import (
     FLAGDOWN_MAP_WIDTH_TILES,
     FLAGDOWN_SPAWN_TILES,
     FLAGDOWN_RESPAWN_MS,
+    MINE_ARM_DELAY_MS,
+    MINE_BLAST_RADIUS,
+    MINE_DAMAGE,
+    MINE_MAX_COUNT,
+    MINE_TRIGGER_DELAY_MS,
+    MINE_TRIGGER_RADIUS,
     BUSH_LEAF_INTERVAL_MS,
     GAME_MODE_DEBUG,
     GAME_MODE_DEATHMATCH,
@@ -50,6 +56,7 @@ from FlagdownRewards import (
     acknowledge_flagdown_skill_rewards,
     update_flagdown_skill_rewards,
 )
+from MineAuthority import advance_mines, register_mine_placements, serialize_mines
 from LeaderboardAPI import (
     LeaderboardHTTPServer,
     build_leaderboard_snapshot,
@@ -99,6 +106,10 @@ def new_match_events():
         "next_supply_collection_id": 1,
         "bush_leaf_events": [],
         "next_bush_leaf_event_id": 1,
+        "mines": [],
+        "next_mine_id": 1,
+        "mine_hit_authorizations": {},
+        "mine_blast_events": [],
         "flagdown_progress": {0: 0.0, 1: 0.0},
         "flagdown_updated_at": None,
     }
@@ -308,6 +319,8 @@ def handle_client(conn, player_id):
         "flagdown_awarded_skills": [],
         "next_flagdown_skill_reward_id": 1,
         "next_flagdown_skill_reward_ms": FLAGDOWN_SKILL_REWARD_INTERVAL_MS,
+        "last_mine_request_id": 0,
+        "mine_ack_id": 0,
     }
 
     try:
@@ -372,6 +385,17 @@ def handle_client(conn, player_id):
                             player["team_id"] = lobby.team_for(snapshot_player_id)
                             player["team_spawn_index"] = lobby.team_spawn_index(snapshot_player_id)
                             player["flagdown_progress"] = dict(events["flagdown_progress"])
+                            player["active_mines"] = serialize_mines(
+                                events, time.monotonic()
+                            )
+                            player["mine_blast_events"] = list(
+                                events["mine_blast_events"]
+                            )
+                            player["mine_ack_id"] = (
+                                player.get("mine_ack_id", 0)
+                                if snapshot_player_id == player_id
+                                else 0
+                            )
                             player["stun_ms_remaining"] = max(
                                 0,
                                 round((player.get("stunned_until", 0.0) - time.monotonic()) * 1000),
@@ -844,19 +868,82 @@ def handle_client(conn, player_id):
                 players[player_id]["zone_damage_credit"] = 0.0
             players[player_id]["zone_last_tick"] = zone_now
 
+            mine_hits = []
+            if mode is not None and lobby.started.get(mode, False):
+                map_width, map_height = mode_map_dimensions(mode)
+                with player_lock:
+                    if players[player_id]["hp"] > 0:
+                        players[player_id]["mine_ack_id"] = register_mine_placements(
+                            events,
+                            players[player_id],
+                            player_id,
+                            client_data.get("mine_placement_requests", []),
+                            now_monotonic,
+                            map_width * 32,
+                            map_height * 32,
+                            lobby.team_for(player_id),
+                            MINE_ARM_DELAY_MS,
+                            MINE_MAX_COUNT,
+                        )
+                    mine_hits = advance_mines(
+                        events,
+                        players,
+                        lobby.active_player_ids(mode),
+                        lobby.team_for,
+                        mode,
+                        now_monotonic,
+                        MINE_TRIGGER_RADIUS + 18,
+                        MINE_BLAST_RADIUS,
+                        MINE_TRIGGER_DELAY_MS,
+                        MINE_DAMAGE,
+                    )
+
             suicide_detonated = False
-            for hit_event in client_data.get("hit_events", []):
+            reported_hit_events = client_data.get("hit_events", [])
+            if not isinstance(reported_hit_events, list):
+                reported_hit_events = []
+            for hit_event, server_mine_event in (
+                [(event, True) for event in mine_hits]
+                + [(event, False) for event in reported_hit_events]
+            ):
+                if not isinstance(hit_event, dict):
+                    continue
+                authorized_mine = False
+                if server_mine_event:
+                    auth_key = (
+                        hit_event.get("_mine_authorization_id"),
+                        hit_event.get("target_id"),
+                    )
+                    with player_lock:
+                        authorized_owner = events["mine_hit_authorizations"].pop(
+                            auth_key, None
+                        )
+                    authorized_mine = (
+                        authorized_owner == hit_event.get("attacker_id")
+                        and hit_event.get("skill_source") == "지뢰"
+                    )
+                    if not authorized_mine:
+                        continue
                 if (
                     mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN)
                     and players[player_id]["hp"] <= 0
+                    and not authorized_mine
                 ):
                     break
                 attacker_id = hit_event.get("attacker_id", player_id)
                 if (
                     not isinstance(attacker_id, str)
-                    or attacker_id not in lobby.visible_player_ids(player_id)
+                    or (
+                        attacker_id not in lobby.visible_player_ids(player_id)
+                        and not (
+                            authorized_mine
+                            and attacker_id in players
+                            and lobby.mode_for(attacker_id) == mode
+                        )
+                    )
                 ):
                     continue
+                source_bullet = None
                 client_bullet_token = hit_event.get("client_bullet_token")
                 token_bullet = None
                 if isinstance(client_bullet_token, int) and not isinstance(
@@ -1092,7 +1179,7 @@ def handle_client(conn, player_id):
                     continue
                 if is_friendly_fire(mode, attacker_id, target_id, lobby):
                     continue
-                if attacker_id != player_id:
+                if attacker_id != player_id and not authorized_mine:
                     try:
                         source_bullet_event_id = int(
                             hit_event.get("source_bullet_event_id")
@@ -1180,7 +1267,7 @@ def handle_client(conn, player_id):
                         target_id,
                         players[attacker_id].get("name", "플레이어"),
                         target.get("name", "플레이어"),
-                        source_bullet["weapon_id"] if attacker_id != player_id else hit_weapon_id,
+                        source_bullet["weapon_id"] if source_bullet else hit_weapon_id,
                         "bat" if is_bat_hit else (
                             "self_inflicted" if attacker_id == target_id else "player"
                         ),
@@ -1501,6 +1588,13 @@ def handle_client(conn, player_id):
                 )
                 player["spectator_skill_events"] = list(pending_skill_events)
                 player["linked_clones"] = list(events["linked_clones"])
+                player["active_mines"] = serialize_mines(events, now_monotonic)
+                player["mine_blast_events"] = list(events["mine_blast_events"])
+                player["mine_ack_id"] = (
+                    player.get("mine_ack_id", 0)
+                    if snapshot_player_id == player_id
+                    else 0
+                )
                 player["destroyed_treasures"] = list(events["destroyed_treasures"])
                 player["destroyed_furniture"] = list(events["destroyed_furniture"])
                 player["rune_alerts"] = [

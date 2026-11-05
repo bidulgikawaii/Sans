@@ -50,11 +50,12 @@ class LeaderboardRequestHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
             return
 
-        expected = f"Bearer {self.server.api_token}"
-        authorization = self.headers.get("Authorization", "")
-        if not hmac.compare_digest(authorization, expected):
-            self._send_json(401, {"error": "unauthorized"})
-            return
+        if self.server.api_token is not None:
+            expected = f"Bearer {self.server.api_token}"
+            authorization = self.headers.get("Authorization", "")
+            if not hmac.compare_digest(authorization, expected):
+                self._send_json(401, {"error": "unauthorized"})
+                return
 
         self._send_json(200, self.server.snapshot_provider())
 

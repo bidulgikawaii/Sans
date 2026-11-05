@@ -864,7 +864,7 @@ vision_shape_override = None
 def reset_match_state(regenerate_world=False, independent_world=False, world_seed=None):
     """새 경기에 들어갈 때 이전 경기의 클라이언트 상태를 초기화합니다."""
     global match_result, result_started_at, system_message, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
-    global pending_heal_amount, vision_skill_until, shield_hp, shield_token, haste_until
+    global pending_heal_amount, vision_skill_until, shield_hp, haste_until
     global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
     global teleport_placements_remaining, third_weapon_id, special_weapon_crate
     global training_dummy, preserve_magazine_after_chest
@@ -885,7 +885,6 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global local_kill_count, match_elapsed_ms, respawn_ms_remaining
     global bush_leaf_request_token
     global next_unique_supply_drop_at, unique_supply_notice, unique_supply_notice_until
-    global next_mine_request_id
     global spawn_tiles, spawn_tile_x, spawn_tile_y
     if regenerate_world:
         world_seed = (
@@ -914,7 +913,6 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     pending_supply_spawn_requests.clear()
     pending_mine_placements.clear()
     processed_mine_blast_ids.clear()
-    next_mine_request_id = 1
     pending_supply_collect_ids.clear()
     pending_bush_leaf_requests.clear()
     processed_supply_collection_ids.clear()
@@ -942,7 +940,6 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     healing_item_count = 0
     vision_skill_until = haste_until = stealth_until = 0
     shield_hp = 0
-    shield_token = 0
     stealth_token = 0
     active_rune_tile = None
     teleport_anchor = None
@@ -1833,7 +1830,8 @@ def activate_quick_slot(key, reinstall=False):
             target_x, target_y, (255, 215, 125),
             count=20, radius=30, lifetime=550, size=4,
         )
-        system_message = f"지뢰 설치 완료 ({len(active_mines)}/{MINE_MAX_COUNT})"
+        mine_count = len(active_mines) + len(pending_mine_placements)
+        system_message = f"지뢰 설치 완료 ({mine_count}/{MINE_MAX_COUNT})"
     elif skill_name == "자폭":
         center_x, center_y = get_player_world_center(
             my_player.X,
@@ -2883,6 +2881,7 @@ def spectator_frame():
         "weapon_id": weapon_state.weapon_id,
         "bullets": [],
         "hit_events": [],
+        "mine_placement_requests": [],
         "destroyed_treasures": [],
         "destroyed_furniture": [],
         "supply_spawn_requests": [],
@@ -2960,7 +2959,7 @@ def GameFrame(practice_mode: bool = False):
     global screen_shake, server_players, bullets, remote_bullets, MousePos, system_message, kill_feed
     global vision_shape_override, vision_skill_until, local_match
     global active_bombs, active_explosions, active_black_holes, active_plasma_beams
-    global active_mines, healing_item_count, practice_mode_active
+    global active_mines, healing_item_count
     global supply_drops, next_supply_drop_at, pending_heal_amount, active_rune_tile, rune_alerts
     global last_effect_tick, preserve_magazine_after_chest
     global teleport_anchor, teleport_anchor_expires_at

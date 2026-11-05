@@ -1,5 +1,4 @@
 import copy
-import os
 import math
 import socket
 import threading
@@ -1703,29 +1702,23 @@ def get_leaderboard_snapshot():
 
 print("[서버 켜짐] 클라이언트 연결을 기다리는 중...")
 
-leaderboard_token = os.environ.get("SANS_LEADERBOARD_TOKEN", "")
-if len(leaderboard_token) < 32:
-    print(
-        "[랭킹 API 비활성화] SANS_LEADERBOARD_TOKEN 환경 변수에 "
-        "32자 이상 토큰을 설정하세요."
+try:
+    leaderboard_api = LeaderboardHTTPServer(
+        (bind_ip, LEADERBOARD_PORT),
+        None,
+        get_leaderboard_snapshot,
     )
+except OSError as error:
+    print(f"[랭킹 API 시작 실패] {bind_ip}:{LEADERBOARD_PORT}: {error}")
 else:
-    try:
-        leaderboard_api = LeaderboardHTTPServer(
-            (bind_ip, LEADERBOARD_PORT),
-            leaderboard_token,
-            get_leaderboard_snapshot,
-        )
-    except OSError as error:
-        print(f"[랭킹 API 시작 실패] {bind_ip}:{LEADERBOARD_PORT}: {error}")
-    else:
-        threading.Thread(
-            target=leaderboard_api.serve_forever,
-            daemon=True,
-        ).start()
-        print(
-            f"[랭킹 API] http://{bind_ip}:{LEADERBOARD_PORT}/api/leaderboard"
-        )
+    threading.Thread(
+        target=leaderboard_api.serve_forever,
+        daemon=True,
+    ).start()
+    print(
+        f"[랭킹 API] LAN 전용 읽기 전용 주소: "
+        f"http://{bind_ip}:{LEADERBOARD_PORT}/api/leaderboard"
+    )
 
 while True:
     conn, addr = server.accept()

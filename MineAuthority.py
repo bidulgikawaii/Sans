@@ -14,9 +14,8 @@ def register_mine_placements(
     max_count,
 ):
     if not isinstance(requests, list):
-        return []
+        return player.get("last_mine_request_id", 0)
 
-    accepted_ids = []
     last_request_id = player.get("last_mine_request_id", 0)
     mines = events["mines"]
     for request in requests[:max_count]:
@@ -60,7 +59,6 @@ def register_mine_placements(
             "armed_at": now + arm_delay_ms / 1000,
             "detonates_at": None,
         })
-        accepted_ids.append(request_id)
     return player.get("last_mine_request_id", 0)
 
 
@@ -76,15 +74,15 @@ def advance_mines(
     trigger_delay_ms,
     damage,
 ):
+    active_player_ids = set(active_player_ids)
     hits = []
     live_players = [
         (player_id, players[player_id])
         for player_id in active_player_ids
         if player_id in players and players[player_id].get("hp", 0) > 0
     ]
-
     for mine in tuple(events["mines"]):
-        if mine["owner_id"] not in players:
+        if mine["owner_id"] not in active_player_ids or mine["owner_id"] not in players:
             events["mines"].remove(mine)
             continue
         if mine["detonates_at"] is None:

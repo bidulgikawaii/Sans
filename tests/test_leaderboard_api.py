@@ -15,7 +15,7 @@ class LeaderboardAPITests(unittest.TestCase):
     def setUp(self):
         self.server = LeaderboardHTTPServer(
             ("127.0.0.1", 0),
-            "test-token-that-is-long-enough-123456",
+            None,
             lambda: {"modes": [{"id": "deathmatch", "players": []}]},
         )
         self.thread = threading.Thread(
@@ -35,20 +35,24 @@ class LeaderboardAPITests(unittest.TestCase):
             headers["Authorization"] = f"Bearer {token}"
         return urlopen(Request(url, headers=headers), timeout=2)
 
-    def test_leaderboard_requires_bearer_token(self):
+    def test_leaderboard_returns_snapshot_without_token_setup(self):
+        with self._request("/api/leaderboard") as response:
+            self.assertEqual(response.status, 200)
+            snapshot = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(snapshot["modes"][0]["id"], "deathmatch")
+
+    def test_optional_token_authentication_remains_supported(self):
+        self.server.api_token = "test-token-that-is-long-enough-123456"
         with self.assertRaises(HTTPError) as error:
             self._request("/api/leaderboard")
         self.assertEqual(error.exception.code, 401)
         error.exception.close()
 
-    def test_authenticated_request_returns_current_snapshot(self):
         with self._request(
             "/api/leaderboard",
             "test-token-that-is-long-enough-123456",
         ) as response:
             self.assertEqual(response.status, 200)
-            snapshot = json.loads(response.read().decode("utf-8"))
-        self.assertEqual(snapshot["modes"][0]["id"], "deathmatch")
 
     def test_unknown_path_is_not_exposed(self):
         with self.assertRaises(HTTPError) as error:

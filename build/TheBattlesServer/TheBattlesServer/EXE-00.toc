@@ -67,8 +67,8 @@
  [],
  False,
  False,
- 1793889404,
+ 1793891278,
  [('run.exe',
    'C:\\Users\\orior\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\run.exe',
    'EXECUTABLE')],
- 'C:\\Users\\orior\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314.dll')
+ 'C:\\Users\\orior\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314.DLL')

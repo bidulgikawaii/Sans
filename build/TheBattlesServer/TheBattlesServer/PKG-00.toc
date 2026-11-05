@@ -42,7 +42,7 @@
   ('Server',
    'C:\\Users\\orior\\OneDrive\\Documents\\Sans\\Server.py',
    'PYSOURCE')],
- 'python314.dll',
+ 'python314.DLL',
  True,
  False,
  False,

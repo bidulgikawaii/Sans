@@ -1,0 +1,23 @@
+name: Continue
+version: 1.0.0
+schema: /v1/gateway/responses/
+
+models:
+  - name: BAZE gpt-5.5
+    provider: custom
+    model: gpt-5.5
+    apiBase: https://baze.co
+    apiKey: baze_nPsmUo7nwjoOTw3xhkyJMA08rGA0QemX0HVTxs
+    roles:
+      - chat
+      - edit
+      - apply
+
+tabAutocompleteModel:
+  name: BAZE gpt-5.5
+  provider: custom
+  model: gpt-5.5
+  apiBase: https://baze.co
+  apiKey: baze_nPsmUo7nwjoOTw3xhkyJMA08rGA0QemX0HVTxs
+  roles:
+    - autocomplete

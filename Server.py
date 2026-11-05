@@ -638,11 +638,17 @@ def handle_client(conn, player_id):
                 if len(furniture) == 2:
                     events["destroyed_furniture"].add((int(furniture[0]), int(furniture[1])))
 
-            # 3. 서버에 저장된 해당 유저 데이터 갱신
-            if (
+            # Update player state stored on the server.
+            # Respawn modes keep position server-authoritative while the client is dead.
+            # If another handler has already respawned this player, that player's next
+            # packet can still contain hp=0 and the old death position. Do not let that
+            # stale packet overwrite the fixed team/deathmatch respawn location.
+            client_reports_alive = client_data.get("hp", PLAYER_MAX_HP) > 0
+            can_accept_client_position = (
                 mode not in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN)
-                or players[player_id]["hp"] > 0
-            ):
+                or (players[player_id]["hp"] > 0 and client_reports_alive)
+            )
+            if can_accept_client_position:
                 players[player_id]["posX"] = client_data["posX"]
                 players[player_id]["posY"] = client_data["posY"]
                 if (

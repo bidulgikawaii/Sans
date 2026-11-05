@@ -19,6 +19,11 @@ from Weapon import (
     WEAPON_KEYS,
 )
 from Effects import ParticleSystem
+from MineMechanics import (
+    mine_blast_contains,
+    mine_is_due_to_detonate,
+    trigger_mine,
+)
 from FontAssets import get_game_font
 from MainScreen import MainScreenRenderer
 from Settings import RESERVED_KEYS, get_key, key_bindings, save_settings, settings
@@ -38,6 +43,7 @@ from GameRendering import (
     draw_teleport_anchor,
     draw_visibility_geometry,
     draw_ward,
+    draw_bush_vision_angle,
     draw_linked_clone,
     draw_kill_feed,
     draw_skill_range,
@@ -222,6 +228,17 @@ def get_aim_mouse_position(camera_x=None, camera_y=None):
     return (
         round(player_x + (mouse_x - player_x) * sensitivity),
         round(player_y + (mouse_y - player_y) * sensitivity),
+    )
+
+
+def get_mouse_world_position(camera_x=None, camera_y=None):
+    """Return the world location under the cursor without aim-sensitivity scaling."""
+    if camera_x is None:
+        camera_x = CameraPosX
+    if camera_y is None:
+        camera_y = CameraPosY
+    return screen_to_world(
+        *pygame.mouse.get_pos(), camera_x, camera_y, camera_zoom
     )
 
 
@@ -476,6 +493,8 @@ active_bombs = []
 active_explosions = []
 active_black_holes = []
 active_plasma_beams = []
+active_mines = []
+last_processed_flagdown_reward_id = 0
 knife_attack_until = 0
 hurt_flash_started_at = 0
 supply_drops = []
@@ -742,6 +761,23 @@ def apply_supply_reward(reward_type):
     return message
 
 
+def apply_flagdown_skill_reward(reward):
+    global healing_item_count, system_message
+    skill_name = reward.get("skill")
+    if reward.get("type") == "skill" and add_skill_to_inventory(skill_name):
+        system_message = f"플래그다운 보급: [{skill_name}] 스킬 획득"
+        color = (180, 120, 255)
+    else:
+        healing_item_count += 1
+        system_message = "플래그다운 보급: 중복 스킬 대신 회복 아이템 획득"
+        color = (100, 255, 130)
+    center_x, center_y = get_player_world_center(
+        my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
+    )
+    particles.emit(center_x, center_y, color, count=36, speed=105, lifetime=850, size=7)
+    particles.ring(center_x, center_y, color, count=28, radius=58, lifetime=700, size=5)
+
+
 def use_healing_item():
     global healing_item_count, heal_token, pending_heal_amount, system_message
     if healing_item_count <= 0:
@@ -851,6 +887,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global game_start_banner_until
     global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
     global healing_item_count, mouse_fire_hold
+    global last_processed_flagdown_reward_id
     global settings_overlay_open, settings_key_waiting, settings_dragging
     global match_completed, active_world_weather
     global announced_unique_supply_ids
@@ -876,6 +913,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
         spawn_tiles = get_fixed_spawn_tiles()
     for collection in (
         bullets, remote_bullets, kill_feed, active_bombs, active_explosions,
+        active_mines,
         active_black_holes, active_plasma_beams,
         supply_drops, pending_treasure_destroys, pending_furniture_destroys,
         pending_hit_events, wards, rune_alerts, damage_numbers,
@@ -888,6 +926,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     processed_bush_leaf_event_ids.clear()
     bush_leaf_request_token = 0
     processed_bullet_events.clear()
+    last_processed_flagdown_reward_id = 0
     linked_clones.clear()
     known_linked_clone_ids.clear()
     pending_spectator_skill_events.clear()
@@ -1328,15 +1367,6 @@ def LoadingView():
     ):
         match_seed = network.lobby_status.get("world_seed")
         reset_match_state(regenerate_world=True, world_seed=match_seed)
-        if selected_game_mode == GAME_MODE_FLAGDOWN:
-            available_skills = tuple(
-                skill_name for skill_name in SKILL_BOOK
-                if skill_name not in owned_skills
-            )
-            if available_skills:
-                initial_skill = random.choice(available_skills)
-                add_skill_to_inventory(initial_skill)
-                system_message = f"플래그다운 시작 스킬: [{initial_skill}] 획득"
         world_effects.activate(
             selected_game_mode,
             get_map_world_size(),
@@ -1735,7 +1765,7 @@ def activate_quick_slot(key, reinstall=False):
             skill_cooldowns.pop(skill_name, None)
         return
     if skill_name == "폭탄받아라!":
-        target_x, target_y = screen_to_world(*get_aim_mouse_position(CameraPosX, CameraPosY), CameraPosX, CameraPosY, camera_zoom)
+        target_x, target_y = get_mouse_world_position(CameraPosX, CameraPosY)
         player_x, player_y = get_player_world_center(
             my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
         )
@@ -1772,6 +1802,35 @@ def activate_quick_slot(key, reinstall=False):
         particles.emit(target_x, target_y, (255, 190, 40), count=18, speed=55, lifetime=500, size=6)
         particles.ring(target_x, target_y, (255, 220, 80), radius=35, lifetime=450)
         system_message = "폭탄을 설치했습니다."
+    elif skill_name == "지뢰":
+        target_x, target_y = get_mouse_world_position(CameraPosX, CameraPosY)
+        mine_rect = pygame.Rect(0, 0, 16, 16)
+        mine_rect.center = (round(target_x), round(target_y))
+        if TileGene.check_collision(mine_rect):
+            skill_cooldowns.pop(skill_name, None)
+            system_message = "벽 안에는 지뢰를 설치할 수 없습니다."
+            return
+        if len(active_mines) >= MINE_MAX_COUNT:
+            oldest_mine = active_mines.pop(0)
+            particles.emit(
+                oldest_mine["x"], oldest_mine["y"], (150, 150, 155),
+                count=14, speed=55, lifetime=320, size=4,
+            )
+        break_stealth_on_attack()
+        active_mines.append({
+            "x": target_x,
+            "y": target_y,
+            "armed_at": now + MINE_ARM_DELAY_MS,
+        })
+        particles.emit(
+            target_x, target_y, (230, 175, 85),
+            count=26, speed=65, lifetime=650, size=5,
+        )
+        particles.ring(
+            target_x, target_y, (255, 215, 125),
+            count=20, radius=30, lifetime=550, size=4,
+        )
+        system_message = f"지뢰 설치 완료 ({len(active_mines)}/{MINE_MAX_COUNT})"
     elif skill_name == "자폭":
         center_x, center_y = get_player_world_center(
             my_player.X,
@@ -1901,9 +1960,7 @@ def activate_quick_slot(key, reinstall=False):
         particles.ring(target_x, target_y, (120, 240, 255), count=18, radius=28, lifetime=650, size=4)
         system_message = f"와드를 설치했습니다. 현재 {len(wards)}/{WARD_MAX_COUNT}개"
     elif direct_teleport:
-        target_x, target_y = screen_to_world(
-            *get_aim_mouse_position(CameraPosX, CameraPosY), CameraPosX, CameraPosY, camera_zoom
-        )
+        target_x, target_y = get_mouse_world_position(CameraPosX, CameraPosY)
         old_x = my_player.X + my_player.rect.width / 2
         old_y = my_player.Y + my_player.rect.height / 2
         landing = TileGene.find_teleport_landing(
@@ -2334,7 +2391,7 @@ def _draw_black_holes(surface, now):
         if frames:
             frame = frames[(now // 45) % len(frames)]
             size = max(1, round(BLACK_HOLE_RADIUS * 2.2 * camera_zoom * pulse))
-            image = pygame.transform.smoothscale(frame, (size, size))
+            image = _scale_cached(frame, (size, size))
             surface.blit(image, image.get_rect(center=(round(screen_x), round(screen_y))))
         pygame.draw.circle(surface, (115, 55, 200), (round(screen_x), round(screen_y)), round(radius * pulse), max(1, round(2 * camera_zoom)))
         pygame.draw.circle(surface, (20, 10, 30), (round(screen_x), round(screen_y)), max(4, round(radius * 0.34)))
@@ -2900,6 +2957,7 @@ def GameFrame(practice_mode: bool = False):
     global screen_shake, server_players, bullets, remote_bullets, MousePos, system_message, kill_feed
     global vision_shape_override, vision_skill_until, local_match
     global active_bombs, active_explosions, active_black_holes, active_plasma_beams
+    global active_mines, healing_item_count
     global supply_drops, next_supply_drop_at, pending_heal_amount, active_rune_tile, rune_alerts
     global last_effect_tick, preserve_magazine_after_chest
     global teleport_anchor, teleport_anchor_expires_at
@@ -2913,6 +2971,7 @@ def GameFrame(practice_mode: bool = False):
     global lobby_notice, lobby_notice_until
     global unique_supply_notice, unique_supply_notice_until
     global active_world_weather, match_completed
+    global last_processed_flagdown_reward_id
 
     is_practice_mode = bool(practice_mode or local_match)
     MousePos = pygame.mouse.get_pos()
@@ -3206,6 +3265,11 @@ def GameFrame(practice_mode: bool = False):
     send_data["shield_token"] = shield_token
     send_data["shield_active"] = shield_hp > 0
     send_data["hit_events"] = list(pending_hit_events) if my_player.Hp > 0 else []
+    send_data["owned_skills"] = [
+        skill_name for skill_name in FLAGDOWN_SKILL_NAMES
+        if skill_name in owned_skills
+    ]
+    send_data["flagdown_skill_reward_ack"] = last_processed_flagdown_reward_id
     send_data["supply_spawn_requests"] = list(pending_supply_spawn_requests)
     send_data["supply_collect_ids"] = list(pending_supply_collect_ids)
     send_data["bush_leaf_requests"] = list(pending_bush_leaf_requests)
@@ -3284,6 +3348,18 @@ def GameFrame(practice_mode: bool = False):
                     )
                     active_world_weather = server_weather
             event_snapshot = own_snapshot or {}
+            for reward in _snapshot_events(
+                event_snapshot, "flagdown_skill_rewards"
+            ):
+                reward_id = reward.get("event_id")
+                if (
+                    not isinstance(reward_id, int)
+                    or isinstance(reward_id, bool)
+                    or reward_id <= last_processed_flagdown_reward_id
+                ):
+                    continue
+                apply_flagdown_skill_reward(reward)
+                last_processed_flagdown_reward_id = reward_id
             linked_clones[:] = event_snapshot.get("linked_clones", [])
             current_clone_ids = {
                 clone["clone_id"] for clone in linked_clones
@@ -3746,7 +3822,6 @@ def GameFrame(practice_mode: bool = False):
         MagneticZoneState.draw(display, CameraPosX, CameraPosY, camera_zoom, zone_elapsed_ms)
     world_effects.update(effect_delta, (TileGene.map_width * TileGene.tile_size, TileGene.map_height * TileGene.tile_size))
     world_effects.draw(display, CameraPosX, CameraPosY, camera_zoom)
-    _draw_black_holes(display, now)
     for beam in active_plasma_beams:
         start = world_to_screen(beam["x1"], beam["y1"], CameraPosX, CameraPosY, camera_zoom)
         end = world_to_screen(beam["x2"], beam["y2"], CameraPosX, CameraPosY, camera_zoom)
@@ -4015,6 +4090,139 @@ def GameFrame(practice_mode: bool = False):
                 })
                 _deactivate_bullet(bullet, now)
     remote_bullets = [b for b in remote_bullets if b.is_active]
+
+    remaining_mines = []
+    own_team = frame_server_players.get(network.player_id, {}).get("team_id")
+    mine_trigger_distance = MINE_TRIGGER_RADIUS + IML.Player.get_width() / 2
+    mine_trigger_distance_squared = mine_trigger_distance ** 2
+    for mine in active_mines:
+        if now < mine["armed_at"]:
+            remaining_mines.append(mine)
+            continue
+        if "detonates_at" in mine:
+            if not mine_is_due_to_detonate(mine, now):
+                remaining_mines.append(mine)
+                continue
+            for target_id, target in frame_server_players.items():
+                if (
+                    str(target_id) == str(network.player_id)
+                    or target.get("hp", 0) <= 0
+                    or (
+                        flagdown
+                        and own_team in (0, 1)
+                        and target.get("team_id") == own_team
+                    )
+                ):
+                    continue
+                target_x = target["posX"] + IML.Player.get_width() / 2
+                target_y = target["posY"] + IML.Player.get_height() / 2
+                if mine_blast_contains(mine, target_x, target_y):
+                    pending_hit_events.append({
+                        "target_id": target_id,
+                        "attacker_id": network.player_id,
+                        "damage": MINE_DAMAGE,
+                        "hit_part": "body",
+                        "weapon_id": weapon_state.weapon_id,
+                        "skill_source": "지뢰",
+                    })
+            if (
+                (is_practice_mode or debug_mode)
+                and training_dummy is not None
+                and training_dummy.Hp > 0
+                and mine_blast_contains(
+                    mine,
+                    training_dummy.rect.centerx,
+                    training_dummy.rect.centery,
+                )
+            ):
+                previous_hp = training_dummy.Hp
+                training_dummy.Hp = max(0, training_dummy.Hp - MINE_DAMAGE)
+                damage_numbers.append({
+                    "x": training_dummy.rect.centerx,
+                    "y": training_dummy.rect.top,
+                    "damage": previous_hp - training_dummy.Hp,
+                    "color": (255, 195, 95),
+                    "started_at": now,
+                    "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+                })
+                if training_dummy.Hp <= 0:
+                    training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
+            active_explosions.append({
+                "x": mine["x"],
+                "y": mine["y"],
+                "radius": MINE_BLAST_RADIUS,
+                "started_at": now,
+                "until": now + EXPLOSION_DURATION_MS,
+                "animation": FrameAnimation(
+                    IML.GetExplosionFrames(),
+                    max(
+                        1,
+                        EXPLOSION_DURATION_MS
+                        // max(1, len(IML.GetExplosionFrames())),
+                    ),
+                    loop=False,
+                ),
+            })
+            particles.emit(
+                mine["x"], mine["y"], (255, 115, 40),
+                count=90, speed=210, lifetime=900, size=9, gravity=60,
+            )
+            particles.ring(
+                mine["x"], mine["y"], (255, 225, 125),
+                count=48, radius=MINE_BLAST_RADIUS,
+                lifetime=700, size=6,
+            )
+            particles.emit(
+                mine["x"], mine["y"], (245, 245, 220),
+                count=30, speed=110, lifetime=520, size=5,
+            )
+            screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 7)
+            continue
+        triggered = False
+        for target_id, target in frame_server_players.items():
+            if (
+                str(target_id) == str(network.player_id)
+                or is_hidden_player(target)
+                or (
+                    flagdown
+                    and own_team in (0, 1)
+                    and target.get("team_id") == own_team
+                )
+            ):
+                continue
+            target_x = target["posX"] + IML.Player.get_width() / 2
+            target_y = target["posY"] + IML.Player.get_height() / 2
+            if (
+                (target_x - mine["x"]) ** 2 + (target_y - mine["y"]) ** 2
+                > mine_trigger_distance_squared
+            ):
+                continue
+            triggered = trigger_mine(mine, now)
+            break
+        if (
+            not triggered
+            and (is_practice_mode or debug_mode)
+            and training_dummy is not None
+            and training_dummy.Hp > 0
+        ):
+            target_x = training_dummy.rect.centerx
+            target_y = training_dummy.rect.centery
+            if (
+                (target_x - mine["x"]) ** 2 + (target_y - mine["y"]) ** 2
+                <= mine_trigger_distance_squared
+            ):
+                triggered = trigger_mine(mine, now)
+        if triggered:
+            particles.emit(
+                mine["x"], mine["y"], (255, 75, 45),
+                count=14, speed=65, lifetime=260, size=5,
+            )
+            particles.ring(
+                mine["x"], mine["y"], (255, 110, 50),
+                count=16, radius=26, lifetime=360, size=4,
+            )
+        remaining_mines.append(mine)
+    active_mines[:] = remaining_mines
 
     if my_player.Hp <= 0 and not respawning_mode:
         if not spectator_mode.active or match_result != "defeat":
@@ -4292,6 +4500,18 @@ def GameFrame(practice_mode: bool = False):
         )
 
     display.blit(dark_overlay, (0, 0))
+    if current_vision_shape == VISION_CONE:
+        bush_angle_center = world_to_screen(
+            player_world_x, player_world_y, CameraPosX, CameraPosY, camera_zoom
+        )
+        draw_bush_vision_angle(
+            display,
+            *bush_angle_center,
+            Weapon_Angle,
+            current_vision.vision_fov,
+            BUSH_VISION_FOV_BONUS,
+            current_vision_radius * camera_zoom,
+        )
 
     for target_id, launch in list(bat_launch_animations.items()):
         center_x, center_y, rotation, alpha, finished = get_bat_launch_frame(launch, now)
@@ -4548,6 +4768,72 @@ def GameFrame(practice_mode: bool = False):
         )
         pygame.draw.circle(display, bomb_color, (round(bomb_screen[0]), round(bomb_screen[1])),
                            max(5, round(12 * camera_zoom)), 3)
+    for mine in active_mines:
+        mine_screen = world_to_screen(
+            mine["x"], mine["y"], CameraPosX, CameraPosY, camera_zoom
+        )
+        armed = now >= mine["armed_at"]
+        detonating = "detonates_at" in mine
+        pulse = 1.0 + 0.12 * math.sin(now * 0.018)
+        if detonating:
+            flash_on = int(now / 90) % 2 == 0
+            time_left = max(0, mine["detonates_at"] - now)
+            pulse = 1.0 + 0.25 * math.sin(now * 0.04)
+        else:
+            flash_on = True
+        center = (round(mine_screen[0]), round(mine_screen[1]))
+        radius = max(4, round(9 * camera_zoom))
+        mine_color = (
+            (255, 45, 35) if flash_on else (65, 20, 20)
+        ) if detonating else (
+            (245, 105, 55) if armed else (190, 170, 115)
+        )
+        if detonating:
+            pygame.draw.circle(
+                display,
+                (255, 70, 45) if flash_on else (90, 25, 20),
+                center,
+                max(4, round(MINE_BLAST_RADIUS * camera_zoom)),
+                max(1, round(2 * camera_zoom)),
+            )
+        pygame.draw.circle(
+            display,
+            (35, 20, 20) if detonating else (35, 29, 22),
+            center,
+            max(6, round(14 * camera_zoom * pulse)),
+        )
+        pygame.draw.circle(
+            display,
+            mine_color,
+            center,
+            radius,
+            max(2, round(3 * camera_zoom)),
+        )
+        pygame.draw.circle(
+            display,
+            (
+                (255, 245, 225) if flash_on else (85, 30, 25)
+            ) if detonating else (
+                (255, 225, 135) if armed else (205, 200, 175)
+            ),
+            center,
+            max(2, round(radius * 0.35)),
+        )
+        if armed or detonating:
+            pygame.draw.circle(
+                display,
+                (255, 95, 55) if detonating else (255, 150, 65),
+                center,
+                max(7, round(15 * camera_zoom * pulse)),
+                1,
+            )
+        if detonating and time_left <= MINE_TRIGGER_DELAY_MS * 0.45:
+            pygame.draw.circle(
+                display,
+                (255, 225, 180) if flash_on else (90, 25, 20),
+                center,
+                max(2, round(radius * 0.2)),
+            )
     for explosion in active_explosions:
         explosion_screen = world_to_screen(
             explosion["x"], explosion["y"], CameraPosX, CameraPosY, camera_zoom
@@ -4566,7 +4852,7 @@ def GameFrame(practice_mode: bool = False):
         if IML.GetExplosionFrames():
             explosion["animation"].start(explosion["started_at"])
             explosion_image = explosion["animation"].frame_at(now)
-            explosion_image = pygame.transform.smoothscale(
+            explosion_image = _scale_cached(
                 explosion_image,
                 (max(1, round(explosion_image.get_width() * camera_zoom)), max(1, round(explosion_image.get_height() * camera_zoom))),
             )
@@ -4580,6 +4866,10 @@ def GameFrame(practice_mode: bool = False):
 
     particles.draw(display, CameraPosX, CameraPosY, camera_zoom)
     draw_damage_numbers(display, damage_numbers, CameraPosX, CameraPosY, camera_zoom, GuiFont, now)
+    _draw_black_holes(display, now)
+    for bullet in bullets + remote_bullets:
+        if bullet.is_active and bullet.weapon_id == "blackhole_generator":
+            bullet.draw(display, CameraPosX, CameraPosY, camera_zoom, force_visible=True)
 
     if easter_egg_found and now < easter_egg_flash_until:
         egg_text = GuiFont.render("THE SECRET IS WATCHING", True, (120, 230, 255))

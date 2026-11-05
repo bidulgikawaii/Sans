@@ -1,4 +1,5 @@
 import copy
+import os
 import math
 import socket
 import threading
@@ -12,6 +13,8 @@ from Config import (
     DEATHMATCH_RESPAWN_MS,
     DEATHMATCH_RESPAWN_SAFE_DISTANCE_TILES,
     FLAGDOWN_DURATION_MS,
+    FLAGDOWN_SKILL_NAMES,
+    FLAGDOWN_SKILL_REWARD_INTERVAL_MS,
     FLAGDOWN_MAP_HEIGHT_TILES,
     FLAGDOWN_MAP_WIDTH_TILES,
     FLAGDOWN_SPAWN_TILES,
@@ -25,6 +28,7 @@ from Config import (
     FLAGDOWN_CAPTURE_RADIUS,
     FLAGDOWN_CAPTURE_RATE,
     NETWORK_BUFFER_SIZE,
+    LEADERBOARD_PORT,
     PLAYER_MAX_HP,
     SERVER_IP,
     SERVER_PORT,
@@ -42,6 +46,14 @@ from Lobby import LobbyState
 from Zone import MagneticZone
 from GameModes import get_game_mode, get_game_modes, is_game_mode_registered
 from NetworkProtocol import FramedSocket
+from FlagdownRewards import (
+    acknowledge_flagdown_skill_rewards,
+    update_flagdown_skill_rewards,
+)
+from LeaderboardAPI import (
+    LeaderboardHTTPServer,
+    build_leaderboard_snapshot,
+)
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 bind_ip = SERVER_IP
@@ -292,6 +304,10 @@ def handle_client(conn, player_id):
         "recent_spawn_points": [],
         "spawn_history_initialized": False,
         "kill_count": 0,
+        "flagdown_skill_rewards": [],
+        "flagdown_awarded_skills": [],
+        "next_flagdown_skill_reward_id": 1,
+        "next_flagdown_skill_reward_ms": FLAGDOWN_SKILL_REWARD_INTERVAL_MS,
     }
 
     try:
@@ -333,6 +349,7 @@ def handle_client(conn, player_id):
                         scores = dict(events["kill_scores"])
                         for snapshot_player_id, player in snapshot.items():
                             player["bullets"] = list(pending_bullets)
+                            player["flagdown_skill_rewards"] = []
                             player["spectator_skill_events"] = list(pending_skills)
                             player["linked_clones"] = list(events["linked_clones"])
                             player["winner_id"] = (
@@ -424,6 +441,10 @@ def handle_client(conn, player_id):
                                 "recent_spawn_points": [],
                                 "spawn_history_initialized": False,
                                 "kill_count": 0,
+                                "flagdown_skill_rewards": [],
+                                "flagdown_awarded_skills": [],
+                                "next_flagdown_skill_reward_id": 1,
+                                "next_flagdown_skill_reward_ms": FLAGDOWN_SKILL_REWARD_INTERVAL_MS,
                             })
                         if requested_mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN):
                             spawn_candidates = validated_spawn_tiles(
@@ -766,6 +787,25 @@ def handle_client(conn, player_id):
             )
 
             lobby_state = lobby.status(player_id)
+            if mode == GAME_MODE_FLAGDOWN and lobby.started[mode]:
+                reported_skills = client_data.get("owned_skills", [])
+                if not isinstance(reported_skills, list):
+                    reported_skills = []
+                owned_skills = {
+                    skill for skill in reported_skills
+                    if isinstance(skill, str) and skill in FLAGDOWN_SKILL_NAMES
+                }
+                with player_lock:
+                    acknowledge_flagdown_skill_rewards(
+                        players[player_id],
+                        client_data.get("flagdown_skill_reward_ack"),
+                    )
+                    update_flagdown_skill_rewards(
+                        players[player_id],
+                        lobby_state.get("elapsed_ms", 0),
+                        owned_skills,
+                        FLAGDOWN_SKILL_NAMES,
+                    )
             zone_elapsed_ms = (
                 lobby_state.get("elapsed_ms", 0)
                 if lobby.zone_enabled_for(player_id)
@@ -1011,7 +1051,14 @@ def handle_client(conn, player_id):
                                     else DEATHMATCH_RESPAWN_MS
                                 ) / 1000
                             )
-                        if mode == GAME_MODE_DEATHMATCH and attacker_id != linked_target_id:
+                        if (
+                            mode in (
+                                GAME_MODE_NORMAL,
+                                GAME_MODE_DEATHMATCH,
+                                GAME_MODE_FLAGDOWN,
+                            )
+                            and attacker_id != linked_target_id
+                        ):
                             events["kill_scores"][attacker_id] = (
                                 events["kill_scores"].get(attacker_id, 0) + 1
                             )
@@ -1115,11 +1162,18 @@ def handle_client(conn, player_id):
                                 else DEATHMATCH_RESPAWN_MS
                             ) / 1000
                         )
-                        if mode == GAME_MODE_DEATHMATCH and attacker_id != target_id:
-                            with player_lock:
-                                events["kill_scores"][attacker_id] = (
-                                    events["kill_scores"].get(attacker_id, 0) + 1
-                                )
+                    if (
+                        mode in (
+                            GAME_MODE_NORMAL,
+                            GAME_MODE_DEATHMATCH,
+                            GAME_MODE_FLAGDOWN,
+                        )
+                        and attacker_id != target_id
+                    ):
+                        with player_lock:
+                            events["kill_scores"][attacker_id] = (
+                                events["kill_scores"].get(attacker_id, 0) + 1
+                            )
                     append_kill_event(
                         events,
                         attacker_id,
@@ -1440,6 +1494,11 @@ def handle_client(conn, player_id):
                 last_sent_skill_event_ids[mode] = pending_skill_events[-1]["event_id"]
             for snapshot_player_id, player in snapshot.items():
                 player["bullets"] = list(pending_bullets)
+                player["flagdown_skill_rewards"] = (
+                    list(player.get("flagdown_skill_rewards", []))
+                    if snapshot_player_id == player_id
+                    else []
+                )
                 player["spectator_skill_events"] = list(pending_skill_events)
                 player["linked_clones"] = list(events["linked_clones"])
                 player["destroyed_treasures"] = list(events["destroyed_treasures"])
@@ -1528,7 +1587,51 @@ def handle_client(conn, player_id):
         conn.close()
 
 
+def get_leaderboard_snapshot():
+    with player_lock:
+        game_modes = get_game_modes()
+        started_modes = {
+            mode for mode, started in lobby.started.items() if started
+        }
+        active_player_ids = {
+            definition.mode_id: lobby.active_player_ids(definition.mode_id)
+            for definition in game_modes
+            if definition.mode_id in started_modes
+        }
+        return build_leaderboard_snapshot(
+            game_modes,
+            started_modes,
+            active_player_ids,
+            players,
+            match_events,
+        )
+
+
 print("[서버 켜짐] 클라이언트 연결을 기다리는 중...")
+
+leaderboard_token = os.environ.get("SANS_LEADERBOARD_TOKEN", "")
+if len(leaderboard_token) < 32:
+    print(
+        "[랭킹 API 비활성화] SANS_LEADERBOARD_TOKEN 환경 변수에 "
+        "32자 이상 토큰을 설정하세요."
+    )
+else:
+    try:
+        leaderboard_api = LeaderboardHTTPServer(
+            (bind_ip, LEADERBOARD_PORT),
+            leaderboard_token,
+            get_leaderboard_snapshot,
+        )
+    except OSError as error:
+        print(f"[랭킹 API 시작 실패] {bind_ip}:{LEADERBOARD_PORT}: {error}")
+    else:
+        threading.Thread(
+            target=leaderboard_api.serve_forever,
+            daemon=True,
+        ).start()
+        print(
+            f"[랭킹 API] http://{bind_ip}:{LEADERBOARD_PORT}/api/leaderboard"
+        )
 
 while True:
     conn, addr = server.accept()

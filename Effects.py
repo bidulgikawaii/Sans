@@ -1,7 +1,36 @@
 import math
 import random
+from functools import lru_cache
 
 import pygame
+
+
+@lru_cache(maxsize=2048)
+def _particle_sprite(radius, color, alpha_step, shape, rotation_step):
+    diameter = radius * 2 + 2
+    sprite = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+    center = (diameter // 2, diameter // 2)
+    alpha = round(255 * alpha_step / 15)
+    particle_color = (*color, alpha)
+    if shape == "leaf":
+        leaf_rect = pygame.Rect(
+            radius // 3,
+            radius // 2,
+            max(2, radius * 4 // 3),
+            max(2, radius),
+        )
+        pygame.draw.ellipse(sprite, particle_color, leaf_rect)
+        pygame.draw.line(
+            sprite,
+            (*color, round(180 * alpha_step / 15)),
+            (leaf_rect.left + 1, leaf_rect.bottom - 1),
+            (leaf_rect.right - 1, leaf_rect.top + 1),
+            max(1, radius // 5),
+        )
+        sprite = pygame.transform.rotate(sprite, rotation_step * 15)
+    else:
+        pygame.draw.circle(sprite, particle_color, center, radius)
+    return sprite
 
 
 # 이동량은 초 단위 경과 시간으로 적분하고, 수명은 밀리초 기준으로 감소시킵니다.
@@ -35,41 +64,48 @@ class Particle:
             return
         progress = max(0.0, self.remaining / self.lifetime)
         radius = max(1, round(self.size * progress * zoom))
+        alpha_step = max(0, min(15, round(progress * 15)))
         center = (
             round((self.x - camera_x) * zoom),
             round((self.y - camera_y) * zoom),
         )
-        color = (*self.color, round(255 * progress))
-        if self.shape == "leaf":
-            leaf_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
-            leaf_rect = pygame.Rect(
-                radius // 3,
-                radius // 2,
-                max(2, radius * 4 // 3),
-                max(2, radius),
-            )
-            pygame.draw.ellipse(leaf_surface, color, leaf_rect)
-            vein_color = (*self.color, round(180 * progress))
-            pygame.draw.line(
-                leaf_surface,
-                vein_color,
-                (leaf_rect.left + 1, leaf_rect.bottom - 1),
-                (leaf_rect.right - 1, leaf_rect.top + 1),
-                max(1, radius // 5),
-            )
-            angle = -math.degrees(math.atan2(self.velocity_y, self.velocity_x))
-            leaf_surface = pygame.transform.rotate(leaf_surface, angle)
-            surface.blit(leaf_surface, leaf_surface.get_rect(center=center))
+        culling_radius = radius * 2 if self.shape == "leaf" else radius
+        if (
+            center[0] + culling_radius < 0
+            or center[1] + culling_radius < 0
+            or center[0] - culling_radius >= surface.get_width()
+            or center[1] - culling_radius >= surface.get_height()
+        ):
             return
-        particle_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
-        pygame.draw.circle(particle_surface, color, (radius, radius), radius)
-        surface.blit(particle_surface, (center[0] - radius, center[1] - radius))
+        rotation_step = (
+            round(math.degrees(math.atan2(-self.velocity_y, self.velocity_x)) / 15)
+            % 24
+            if self.shape == "leaf"
+            else 0
+        )
+        sprite = _particle_sprite(
+            radius,
+            tuple(self.color[:3]),
+            alpha_step,
+            self.shape,
+            rotation_step,
+        )
+        sprite_rect = sprite.get_rect(center=center)
+        if sprite_rect.colliderect(surface.get_rect()):
+            surface.blit(sprite, sprite_rect)
 
 
 class ParticleSystem:
+    MAX_PARTICLES = 2500
+
     def __init__(self):
         self.particles = []
         self.size_scale = 1.15
+
+    def _trim_particles(self):
+        overflow = len(self.particles) - self.MAX_PARTICLES
+        if overflow > 0:
+            del self.particles[:overflow]
 
     def emit(self, x, y, color, count=10, speed=80, lifetime=400, size=4, gravity=0.0):
         effective_size = max(1.0, float(size) * self.size_scale)
@@ -90,6 +126,7 @@ class ParticleSystem:
                     gravity,
                 )
             )
+        self._trim_particles()
 
     def ring(self, x, y, color, count=16, radius=40, lifetime=350, size=4):
         effective_size = max(1.0, float(size) * self.size_scale)
@@ -105,6 +142,7 @@ class ParticleSystem:
                     effective_size,
                 )
             )
+        self._trim_particles()
 
     def leaves(self, x, y, count=8, seed=None):
         colors = ((115, 170, 65), (145, 190, 75), (175, 200, 95))
@@ -124,6 +162,7 @@ class ParticleSystem:
                     shape="leaf",
                 )
             )
+        self._trim_particles()
 
     def update(self, delta_ms):
         for particle in self.particles:

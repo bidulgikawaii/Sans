@@ -1,4 +1,4 @@
-"""Build the Sans client and server with PyInstaller.
+"""Build the Sans client, leaderboard, and server with PyInstaller.
 
 Run from the project directory:
     python build.py
@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent
 DIST_DIR = ROOT / "dist"
 BUILD_DIR = ROOT / "build"
 APP_NAME = "TheBattles"
+LEADERBOARD_NAME = "TheBattlesLeaderboard"
 SERVER_NAME = "TheBattlesServer"
 DATA_DIRECTORIES = ("Image", "Font", "Sound")
 
@@ -28,7 +29,11 @@ def pyinstaller_data_arg(directory: str) -> str:
 
 
 def ensure_required_paths() -> None:
-    required = [ROOT / "TheTest.py", ROOT / "Server.py"]
+    required = [
+        ROOT / "TheTest.py",
+        ROOT / "LeaderboardClient.py",
+        ROOT / "Server.py",
+    ]
     required.extend(ROOT / directory for directory in DATA_DIRECTORIES)
     missing = [str(path.relative_to(ROOT)) for path in required if not path.exists()]
     if missing:
@@ -71,6 +76,11 @@ def main() -> int:
     try:
         ensure_required_paths()
         run_pyinstaller("TheTest.py", APP_NAME, windowed=True)
+        run_pyinstaller(
+            "LeaderboardClient.py",
+            LEADERBOARD_NAME,
+            windowed=True,
+        )
         run_pyinstaller("Server.py", SERVER_NAME, windowed=False)
     except FileNotFoundError as error:
         print(f"Build failed: {error}", file=sys.stderr)
@@ -83,6 +93,10 @@ def main() -> int:
 
     print()
     print(f"Client: {DIST_DIR / APP_NAME / (APP_NAME + '.exe')}")
+    print(
+        "Leaderboard: "
+        f"{DIST_DIR / LEADERBOARD_NAME / (LEADERBOARD_NAME + '.exe')}"
+    )
     print(f"Server: {DIST_DIR / SERVER_NAME / (SERVER_NAME + '.exe')}")
     return 0
 

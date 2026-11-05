@@ -6,7 +6,7 @@ from Config import (
     GAME_MODE_DEBUG,
     GAME_MODE_DEATHMATCH,
     GAME_MODE_FLAGDOWN,
-    GAME_MODE_NORMAL,
+    #GAME_MODE_NORMAL,#
     NORMAL_MATCH_MIN_PLAYERS,
 )
 
@@ -49,11 +49,11 @@ def is_game_mode_registered(mode_id):
 
 
 #register_game_mode(GameModeDefinition(
-    #mode_id=GAME_MODE_NORMAL,
-   # label="일반 모드",
+ #   mode_id=GAME_MODE_NORMAL,
+  #  label="일반 모드",
    # min_players=NORMAL_MATCH_MIN_PLAYERS,
-   # zone_enabled=True,
-   # elimination=True,
+    #zone_enabled=True,
+    #elimination=True,
 #))
 register_game_mode(GameModeDefinition(
     mode_id=GAME_MODE_DEBUG,

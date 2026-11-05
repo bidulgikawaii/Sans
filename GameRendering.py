@@ -1,6 +1,7 @@
 import math
 import pygame
 from FontAssets import get_game_font
+from Config import WARD_DISPLAY_RADIUS
 
 
 _scaled_images = {}
@@ -177,6 +178,34 @@ def draw_visibility_geometry(surface, geometry, camera_x, camera_y, zoom):
             pygame.draw.polygon(surface, (0, 0, 0, 0), points)
 
 
+def draw_bush_vision_angle(
+    surface, center_x, center_y, direction_angle, fov_angle, bonus_angle, radius
+):
+    """Mark the extra cone edges used to spot players hiding in nearby bushes."""
+    direction = math.radians(direction_angle)
+    base_half = math.radians(fov_angle / 2)
+    bonus_half = math.radians(bonus_angle / 2)
+    center = (round(center_x), round(center_y))
+    for sign in (-1, 1):
+        inner_angle = direction + sign * base_half
+        outer_angle = direction + sign * (base_half + bonus_half)
+        outer = (
+            round(center_x + math.cos(outer_angle) * radius),
+            round(center_y + math.sin(outer_angle) * radius),
+        )
+        pygame.draw.line(surface, (70, 235, 150), center, outer, 3)
+        pygame.draw.line(surface, (205, 255, 220), center, outer, 1)
+        arc_points = []
+        for step in range(7):
+            angle = inner_angle + (outer_angle - inner_angle) * step / 6
+            arc_points.append((
+                round(center_x + math.cos(angle) * radius),
+                round(center_y + math.sin(angle) * radius),
+            ))
+        if len(arc_points) > 1:
+            pygame.draw.lines(surface, (90, 245, 165), False, arc_points, 2)
+
+
 def draw_player_hitboxes(surface, head_rect, body_rect, camera_x, camera_y, zoom):
     for world_rect, color in (
         (head_rect, (255, 80, 80)),
@@ -332,7 +361,7 @@ def draw_ammo_status(
 def draw_ward(surface, ward_x, ward_y, camera_x, camera_y, zoom, image=None):
     screen_x = round((ward_x - camera_x) * zoom)
     screen_y = round((ward_y - camera_y) * zoom)
-    radius = max(10, round(20 * zoom))
+    radius = max(8, round(WARD_DISPLAY_RADIUS * zoom))
     pygame.draw.circle(surface, (120, 240, 255), (screen_x, screen_y), radius, 2)
     if image is not None:
         size = max(1, round(radius * 2))

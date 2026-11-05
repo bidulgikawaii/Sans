@@ -323,6 +323,8 @@ WEAPON_PREVIEW_GETTERS = (
     ("smg", IML.GetGigwan),
     ("shotgun", IML.GetShotGun),
     ("rifle", IML.GetLiple),
+    ("blackhole_generator", lambda: IML.GetWeaponImage("blackhole_generator")),
+    ("plasma_cannon", lambda: IML.GetWeaponImage("plasma_cannon")),
 )
 
 def get_fixed_spawn_tiles():
@@ -472,6 +474,8 @@ next_client_bullet_token = 1
 debug_mode = False
 active_bombs = []
 active_explosions = []
+active_black_holes = []
+active_plasma_beams = []
 knife_attack_until = 0
 hurt_flash_started_at = 0
 supply_drops = []
@@ -841,7 +845,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY
     global camera_fov, camera_zoom
     global Weapon_Angle, Weapon_Pos, screen_shake, knife_attack_until
-    global hurt_flash_started_at
+    global hurt_flash_started_at, shield_hp
     global bush_entered_at, next_bush_leaf_at
     global weapon_fire_until, weapon_smoke_until, aim_lock_until, aim_locked_pos
     global game_start_banner_until
@@ -872,6 +876,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
         spawn_tiles = get_fixed_spawn_tiles()
     for collection in (
         bullets, remote_bullets, kill_feed, active_bombs, active_explosions,
+        active_black_holes, active_plasma_beams,
         supply_drops, pending_treasure_destroys, pending_furniture_destroys,
         pending_hit_events, wards, rune_alerts, damage_numbers,
     ):
@@ -2285,6 +2290,197 @@ def _assign_client_bullet_token(bullet):
     next_client_bullet_token += 1
 
 
+def _line_rect_intersects(x1, y1, x2, y2, rect):
+    return bool(rect.clipline((x1, y1), (x2, y2))) or rect.collidepoint(x1, y1)
+
+
+def _ray_endpoint(start_x, start_y, angle, max_distance):
+    step = max(4, TileGene.tile_size // 4)
+    last_x, last_y = start_x, start_y
+    for distance in range(step, round(max_distance) + step, step):
+        ray_x = start_x + math.cos(angle) * distance
+        ray_y = start_y + math.sin(angle) * distance
+        if TileGene.segment_wall_collision(last_x, last_y, ray_x, ray_y):
+            return last_x, last_y
+        last_x, last_y = ray_x, ray_y
+    return last_x, last_y
+
+
+def _spawn_black_hole(x, y, owner_id, now):
+    active_black_holes.append({
+        "x": x,
+        "y": y,
+        "owner_id": owner_id,
+        "started_at": now,
+        "until": now + BLACK_HOLE_DURATION_MS,
+        "next_damage_at": now,
+    })
+    particles.ring(x, y, (160, 90, 255), count=42, radius=BLACK_HOLE_RADIUS, lifetime=900, size=5)
+    particles.emit(x, y, (95, 40, 160), count=42, speed=120, lifetime=800, size=6)
+
+
+def _deactivate_bullet(bullet, now):
+    if bullet.is_active and bullet.weapon_id == "blackhole_generator":
+        _spawn_black_hole(bullet.x, bullet.y, bullet.owner_id, now)
+    bullet.is_active = False
+
+
+def _draw_black_holes(surface, now):
+    frames = IML.GetBlackHoleEffectFrames()
+    for hole in active_black_holes:
+        screen_x, screen_y = world_to_screen(hole["x"], hole["y"], CameraPosX, CameraPosY, camera_zoom)
+        radius = max(2, round(BLACK_HOLE_RADIUS * camera_zoom))
+        pulse = 1.0 + 0.10 * math.sin(now * 0.018)
+        if frames:
+            frame = frames[(now // 45) % len(frames)]
+            size = max(1, round(BLACK_HOLE_RADIUS * 2.2 * camera_zoom * pulse))
+            image = pygame.transform.smoothscale(frame, (size, size))
+            surface.blit(image, image.get_rect(center=(round(screen_x), round(screen_y))))
+        pygame.draw.circle(surface, (115, 55, 200), (round(screen_x), round(screen_y)), round(radius * pulse), max(1, round(2 * camera_zoom)))
+        pygame.draw.circle(surface, (20, 10, 30), (round(screen_x), round(screen_y)), max(4, round(radius * 0.34)))
+
+
+def _apply_pull_to_player(player, hole_x, hole_y, strength):
+    center_x = player.X + player.rect.width / 2
+    center_y = player.Y + player.rect.height / 2
+    dx = hole_x - center_x
+    dy = hole_y - center_y
+    distance = max(1.0, math.hypot(dx, dy))
+    if distance > BLACK_HOLE_RADIUS:
+        return
+    force = strength * (1.0 - distance / BLACK_HOLE_RADIUS) * 10
+    player.Move(dx / distance * force, dy / distance * force)
+
+
+def _update_black_holes(now, frame_server_players, is_practice_mode):
+    global active_black_holes
+    active_black_holes = [hole for hole in active_black_holes if now < hole["until"]]
+    for hole in active_black_holes:
+        hole_x, hole_y = hole["x"], hole["y"]
+        for bullet in bullets + remote_bullets:
+            if not bullet.is_active:
+                continue
+            dx = hole_x - bullet.x
+            dy = hole_y - bullet.y
+            distance = max(1.0, math.hypot(dx, dy))
+            if distance <= BLACK_HOLE_RADIUS:
+                force = BLACK_HOLE_PULL_STRENGTH * (1.0 - distance / BLACK_HOLE_RADIUS)
+                bullet.speed_x += dx / distance * force
+                bullet.speed_y += dy / distance * force
+        if str(hole.get("owner_id")) != str(network.player_id) and my_player.Hp > 0:
+            _apply_pull_to_player(my_player, hole_x, hole_y, BLACK_HOLE_PULL_STRENGTH)
+        if (is_practice_mode or debug_mode) and training_dummy is not None and training_dummy.Hp > 0:
+            dummy_dx = hole_x - training_dummy.rect.centerx
+            dummy_dy = hole_y - training_dummy.rect.centery
+            dummy_distance = max(1.0, math.hypot(dummy_dx, dummy_dy))
+            if dummy_distance <= BLACK_HOLE_RADIUS:
+                force = BLACK_HOLE_PULL_STRENGTH * (1.0 - dummy_distance / BLACK_HOLE_RADIUS) * 8
+                training_dummy.X += dummy_dx / dummy_distance * force
+                training_dummy.Y += dummy_dy / dummy_distance * force
+                training_dummy.rect.topleft = (round(training_dummy.X), round(training_dummy.Y))
+                training_dummy._update_hitboxes()
+        if now < hole["next_damage_at"]:
+            continue
+        hole["next_damage_at"] = now + BLACK_HOLE_DAMAGE_INTERVAL_MS
+        if str(hole.get("owner_id")) == str(network.player_id):
+            for p_id, p_info in frame_server_players.items():
+                if str(p_id) == str(network.player_id) or is_hidden_player(p_info):
+                    continue
+                target_x = p_info["posX"] + IML.Player.get_width() / 2
+                target_y = p_info["posY"] + IML.Player.get_height() / 2
+                if math.hypot(target_x - hole_x, target_y - hole_y) <= BLACK_HOLE_RADIUS:
+                    pending_hit_events.append({
+                        "target_id": p_id,
+                        "attacker_id": network.player_id,
+                        "damage": BLACK_HOLE_DAMAGE,
+                        "hit_part": "body",
+                        "weapon_id": "blackhole_generator",
+                    })
+        if (is_practice_mode or debug_mode) and training_dummy is not None and training_dummy.Hp > 0:
+            if math.hypot(training_dummy.rect.centerx - hole_x, training_dummy.rect.centery - hole_y) <= BLACK_HOLE_RADIUS:
+                previous_hp = training_dummy.Hp
+                training_dummy.Hp = max(0, training_dummy.Hp - BLACK_HOLE_DAMAGE)
+                damage_numbers.append({
+                    "x": training_dummy.rect.centerx,
+                    "y": training_dummy.rect.top,
+                    "damage": previous_hp - training_dummy.Hp,
+                    "color": (180, 120, 255),
+                    "started_at": now,
+                    "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+                })
+                if training_dummy.Hp <= 0:
+                    training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
+
+
+def fire_blackhole_generator():
+    global system_message, weapon_fire_until, weapon_smoke_until
+    if not weapon_state.can_fire():
+        system_message = "블랙홀생성기 재사용 대기 중입니다."
+        return
+    break_stealth_on_attack()
+    center_x, center_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
+    target_x, target_y = screen_to_world(*get_aim_mouse_position(AimCameraPosX, AimCameraPosY), AimCameraPosX, AimCameraPosY, camera_zoom)
+    angle = math.atan2(target_y - center_y, target_x - center_x)
+    muzzle_x = center_x + math.cos(angle) * 44
+    muzzle_y = center_y + math.sin(angle) * 44
+    bullet = Bullet(weapon_state.config.bullet_size, damage=0, owner_id=network.player_id, weapon_id="blackhole_generator")
+    _assign_client_bullet_token(bullet)
+    bullet.launch(muzzle_x, muzzle_y, muzzle_x + math.cos(angle) * BULLET_TARGET_DISTANCE, muzzle_y + math.sin(angle) * BULLET_TARGET_DISTANCE, speed=weapon_state.config.bullet_speed)
+    bullet.just_fired = True
+    bullet.life_time = weapon_state.config.bullet_lifetime
+    bullets.append(bullet)
+    weapon_state.consume_round()
+    animation_started_at = pygame.time.get_ticks()
+    weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
+    weapon_smoke_until = animation_started_at + WEAPON_SMOKE_ANIMATION_MS
+    particles.emit(muzzle_x, muzzle_y, (155, 85, 255), count=18, speed=85, lifetime=380, size=5)
+
+
+def fire_plasma_cannon():
+    global system_message, weapon_fire_until, weapon_smoke_until
+    if not weapon_state.can_fire():
+        return
+    break_stealth_on_attack()
+    center_x, center_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
+    target_x, target_y = screen_to_world(*get_aim_mouse_position(AimCameraPosX, AimCameraPosY), AimCameraPosX, AimCameraPosY, camera_zoom)
+    angle = math.atan2(target_y - center_y, target_x - center_x)
+    muzzle_x = center_x + math.cos(angle) * 48
+    muzzle_y = center_y + math.sin(angle) * 48
+    end_x, end_y = _ray_endpoint(muzzle_x, muzzle_y, angle, PLASMA_RANGE)
+    active_plasma_beams.append({"x1": muzzle_x, "y1": muzzle_y, "x2": end_x, "y2": end_y, "until": pygame.time.get_ticks() + PLASMA_BEAM_DURATION_MS})
+    candidates = []
+    for p_id, p_info in server_players.items():
+        if str(p_id) == str(network.player_id) or is_hidden_player(p_info):
+            continue
+        head, body = Player.hitboxes_for_position(p_info["posX"], p_info["posY"], IML.Player.get_width(), IML.Player.get_height())
+        hit_part = "head" if _line_rect_intersects(muzzle_x, muzzle_y, end_x, end_y, head) else "body" if _line_rect_intersects(muzzle_x, muzzle_y, end_x, end_y, body) else None
+        if hit_part:
+            distance = math.hypot((p_info["posX"] + IML.Player.get_width() / 2) - muzzle_x, (p_info["posY"] + IML.Player.get_height() / 2) - muzzle_y)
+            candidates.append((distance, p_id, hit_part))
+    if candidates:
+        _, target_id, hit_part = min(candidates, key=lambda item: item[0])
+        pending_hit_events.append({
+            "target_id": target_id,
+            "attacker_id": network.player_id,
+            "damage": PLASMA_DAMAGE,
+            "hit_part": "body",
+            "weapon_id": "plasma_cannon",
+        })
+    if (debug_mode or ScreenState == "PracticeView") and training_dummy is not None and training_dummy.Hp > 0:
+        hit_part = "head" if _line_rect_intersects(muzzle_x, muzzle_y, end_x, end_y, training_dummy.head_hitbox) else "body" if _line_rect_intersects(muzzle_x, muzzle_y, end_x, end_y, training_dummy.body_hitbox) else None
+        if hit_part:
+            previous_hp = training_dummy.Hp
+            training_dummy.Hp = max(0, training_dummy.Hp - PLASMA_DAMAGE)
+            damage_numbers.append({"x": training_dummy.rect.centerx, "y": training_dummy.rect.top, "damage": previous_hp - training_dummy.Hp, "color": (100, 225, 255), "started_at": pygame.time.get_ticks(), "lifetime": DAMAGE_TEXT_LIFETIME_MS})
+            if training_dummy.Hp <= 0:
+                training_dummy.respawn_at = pygame.time.get_ticks() + TRAINING_DUMMY_RESPAWN_MS
+    weapon_state.consume_round()
+    animation_started_at = pygame.time.get_ticks()
+    weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
+    weapon_smoke_until = animation_started_at + WEAPON_SMOKE_ANIMATION_MS
+    particles.emit(muzzle_x, muzzle_y, (100, 225, 255), count=6, speed=45, lifetime=160, size=3)
+
+
 def fire_stun_bullet():
     global system_message
     if not weapon_state.can_fire():
@@ -2349,6 +2545,14 @@ def fire_bullet():
 
     if weapon_state.is_reloading_now():
         system_message = "재장전 중입니다."
+        return
+
+    if weapon_state.weapon_id == "blackhole_generator":
+        fire_blackhole_generator()
+        return
+
+    if weapon_state.weapon_id == "plasma_cannon":
+        fire_plasma_cannon()
         return
 
     if weapon_state.weapon_id == "flaregun":
@@ -2695,12 +2899,13 @@ def GameFrame(practice_mode: bool = False):
     global ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, match_result, local_stun_until, zone_elapsed_ms
     global screen_shake, server_players, bullets, remote_bullets, MousePos, system_message, kill_feed
     global vision_shape_override, vision_skill_until, local_match
-    global active_bombs, active_explosions, supply_drops, next_supply_drop_at, pending_heal_amount, active_rune_tile, rune_alerts
+    global active_bombs, active_explosions, active_black_holes, active_plasma_beams
+    global supply_drops, next_supply_drop_at, pending_heal_amount, active_rune_tile, rune_alerts
     global last_effect_tick, preserve_magazine_after_chest
     global teleport_anchor, teleport_anchor_expires_at
     global damage_numbers, easter_egg_found, easter_egg_flash_until
     global local_kill_count, match_elapsed_ms, respawn_ms_remaining
-    global hurt_flash_started_at
+    global hurt_flash_started_at, shield_hp
     global bush_entered_at, next_bush_leaf_at
     global bush_leaf_request_token
     global next_unique_supply_drop_at
@@ -2954,6 +3159,8 @@ def GameFrame(practice_mode: bool = False):
                     training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
     active_bombs = pending_bombs
     active_explosions = [explosion for explosion in active_explosions if now < explosion["until"]]
+    _update_black_holes(now, frame_server_players, is_practice_mode)
+    active_plasma_beams[:] = [beam for beam in active_plasma_beams if now < beam["until"]]
 
     # ★ [정리] 서버 데이터 동기화 - 필요한 움직임 데이터만 전송
     send_data["posX"] = my_player.X
@@ -3368,6 +3575,7 @@ def GameFrame(practice_mode: bool = False):
                 respawn_ms_remaining = int(own_snapshot.get("respawn_ms_remaining", 0))
                 was_dead = my_player.Hp <= 0
                 my_player.Hp = own_snapshot.get("hp", my_player.Hp)
+                shield_hp = int(own_snapshot.get("shield_hp", shield_hp))
                 if respawning_mode and was_dead and my_player.Hp > 0:
                     my_player.X = own_snapshot.get("posX", my_player.X)
                     my_player.Y = own_snapshot.get("posY", my_player.Y)
@@ -3538,6 +3746,12 @@ def GameFrame(practice_mode: bool = False):
         MagneticZoneState.draw(display, CameraPosX, CameraPosY, camera_zoom, zone_elapsed_ms)
     world_effects.update(effect_delta, (TileGene.map_width * TileGene.tile_size, TileGene.map_height * TileGene.tile_size))
     world_effects.draw(display, CameraPosX, CameraPosY, camera_zoom)
+    _draw_black_holes(display, now)
+    for beam in active_plasma_beams:
+        start = world_to_screen(beam["x1"], beam["y1"], CameraPosX, CameraPosY, camera_zoom)
+        end = world_to_screen(beam["x2"], beam["y2"], CameraPosX, CameraPosY, camera_zoom)
+        pygame.draw.line(display, (70, 205, 255), tuple(map(round, start)), tuple(map(round, end)), max(3, round(6 * camera_zoom)))
+        pygame.draw.line(display, (230, 255, 255), tuple(map(round, start)), tuple(map(round, end)), max(1, round(2 * camera_zoom)))
 
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
     if vision_skill_until > now:
@@ -3563,6 +3777,10 @@ def GameFrame(practice_mode: bool = False):
 
     for bullet in bullets:
         bullet.update()
+        if not bullet.is_active:
+            if bullet.weapon_id == "blackhole_generator":
+                _spawn_black_hole(bullet.x, bullet.y, bullet.owner_id, now)
+            continue
 
         if bullet.is_active:
             if not bullet.pierces_walls:
@@ -3572,17 +3790,17 @@ def GameFrame(practice_mode: bool = False):
                     if TileGene.destroy_furniture(tile_x, tile_y):
                         pending_furniture_destroys.append((tile_x, tile_y))
                         particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
-                    bullet.is_active = False
+                    _deactivate_bullet(bullet, now)
                     continue
                 if TileGene.segment_wall_collision(
                     bullet.previous_x, bullet.previous_y, bullet.x, bullet.y
                 ):
-                    bullet.is_active = False
+                    _deactivate_bullet(bullet, now)
                     continue
             treasure_position = TileGene.treasure_at(bullet.rect)
             if treasure_position:
                 collect_treasure(treasure_position, from_bullet=True)
-                bullet.is_active = False
+                _deactivate_bullet(bullet, now)
                 continue
             for clone in linked_clones:
                 clone_rect = pygame.Rect(
@@ -3606,7 +3824,7 @@ def GameFrame(practice_mode: bool = False):
                         "impact_x": bullet.x,
                         "impact_y": bullet.y,
                     })
-                    bullet.is_active = False
+                    _deactivate_bullet(bullet, now)
                     break
             if not bullet.is_active:
                 continue
@@ -3631,7 +3849,7 @@ def GameFrame(practice_mode: bool = False):
                         "impact_x": bullet.x,
                         "impact_y": bullet.y,
                     })
-                    bullet.is_active = False
+                    _deactivate_bullet(bullet, now)
                     impact_color = (
                         (100, 225, 255)
                         if bullet.stun_ms or bullet.weapon_id == "spirit_trial"
@@ -3677,7 +3895,7 @@ def GameFrame(practice_mode: bool = False):
                         lifetime=500 if bullet.weapon_id == "spirit_trial" else 350,
                         size=5 if bullet.weapon_id == "spirit_trial" else 4,
                     )
-                    bullet.is_active = False
+                    _deactivate_bullet(bullet, now)
                     if training_dummy.Hp <= 0:
                         training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
                     break
@@ -3723,6 +3941,10 @@ def GameFrame(practice_mode: bool = False):
 
     for bullet in remote_bullets:
         bullet.update()
+        if not bullet.is_active:
+            if bullet.weapon_id == "blackhole_generator":
+                _spawn_black_hole(bullet.x, bullet.y, bullet.owner_id, now)
+            continue
         if bullet.is_active:
             destructible = TileGene.destructible_collision(bullet.collision_rect)
             if destructible:
@@ -3730,7 +3952,7 @@ def GameFrame(practice_mode: bool = False):
                 if TileGene.destroy_furniture(tile_x, tile_y):
                     pending_furniture_destroys.append((tile_x, tile_y))
                     particles.emit(bullet.x, bullet.y, (180, 135, 90), count=20, speed=90, lifetime=500, size=5)
-                    bullet.is_active = False
+                    _deactivate_bullet(bullet, now)
         if (
             bullet.is_active
             and not bullet.pierces_walls
@@ -3738,7 +3960,7 @@ def GameFrame(practice_mode: bool = False):
                 bullet.previous_x, bullet.previous_y, bullet.x, bullet.y
             )
         ):
-            bullet.is_active = False
+            _deactivate_bullet(bullet, now)
         if bullet.is_active:
             for clone in linked_clones:
                 clone_rect = pygame.Rect(
@@ -3765,7 +3987,7 @@ def GameFrame(practice_mode: bool = False):
                         "impact_x": bullet.x,
                         "impact_y": bullet.y,
                     })
-                    bullet.is_active = False
+                    _deactivate_bullet(bullet, now)
                     break
         if bullet.is_active:
             if my_player.head_hitbox.colliderect(bullet.rect):
@@ -3791,7 +4013,7 @@ def GameFrame(practice_mode: bool = False):
                     "impact_x": bullet.x,
                     "impact_y": bullet.y,
                 })
-                bullet.is_active = False
+                _deactivate_bullet(bullet, now)
     remote_bullets = [b for b in remote_bullets if b.is_active]
 
     if my_player.Hp <= 0 and not respawning_mode:
@@ -4647,6 +4869,16 @@ def GameFrame(practice_mode: bool = False):
     # [커스텀 가능] HP 텍스트 표시 폰트 (GuiFont 사용)
     hp_text = GuiFont.render(f"HP: {my_player.Hp} / {my_player.MaxHp}", True, (255, 255, 255))
     display.blit(hp_text, (ui_x + HP_FRAME_SIZE[0] + 15, ui_y + 30))
+    if shield_hp > 0:
+        shield_bar = pygame.Rect(ui_x + HP_FRAME_SIZE[0] + 15, ui_y + 62, 180, 14)
+        pygame.draw.rect(display, (18, 34, 46), shield_bar, border_radius=5)
+        shield_fill = shield_bar.copy()
+        shield_fill.width = round(shield_bar.width * max(0, min(SHIELD_HP, shield_hp)) / max(1, SHIELD_HP))
+        if shield_fill.width > 0:
+            pygame.draw.rect(display, (90, 215, 255), shield_fill, border_radius=5)
+        pygame.draw.rect(display, (165, 235, 255), shield_bar, 1, border_radius=5)
+        shield_text = KillFeedFont.render(f"Shield: {shield_hp} / {SHIELD_HP}", True, (185, 240, 255))
+        display.blit(shield_text, (shield_bar.right + 10, shield_bar.y - 5))
 
     # [커스텀 가능] 플레이어 ID 표시 폰트 (GuiFont 사용)
     id_text = GuiFont.render(f"ID: {network.player_id}", True, (255, 255, 255))

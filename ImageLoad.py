@@ -232,7 +232,7 @@ class Imageload:
             del image, visible
         return frames
 
-        @staticmethod
+    @staticmethod
     def _create_flaregun_image():
         image = pygame.Surface((72, 36), pygame.SRCALPHA)
         pygame.draw.rect(image, (70, 75, 90), (13, 10, 48, 14), border_radius=4)
@@ -336,7 +336,7 @@ class Imageload:
     def GetHurtImage(self):
         return self.Hurt
 
-        def GetExplosionFrames(self):
+    def GetExplosionFrames(self):
         return self.Expo
 
     def GetBlackHoleEffectFrames(self):

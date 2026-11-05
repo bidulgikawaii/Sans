@@ -39,8 +39,10 @@ class Imageload:
         "smg": "Gigwan",
         "sniper": "Sniper",
         "shotgun": "ShotGun",
-        "flaregun": "FlareGun",
+                "flaregun": "FlareGun",
         "bat": "BatIcon",
+        "blackhole_generator": "BlackHoleGun",
+        "plasma_cannon": "PlasmaGun",
 
     }
 
@@ -69,8 +71,22 @@ class Imageload:
         )
         self.BatIcon = self.Bat[0] if self.Bat else self._create_flaregun_image()
         self.Expo = self._load_animation("Expo", (128, 128))
+        self.BlackHoleEffect = self._load_animation(
+            "black-hole_", (160, 160), directory="Black_Hole_Effect"
+        )
+        self.BlackHoleBullet = self._load_animation(
+            "black-hole_", (48, 48), directory="black_hole_Bullet"
+        )
         flaregun = self._load_scaled_image("flaregun.png", (96, 48))
         self.FlareGun = flaregun if flaregun is not None else self._create_flaregun_image()
+        self.PlasmaGun = self._load_scaled_image("plazmaGun.png", (128, 64))
+        if self.PlasmaGun is None:
+            self.PlasmaGun = self._create_plasma_gun_image()
+        self.BlackHoleGun = (
+            self.BlackHoleBullet[0]
+            if self.BlackHoleBullet
+            else self._create_blackhole_gun_image()
+        )
         self.Sniper = self._load_scaled_image("Sniper.png", (192, 64))
         shotgun = self._load_scaled_image("ShotGun_3.png", (128, 64))
         self.ShotGun = [shotgun] if shotgun is not None else []
@@ -216,7 +232,7 @@ class Imageload:
             del image, visible
         return frames
 
-    @staticmethod
+        @staticmethod
     def _create_flaregun_image():
         image = pygame.Surface((72, 36), pygame.SRCALPHA)
         pygame.draw.rect(image, (70, 75, 90), (13, 10, 48, 14), border_radius=4)
@@ -224,6 +240,25 @@ class Imageload:
         pygame.draw.rect(image, (180, 190, 200), (55, 13, 15, 8), border_radius=2)
         pygame.draw.polygon(image, (50, 55, 65), ((20, 22), (38, 22), (33, 35), (23, 35)))
         pygame.draw.circle(image, (255, 225, 145), (45, 17), 3)
+        return image
+
+    @staticmethod
+    def _create_plasma_gun_image():
+        image = pygame.Surface((96, 48), pygame.SRCALPHA)
+        pygame.draw.rect(image, (35, 55, 85), (12, 14, 58, 16), border_radius=5)
+        pygame.draw.rect(image, (80, 210, 255), (53, 11, 28, 22), border_radius=4)
+        pygame.draw.polygon(image, (45, 60, 95), ((18, 28), (42, 28), (34, 44), (20, 44)))
+        pygame.draw.circle(image, (220, 255, 255), (68, 22), 5)
+        return image
+
+    @staticmethod
+    def _create_blackhole_gun_image():
+        image = pygame.Surface((96, 48), pygame.SRCALPHA)
+        pygame.draw.rect(image, (32, 28, 48), (12, 14, 62, 16), border_radius=5)
+        pygame.draw.rect(image, (110, 70, 170), (48, 10, 30, 24), border_radius=5)
+        pygame.draw.circle(image, (25, 10, 38), (66, 22), 9)
+        pygame.draw.circle(image, (190, 120, 255), (66, 22), 11, 2)
+        pygame.draw.polygon(image, (42, 32, 58), ((20, 28), (44, 28), (36, 44), (23, 44)))
         return image
 
     def _load_title_images(self):
@@ -301,8 +336,11 @@ class Imageload:
     def GetHurtImage(self):
         return self.Hurt
 
-    def GetExplosionFrames(self):
+        def GetExplosionFrames(self):
         return self.Expo
+
+    def GetBlackHoleEffectFrames(self):
+        return self.BlackHoleEffect
 
     def GetTileTest(self):
         return self.Tile

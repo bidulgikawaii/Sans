@@ -1,7 +1,14 @@
 from dataclasses import dataclass
 import random
 import time
-from Config import DEFAULT_WEAPON_ID, WEAPON_VISION_RADIUS
+from Config import (
+    BLACK_HOLE_COOLDOWN_MS,
+    DEFAULT_WEAPON_ID,
+    PLASMA_DAMAGE,
+    PLASMA_FIRE_INTERVAL,
+    PLASMA_RANGE,
+    WEAPON_VISION_RADIUS,
+)
 
 
 @dataclass(frozen=True)
@@ -76,6 +83,21 @@ SPECIAL_CRATE_WEAPONS = {
         "배트", damage=20, magazine_size=0, reserve_ammo=0,
         fire_interval=0.5, reload_time=0.0, projectile=False, recoil=0.0,
         bullet_lifetime=0.2, vision_radius=WEAPON_VISION_RADIUS,
+        vision_fov=180, vision_width=420,
+    ),
+    "blackhole_generator": WeaponConfig(
+        "블랙홀생성기", damage=0, magazine_size=0, reserve_ammo=0,
+        fire_interval=BLACK_HOLE_COOLDOWN_MS / 1000, reload_time=0.0,
+        projectile=False, recoil=0.0, bullet_size=5, bullet_speed=14.0,
+        bullet_lifetime=1.8, vision_radius=WEAPON_VISION_RADIUS,
+        vision_fov=180, vision_width=420,
+    ),
+    "plasma_cannon": WeaponConfig(
+        "찌리찌리짜라짜라", damage=PLASMA_DAMAGE,
+        magazine_size=0, reserve_ammo=0,
+        fire_interval=PLASMA_FIRE_INTERVAL, automatic=True,
+        reload_time=0.0, projectile=False, recoil=0.0,
+        bullet_lifetime=0.12, vision_radius=PLASMA_RANGE,
         vision_fov=180, vision_width=420,
     ),
 }

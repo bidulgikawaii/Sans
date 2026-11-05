@@ -50,6 +50,12 @@ class Bullet:
             pygame.draw.ellipse(self.surface, (40, 185, 255, 75), (0, 1, 34, 14))
             pygame.draw.ellipse(self.surface, (110, 230, 255, 210), (4, 4, 25, 8))
             pygame.draw.ellipse(self.surface, (235, 255, 255), (10, 5, 15, 6))
+        elif weapon_id == "blackhole_generator":
+            self.surface = pygame.Surface((32, 32), pygame.SRCALPHA)
+            pygame.draw.circle(self.surface, (95, 35, 150, 90), (16, 16), 15)
+            pygame.draw.circle(self.surface, (20, 10, 35, 245), (16, 16), 10)
+            pygame.draw.circle(self.surface, (185, 115, 255, 230), (16, 16), 6, 2)
+            pygame.draw.circle(self.surface, (255, 245, 255, 220), (20, 12), 3)
         else:
             self.surface = _get_bullet_surface(size)
         
@@ -151,7 +157,22 @@ class Bullet:
 
             center_x = (self.x - camera_x) * zoom
             center_y = (self.y - camera_y) * zoom
-            if self.weapon_id == "spirit_trial":
+            if self.weapon_id == "blackhole_generator":
+                pulse = 1.0 + 0.22 * math.sin(pygame.time.get_ticks() * 0.03)
+                pygame.draw.circle(
+                    display,
+                    (145, 80, 230),
+                    (round(center_x), round(center_y)),
+                    max(8, round(18 * zoom * pulse)),
+                    max(1, round(2 * zoom)),
+                )
+                pygame.draw.circle(
+                    display,
+                    (30, 15, 45),
+                    (round(center_x), round(center_y)),
+                    max(5, round(9 * zoom)),
+                )
+            elif self.weapon_id == "spirit_trial":
                 previous_x = (self.previous_x - camera_x) * zoom
                 previous_y = (self.previous_y - camera_y) * zoom
                 pulse = 1.0 + 0.18 * math.sin(pygame.time.get_ticks() * 0.025)

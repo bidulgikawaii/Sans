@@ -42,7 +42,7 @@
   ('TheTest',
    'C:\\Users\\orior\\OneDrive\\Documents\\Sans\\TheTest.py',
    'PYSOURCE')],
- 'python314.DLL',
+ 'python314.dll',
  True,
  False,
  False,

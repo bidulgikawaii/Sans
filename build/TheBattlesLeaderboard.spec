@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['..\\LeaderboardClient.py'],
-    pathex=['.'],
+    ['C:\\Users\\orior\\OneDrive\\Documents\\Sans\\LeaderboardClient.py'],
+    pathex=['C:\\Users\\orior\\OneDrive\\Documents\\Sans'],
     binaries=[],
-    datas=[('.\\Image', 'Image'), ('.\\Font', 'Font'), ('.\\Sound', 'Sound')],
+    datas=[('C:\\Users\\orior\\OneDrive\\Documents\\Sans\\Image', 'Image'), ('C:\\Users\\orior\\OneDrive\\Documents\\Sans\\Font', 'Font'), ('C:\\Users\\orior\\OneDrive\\Documents\\Sans\\Sound', 'Sound')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -26,16 +26,18 @@ class FlagdownRewardTests(unittest.TestCase):
         )
         self.assertNotIn("플레어건", FLAGDOWN_SKILL_NAMES)
 
-    def test_flagdown_reward_schedule_uses_healing_only(self):
+    def test_flagdown_reward_schedule_grants_an_unowned_skill(self):
         state = {}
         rewards = update_flagdown_skill_rewards(
             state,
             FLAGDOWN_SKILL_REWARD_INTERVAL_MS,
             (),
-            (),
+            FLAGDOWN_SKILL_NAMES,
             rng=random.Random(1),
         )
-        self.assertEqual(rewards, [{"event_id": 1, "type": "heal"}])
+        self.assertEqual(len(rewards), 1)
+        self.assertEqual(rewards[0]["type"], "skill")
+        self.assertIn(rewards[0]["skill"], FLAGDOWN_SKILL_NAMES)
 
     def test_rewards_are_due_every_interval_without_repeats(self):
         state = {}

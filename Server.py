@@ -830,7 +830,7 @@ def handle_client(conn, player_id):
                         players[player_id],
                         lobby_state.get("elapsed_ms", 0),
                         owned_skills,
-                        (),
+                        FLAGDOWN_SKILL_NAMES,
                     )
             zone_elapsed_ms = (
                 lobby_state.get("elapsed_ms", 0)

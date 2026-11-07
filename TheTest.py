@@ -2327,11 +2327,19 @@ def cycle_vision_shape():
 
 def _queue_melee_hit_events(center_x, center_y, attack_range, damage, weapon_id):
     """Queue authoritative hit events for nearby players and linked clones."""
-    hit_count = 0
+    player_hit_count = 0
+    clone_hit_count = 0
     player_width = IML.Player.get_width()
     player_height = IML.Player.get_height()
+    own_team = server_players.get(network.player_id, {}).get("team_id")
     for player_id, player_info in server_players.items():
         if str(player_id) == str(network.player_id) or is_hidden_player(player_info):
+            continue
+        if (
+            selected_game_mode == GAME_MODE_FLAGDOWN
+            and own_team in (0, 1)
+            and player_info.get("team_id") == own_team
+        ):
             continue
         enemy_center_x = player_info["posX"] + player_width / 2
         enemy_center_y = player_info["posY"] + player_height / 2
@@ -2346,7 +2354,7 @@ def _queue_melee_hit_events(center_x, center_y, attack_range, damage, weapon_id)
                 "hit_part": "body",
                 "weapon_id": weapon_id,
             })
-            hit_count += 1
+            player_hit_count += 1
 
     for clone in linked_clones:
         if (
@@ -2362,8 +2370,8 @@ def _queue_melee_hit_events(center_x, center_y, attack_range, damage, weapon_id)
                 "hit_part": "body",
                 "weapon_id": weapon_id,
             })
-            hit_count += 1
-    return hit_count
+            clone_hit_count += 1
+    return player_hit_count, clone_hit_count
 
 
 def fire_knife():
@@ -2397,13 +2405,14 @@ def fire_knife():
     if nearby_treasure:
         collect_treasure(nearby_treasure)
 
-    attacked_count = _queue_melee_hit_events(
+    player_hit_count, clone_hit_count = _queue_melee_hit_events(
         center_x,
         center_y,
         knife_range,
         config.damage,
         attack_weapon_id,
     )
+    attacked_count = player_hit_count + clone_hit_count
 
     start_x = max(0, int((center_x - knife_range) // TileGene.tile_size))
     end_x = min(TileGene.map_width - 1, int((center_x + knife_range) // TileGene.tile_size))
@@ -2455,7 +2464,8 @@ def fire_knife():
         system_message = f"{config.name} 휘둘렀습니다. (데미지: {config.damage})"
         if destroyed_furniture_count:
             system_message += f" 가구 {destroyed_furniture_count}개 파괴"
-    consume_third_weapon(attack_weapon_id)
+    if attack_weapon_id != "bat" or player_hit_count > 0:
+        consume_third_weapon(attack_weapon_id)
 
 
 def _assign_client_bullet_token(bullet):

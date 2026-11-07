@@ -457,7 +457,9 @@ camera_zoom = 1.0 / camera_fov
 lerp = 0.05
 
 Weapon_Angle = 0
+vision_angle = 0
 Weapon_Pos = (0, 0)
+melee_attack_weapon_id = None
 
 running = True
 bullets = []
@@ -600,7 +602,11 @@ def spawn_supply_drop(now):
         pending_supply_spawn_requests.append({
             "x": (tile_x + 0.5) * TileGene.tile_size,
             "y": (tile_y + 0.5) * TileGene.tile_size,
-            "type": random.choice(SUPPLY_REWARD_TYPES),
+            "type": random.choice(
+                DEATHMATCH_SUPPLY_REWARD_TYPES
+                if selected_game_mode == GAME_MODE_DEATHMATCH
+                else SUPPLY_REWARD_TYPES
+            ),
             "warning_ms": SUPPLY_DROP_WARNING_MS,
             "lifetime_ms": SUPPLY_DROP_LIFETIME_MS,
         })
@@ -650,9 +656,16 @@ def launch_flare_supplies(center_x, center_y, now):
         (TileGene.tile_size * 3, 0),
         (-round(TileGene.tile_size * 1.5), round(TileGene.tile_size * 2.6)),
         (-round(TileGene.tile_size * 1.5), -round(TileGene.tile_size * 2.6)),
+    )[:FLARE_SUPPLY_DROP_COUNT]
+    reward_types = (
+        DEATHMATCH_FLARE_SUPPLY_TYPES
+        if selected_game_mode == GAME_MODE_DEATHMATCH
+        else ("flare_ammo",) * len(offsets)
     )
     placed_rects = []
-    for index, (offset_x, offset_y) in enumerate(offsets):
+    for index, ((offset_x, offset_y), reward_type) in enumerate(
+        zip(offsets, reward_types)
+    ):
         desired_x = center_x + offset_x
         desired_y = center_y + offset_y
         candidates = [(desired_x, desired_y)]
@@ -691,7 +704,7 @@ def launch_flare_supplies(center_x, center_y, now):
                 "id": next_local_supply_id,
                 "x": drop_position[0],
                 "y": drop_position[1],
-                "type": "flare_ammo",
+                "type": reward_type,
                 "fall_started_at": now,
                 "warning_until": now + warning_ms,
                 "expires_at": now + warning_ms + SUPPLY_DROP_LIFETIME_MS,
@@ -701,7 +714,7 @@ def launch_flare_supplies(center_x, center_y, now):
             pending_supply_spawn_requests.append({
                 "x": drop_position[0],
                 "y": drop_position[1],
-                "type": "flare_ammo",
+                "type": reward_type,
                 "warning_ms": warning_ms,
                 "lifetime_ms": SUPPLY_DROP_LIFETIME_MS,
             })
@@ -748,9 +761,19 @@ def apply_supply_reward(reward_type):
         message = f"탄약 +{FLARE_SUPPLY_AMMO_PER_DROP}, 회복 아이템 획득"
         color = (100, 255, 130)
     elif reward_type == "skill":
-        healing_item_count += 1
-        message = "보급 스킬 대신 회복 아이템을 획득했습니다."
-        color = (100, 255, 130)
+        available_skills = [
+            name for name in SKILL_BOOK
+            if name not in owned_skills and name != "플레어건"
+        ]
+        if selected_game_mode == GAME_MODE_DEATHMATCH and available_skills:
+            skill_name = random.choice(available_skills)
+            add_skill_to_inventory(skill_name)
+            message = f"스킬 보급품 획득: [{skill_name}]"
+            color = (180, 120, 255)
+        else:
+            healing_item_count += 1
+            message = "보급 가능한 스킬이 없어 회복 아이템을 획득했습니다."
+            color = (100, 255, 130)
     elif reward_type == "special_weapon":
         weapon_id = special_weapon_crate.open()
         if weapon_id is None:
@@ -901,7 +924,8 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global local_stun_until, zone_elapsed_ms, next_supply_drop_at
     global CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY
     global camera_fov, camera_zoom
-    global Weapon_Angle, Weapon_Pos, screen_shake, knife_attack_until
+    global Weapon_Angle, vision_angle, Weapon_Pos, screen_shake, knife_attack_until
+    global melee_attack_weapon_id
     global hurt_flash_started_at, shield_hp
     global bush_entered_at, next_bush_leaf_at
     global weapon_fire_until, weapon_smoke_until, aim_lock_until, aim_locked_pos
@@ -1017,9 +1041,11 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     camera_fov = CAMERA_FOV
     camera_zoom = 1.0 / camera_fov
     Weapon_Angle = 0
+    vision_angle = 0
     Weapon_Pos = (0, 0)
     screen_shake = 0
     knife_attack_until = 0
+    melee_attack_weapon_id = None
     hurt_flash_started_at = 0
     bush_entered_at = 0
     next_bush_leaf_at = 0
@@ -2299,13 +2325,57 @@ def cycle_vision_shape():
     system_message = f"시야 모양: {shape_name}" 
 
 
+def _queue_melee_hit_events(center_x, center_y, attack_range, damage, weapon_id):
+    """Queue authoritative hit events for nearby players and linked clones."""
+    hit_count = 0
+    player_width = IML.Player.get_width()
+    player_height = IML.Player.get_height()
+    for player_id, player_info in server_players.items():
+        if str(player_id) == str(network.player_id) or is_hidden_player(player_info):
+            continue
+        enemy_center_x = player_info["posX"] + player_width / 2
+        enemy_center_y = player_info["posY"] + player_height / 2
+        if (
+            (center_x - enemy_center_x) ** 2 + (center_y - enemy_center_y) ** 2
+            <= attack_range ** 2
+        ):
+            pending_hit_events.append({
+                "target_id": player_id,
+                "attacker_id": network.player_id,
+                "damage": damage,
+                "hit_part": "body",
+                "weapon_id": weapon_id,
+            })
+            hit_count += 1
+
+    for clone in linked_clones:
+        if (
+            math.hypot(center_x - clone["x"], center_y - clone["y"])
+            <= attack_range + player_width / 2
+        ):
+            pending_hit_events.append({
+                "target_id": f"clone:{clone['clone_id']}",
+                "target_kind": "clone",
+                "clone_id": clone["clone_id"],
+                "attacker_id": network.player_id,
+                "damage": damage,
+                "hit_part": "body",
+                "weapon_id": weapon_id,
+            })
+            hit_count += 1
+    return hit_count
+
+
 def fire_knife():
     """칼과 배트로 근거리 범위 내의 적과 보물상자를 공격합니다."""
     global screen_shake, system_message, knife_attack_until
+    global melee_attack_weapon_id
     config = weapon_state.config
+    attack_weapon_id = weapon_state.weapon_id
     attack_started_at = pygame.time.get_ticks()
     knife_attack_until = attack_started_at + MELEE_ATTACK_DURATION_MS
-    animation = bat_animation if weapon_state.weapon_id == "bat" else blade_animation
+    melee_attack_weapon_id = attack_weapon_id
+    animation = bat_animation if attack_weapon_id == "bat" else blade_animation
     animation.start(attack_started_at)
 
     center_x, center_y = get_player_world_center(
@@ -2315,7 +2385,7 @@ def fire_knife():
         IML.Player.get_height(),
     )
 
-    knife_range = 125 if weapon_state.weapon_id == "bat" else MELEE_RANGE
+    knife_range = 125 if attack_weapon_id == "bat" else MELEE_RANGE
 
     treasure_rect = pygame.Rect(
         center_x - knife_range,
@@ -2327,38 +2397,13 @@ def fire_knife():
     if nearby_treasure:
         collect_treasure(nearby_treasure)
 
-    attacked_count = 0
-    for p_id, p_info in server_players.items():
-        if str(p_id) == str(network.player_id) or is_hidden_player(p_info):
-            continue
-
-        enemy_center_x = p_info["posX"] + IML.Player.get_width() / 2
-        enemy_center_y = p_info["posY"] + IML.Player.get_height() / 2
-
-        distance_squared = (center_x - enemy_center_x) ** 2 + (center_y - enemy_center_y) ** 2
-        if distance_squared <= knife_range ** 2:
-            attacked_count += 1
-            pending_hit_events.append({
-                "target_id": p_id,
-                "attacker_id": network.player_id,
-                "damage": config.damage,
-                "hit_part": "body",
-                "weapon_id": weapon_state.weapon_id,
-            })
-
-    for clone in linked_clones:
-        clone_distance = math.hypot(center_x - clone["x"], center_y - clone["y"])
-        if clone_distance <= knife_range + IML.Player.get_width() / 2:
-            attacked_count += 1
-            pending_hit_events.append({
-                "target_id": f"clone:{clone['clone_id']}",
-                "target_kind": "clone",
-                "clone_id": clone["clone_id"],
-                "attacker_id": network.player_id,
-                "damage": config.damage,
-                "hit_part": "body",
-                "weapon_id": weapon_state.weapon_id,
-            })
+    attacked_count = _queue_melee_hit_events(
+        center_x,
+        center_y,
+        knife_range,
+        config.damage,
+        attack_weapon_id,
+    )
 
     start_x = max(0, int((center_x - knife_range) // TileGene.tile_size))
     end_x = min(TileGene.map_width - 1, int((center_x + knife_range) // TileGene.tile_size))
@@ -2410,7 +2455,7 @@ def fire_knife():
         system_message = f"{config.name} 휘둘렀습니다. (데미지: {config.damage})"
         if destroyed_furniture_count:
             system_message += f" 가구 {destroyed_furniture_count}개 파괴"
-    consume_third_weapon(weapon_state.weapon_id)
+    consume_third_weapon(attack_weapon_id)
 
 
 def _assign_client_bullet_token(bullet):
@@ -2422,14 +2467,19 @@ def _assign_client_bullet_token(bullet):
 def consume_third_weapon(weapon_id):
     """Remove a one-use special weapon and return to the primary weapon."""
     global third_weapon_id, screen_shake, system_message
+    global knife_attack_until, melee_attack_weapon_id
     if weapon_id != third_weapon_id:
         return False
     attack_message = system_message
     attack_shake = screen_shake
+    attack_until = knife_attack_until
+    attack_weapon_id = melee_attack_weapon_id
     third_weapon_id = None
     select_weapon(main_weapon_id)
     system_message = attack_message
     screen_shake = attack_shake
+    knife_attack_until = attack_until
+    melee_attack_weapon_id = attack_weapon_id
     return True
 
 
@@ -3307,7 +3357,11 @@ def GameFrame(practice_mode: bool = False):
     send_data["hp"] = my_player.Hp
     send_data["kill_count"] = local_kill_count
     send_data["angle"] = Weapon_Angle
-    send_data["weapon_id"] = weapon_state.weapon_id
+    send_data["weapon_id"] = (
+        melee_attack_weapon_id
+        if now < knife_attack_until and melee_attack_weapon_id
+        else weapon_state.weapon_id
+    )
     send_data["magazine_ammo"] = weapon_state.magazine_ammo
     send_data["reserve_ammo"] = weapon_state.reserve_ammo
     player_world_x, player_world_y = get_player_world_center(
@@ -3885,6 +3939,12 @@ def GameFrame(practice_mode: bool = False):
         camera_zoom,
     )
     Weapon_Angle = Tool.GetAtn2Angle_Degrees(aim_player_center, Weapon_Pos)
+    angle_delta = (Weapon_Angle - vision_angle + 180) % 360 - 180
+    vision_alpha = max(
+        0.015,
+        min(0.12, 0.05 * settings["mouse_sensitivity"]),
+    )
+    vision_angle = (vision_angle + angle_delta * vision_alpha) % 360
     if weapon_state.weapon_id == "pistol" and now < weapon_fire_until and IML.GetPistolFire():
         weapon_image = IML.GetPistolFire()
     elif weapon_state.weapon_id == "pistol" and now < weapon_smoke_until and IML.GetPistolSmoke():
@@ -3926,7 +3986,7 @@ def GameFrame(practice_mode: bool = False):
                 point_y,
                 current_vision_radius,
                 vision_shape=current_vision_shape,
-                direction_angle=Weapon_Angle,
+                direction_angle=vision_angle,
                 fov_angle=current_vision.vision_fov + fov_bonus,
                 vision_width=current_vision_width,
             )
@@ -4521,14 +4581,25 @@ def GameFrame(practice_mode: bool = False):
             local_stun_offset_x,
             local_stun_offset_y,
         )
-        if weapon_state.weapon_id in MELEE_WEAPON_IDS:
-            is_bat = weapon_state.weapon_id == "bat"
+        active_melee_weapon_id = (
+            melee_attack_weapon_id
+            if now < knife_attack_until and melee_attack_weapon_id
+            else weapon_state.weapon_id
+            if weapon_state.weapon_id in MELEE_WEAPON_IDS
+            else None
+        )
+        if active_melee_weapon_id in MELEE_WEAPON_IDS:
+            is_bat = active_melee_weapon_id == "bat"
             melee_frames = IML.GetBatFrames() if is_bat else IML.GetBladeFrames()
             melee_animation = bat_animation if is_bat else blade_animation
             melee_image = (
                 melee_animation.frame_at(now)
                 if knife_attack_until > now and melee_frames
-                else (melee_frames[0] if melee_frames else IML.GetWeaponImage(weapon_state.weapon_id))
+                else (
+                    melee_frames[0]
+                    if melee_frames
+                    else IML.GetWeaponImage(active_melee_weapon_id)
+                )
             )
             if melee_image is not None:
                 _draw_melee_weapon(
@@ -4596,14 +4667,14 @@ def GameFrame(practice_mode: bool = False):
         )
 
     # 픽셀 위치와 정확한 조준 방향을 사용해 그림자가 움직임을 따라가게 합니다.
-    vision_angle = (
+    polygon_vision_angle = (
         None
         if current_vision_shape == VISION_CIRCLE
-        else round(Weapon_Angle)
+        else round(vision_angle)
     )
     polygon_cache_key = (
         "weapon",
-        vision_angle,
+        polygon_vision_angle,
         current_vision_shape,
         current_vision_radius,
         current_vision.vision_fov,
@@ -4615,7 +4686,7 @@ def GameFrame(practice_mode: bool = False):
         player_world_y,
         current_vision_radius,
         vision_shape=current_vision_shape,
-        direction_angle=vision_angle or 0,
+        direction_angle=polygon_vision_angle or 0,
         fov_angle=current_vision.vision_fov,
         vision_width=current_vision_width,
         ray_samples=24 if current_vision_shape == VISION_CIRCLE else None,
@@ -4654,7 +4725,7 @@ def GameFrame(practice_mode: bool = False):
         draw_bush_vision_angle(
             display,
             *bush_angle_center,
-            Weapon_Angle,
+            vision_angle,
             current_vision.vision_fov,
             BUSH_VISION_FOV_BONUS,
             current_vision_radius * camera_zoom,

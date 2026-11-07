@@ -45,6 +45,7 @@ from Config import (
     MAX_PLAYERS,
     RUNE_ALERT_DURATION_MS,
     SPIRIT_TRIAL_CLONE_HP,
+    SHIELD_HP,
 )
 from Weapon import WEAPONS
 from Lobby import LobbyState
@@ -619,6 +620,8 @@ def handle_client(conn, player_id):
                             "flare_ammo", "flare_skill",
                         ):
                             continue
+                        if drop_type == "skill" and mode != GAME_MODE_DEATHMATCH:
+                            continue
                         try:
                             drop_x = float(request["x"])
                             drop_y = float(request["y"])
@@ -827,7 +830,7 @@ def handle_client(conn, player_id):
                         players[player_id],
                         lobby_state.get("elapsed_ms", 0),
                         owned_skills,
-                        FLAGDOWN_SKILL_NAMES,
+                        (),
                     )
             zone_elapsed_ms = (
                 lobby_state.get("elapsed_ms", 0)
@@ -1409,6 +1412,8 @@ def handle_client(conn, player_id):
                                     respawning_player["weapon_id"]
                                 ].magazine_size
                                 respawning_player["hp"] = PLAYER_MAX_HP
+                                respawning_player["shield_hp"] = 0
+                                respawning_player["shield_active"] = False
                                 respawning_player["deathmatch_respawn_at"] = None
 
                 active_ids = lobby.visible_player_ids(player_id)

@@ -2,6 +2,8 @@ import random
 import unittest
 
 from Config import (
+    DEATHMATCH_FLARE_SUPPLY_TYPES,
+    DEATHMATCH_SUPPLY_REWARD_TYPES,
     FLAGDOWN_SKILL_NAMES,
     FLAGDOWN_SKILL_REWARD_INTERVAL_MS,
     SUPPLY_REWARD_TYPES,
@@ -16,7 +18,24 @@ class FlagdownRewardTests(unittest.TestCase):
     def test_rewards_are_scheduled_every_fifteen_seconds(self):
         self.assertEqual(FLAGDOWN_SKILL_REWARD_INTERVAL_MS, 15_000)
         self.assertNotIn("skill", SUPPLY_REWARD_TYPES)
+        self.assertIn("skill", DEATHMATCH_SUPPLY_REWARD_TYPES)
+        self.assertEqual(
+            DEATHMATCH_FLARE_SUPPLY_TYPES.count("skill")
+            + DEATHMATCH_FLARE_SUPPLY_TYPES.count("flare_ammo"),
+            3,
+        )
         self.assertNotIn("플레어건", FLAGDOWN_SKILL_NAMES)
+
+    def test_flagdown_reward_schedule_uses_healing_only(self):
+        state = {}
+        rewards = update_flagdown_skill_rewards(
+            state,
+            FLAGDOWN_SKILL_REWARD_INTERVAL_MS,
+            (),
+            (),
+            rng=random.Random(1),
+        )
+        self.assertEqual(rewards, [{"event_id": 1, "type": "heal"}])
 
     def test_rewards_are_due_every_interval_without_repeats(self):
         state = {}

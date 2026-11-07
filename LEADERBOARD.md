@@ -1,12 +1,12 @@
 # 실시간 킬 순위 보기
 
-`LeaderboardClient.py`는 현재 경기의 모드별 킬 순위를 별도 창에 표시합니다. API는 경기 중 플레이어 이름과 킬 수만 제공하는 읽기 전용 LAN 기능입니다.
+`LeaderboardClient.py`는 Pygame 기반의 별도 창에 현재 경기의 모드별 킬 순위를 표시합니다. API는 경기 중 플레이어 이름과 킬 수만 제공하는 읽기 전용 LAN 기능입니다.
 
 ## 사용법
 
 1. 게임 서버 PC에서 평소처럼 `Server.py` 또는 서버 실행 파일을 시작합니다.
 2. 해당 PC의 LAN 주소를 확인합니다. 기본 주소는 `Config.py`의 `SERVER_IP`입니다.
-3. 다른 PC에서 `TheBattlesLeaderboard.exe`를 실행하거나 `start_leaderboard.bat`을 더블 클릭합니다.
+3. 다른 PC에서 Pygame 순위 앱 `TheBattlesLeaderboard.exe`를 실행하거나 `start_leaderboard.bat`을 더블 클릭합니다.
 4. 서버 주소가 다르면 입력란을 바꾸고 **연결**을 누릅니다. 앱은 2초마다 순위를 갱신합니다.
 
 경기 서버가 실행 중인데 연결되지 않으면 서버 PC의 방화벽에서 `LEADERBOARD_PORT`(기본값 `5556`)의 LAN 연결을 허용하세요. 같은 PC에서 볼 때는 기본 서버 주소를 그대로 사용하면 됩니다.

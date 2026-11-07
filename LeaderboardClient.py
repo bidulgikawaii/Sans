@@ -20,7 +20,7 @@ MUTED = (155, 170, 185)
 
 
 def parse_leaderboard_snapshot(raw):
-    """Validate the API response and flatten its per-mode standings."""
+    """Validate the API response and preserve standings by game mode."""
     snapshot = json.loads(raw.decode("utf-8"))
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("modes"), list):
         raise ValueError("서버 순위 데이터 형식이 올바르지 않습니다.")
@@ -29,19 +29,21 @@ def parse_leaderboard_snapshot(raw):
     for mode in snapshot["modes"]:
         if not isinstance(mode, dict):
             continue
+        mode_id = str(mode.get("id", ""))
         label = str(mode.get("label", mode.get("id", "모드")))
         players = mode.get("players", [])
         if not isinstance(players, list):
-            continue
-        for player in players:
-            if not isinstance(player, dict):
-                continue
-            rows.append((
-                label,
+            players = []
+        standings = [
+            (
                 str(player.get("rank", "")),
                 str(player.get("name", "플레이어")),
                 str(player.get("kills", 0)),
-            ))
+            )
+            for player in players
+            if isinstance(player, dict)
+        ]
+        rows.append((mode_id, label, standings))
     return rows
 
 
@@ -65,7 +67,10 @@ class LeaderboardApp:
         self.small_font = get_game_font(18)
         self.host = SERVER_IP
         self.host_active = False
+        self.modes = []
+        self.selected_mode_id = None
         self.rows = []
+        self.mode_button_rects = []
         self.status = "게임 서버를 실행한 뒤 연결하세요."
         self.refreshing = False
         self.next_refresh_at = 0
@@ -114,15 +119,41 @@ class LeaderboardApp:
             else:
                 self.status = f"연결 실패: {error}"
             return
-        self.rows = rows
+        self.modes = rows
+        mode_ids = {mode_id for mode_id, _label, _standings in self.modes}
+        if self.selected_mode_id not in mode_ids:
+            self.selected_mode_id = self.modes[0][0] if self.modes else None
+        self.rows = self._selected_rows()
         self.scroll_offset = min(
             self.scroll_offset,
             max(0, len(self.rows) - self._visible_row_count()),
         )
         self.status = (
-            "경기 중인 플레이어가 없습니다."
-            if not rows
-            else f"실시간 업데이트 · {len(rows)}명"
+            "진행 중인 모드가 없습니다."
+            if not self.modes
+            else (
+                "선택한 모드에 플레이어가 없습니다."
+                if not self.rows
+                else f"실시간 업데이트 · {len(self.rows)}명"
+            )
+        )
+
+    def _selected_rows(self):
+        for mode_id, _label, standings in self.modes:
+            if mode_id == self.selected_mode_id:
+                return standings
+        return []
+
+    def _select_mode(self, mode_id):
+        if mode_id == self.selected_mode_id:
+            return
+        self.selected_mode_id = mode_id
+        self.rows = self._selected_rows()
+        self.scroll_offset = 0
+        self.status = (
+            "선택한 모드에 플레이어가 없습니다."
+            if not self.rows
+            else f"실시간 업데이트 · {len(self.rows)}명"
         )
 
     def _visible_row_count(self):
@@ -173,13 +204,48 @@ class LeaderboardApp:
             "center",
         )
 
-        table_rect = pygame.Rect(32, 184, width - 64, height - 220)
+        self.mode_button_rects = []
+        tab_x = 32
+        tab_y = 178
+        tab_height = 40
+        for mode_id, label, _standings in self.modes:
+            tab_width = self.small_font.size(label)[0] + 30
+            if tab_x + tab_width > width - 32:
+                tab_x = 32
+                tab_y += tab_height + 8
+            tab_rect = pygame.Rect(tab_x, tab_y, tab_width, tab_height)
+            is_selected = mode_id == self.selected_mode_id
+            pygame.draw.rect(
+                self.screen,
+                ACCENT if is_selected else PANEL,
+                tab_rect,
+                border_radius=6,
+            )
+            if not is_selected:
+                pygame.draw.rect(
+                    self.screen,
+                    (75, 90, 108),
+                    tab_rect,
+                    1,
+                    border_radius=6,
+                )
+            self._draw_text(
+                label,
+                self.small_font,
+                (18, 32, 35) if is_selected else TEXT,
+                tab_rect.center,
+                "center",
+            )
+            self.mode_button_rects.append((tab_rect, mode_id))
+            tab_x = tab_rect.right + 8
+
+        table_top = tab_y + tab_height + 12
+        table_rect = pygame.Rect(32, table_top, width - 64, max(100, height - table_top - 48))
         pygame.draw.rect(self.screen, PANEL, table_rect, border_radius=8)
         pygame.draw.rect(self.screen, (60, 75, 92), table_rect, 1, border_radius=8)
         headers = (
-            ("모드", table_rect.x + 18, "midleft"),
-            ("순위", table_rect.x + table_rect.width * 0.45, "center"),
-            ("플레이어", table_rect.x + table_rect.width * 0.62, "midleft"),
+            ("순위", table_rect.x + 28, "midleft"),
+            ("플레이어", table_rect.x + 100, "midleft"),
             ("킬", table_rect.right - 20, "midright"),
         )
         for label, x, anchor in headers:
@@ -191,7 +257,7 @@ class LeaderboardApp:
         for index, row in enumerate(
             self.rows[self.scroll_offset:self.scroll_offset + visible_rows]
         ):
-            mode, rank, name, kills = row
+            rank, name, kills = row
             row_y = first_row_y + index * row_height
             if index % 2 == 0:
                 pygame.draw.rect(
@@ -200,9 +266,8 @@ class LeaderboardApp:
                     (table_rect.x + 8, row_y - 4, table_rect.width - 16, row_height),
                     border_radius=4,
                 )
-            self._draw_text(mode, self.small_font, TEXT, (table_rect.x + 18, row_y + 16), "midleft")
-            self._draw_text(rank, self.small_font, TEXT, (table_rect.x + table_rect.width * 0.45, row_y + 16), "center")
-            self._draw_text(name, self.body_font, TEXT, (table_rect.x + table_rect.width * 0.62, row_y + 16), "midleft")
+            self._draw_text(rank, self.small_font, TEXT, (table_rect.x + 28, row_y + 16), "midleft")
+            self._draw_text(name, self.body_font, TEXT, (table_rect.x + 100, row_y + 16), "midleft")
             self._draw_text(kills, self.body_font, ACCENT, (table_rect.right - 20, row_y + 16), "midright")
 
         self._draw_text(self.status, self.small_font, MUTED, (34, height - 24), "midleft")
@@ -220,6 +285,10 @@ class LeaderboardApp:
                     pygame.key.start_text_input()
                 else:
                     pygame.key.stop_text_input()
+                for rect, mode_id in self.mode_button_rects:
+                    if rect.collidepoint(event.pos):
+                        self._select_mode(mode_id)
+                        break
                 if self.refresh_rect.collidepoint(event.pos):
                     self.refresh()
             elif event.button == 4:

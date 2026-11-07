@@ -3073,7 +3073,7 @@ def spectator_frame():
 
 
 def GameFrame(practice_mode: bool = False):
-    global ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, Weapon_Pos, match_result, local_stun_until, zone_elapsed_ms
+    global ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, vision_angle, Weapon_Pos, match_result, local_stun_until, zone_elapsed_ms
     global screen_shake, server_players, bullets, remote_bullets, MousePos, system_message, kill_feed
     global vision_shape_override, vision_skill_until, local_match
     global active_bombs, active_explosions, active_black_holes, active_plasma_beams

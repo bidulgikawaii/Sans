@@ -8,7 +8,7 @@ def mine_blast_contains(mine, x, y):
 
 
 def trigger_mine(mine, now_ms):
-    """Begin a single delayed detonation after an armed mine is stepped on."""
+    """Begin a single short detonation delay after an armed mine is stepped on."""
     if now_ms < mine["armed_at"] or "detonates_at" in mine:
         return False
     mine["triggered_at"] = now_ms

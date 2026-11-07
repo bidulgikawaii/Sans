@@ -25,6 +25,7 @@ SKILL_ICON_FILES = {
     "자폭": "Bomb.png",
     "와드": "Ward.png",
     "지뢰": "Bomb.png",
+    "플레어건": "flaregun.png",
 }
 PLAYER_FRAME_SIZE = (72, 72)
 PLAYER_VISIBLE_SIZE = (44, 64)
@@ -75,7 +76,7 @@ class Imageload:
             "black-hole_", (160, 160), directory="Black_Hole_Effect"
         )
         self.BlackHoleBullet = self._load_animation(
-            "black-hole_", (48, 48), directory="black_hole_Bullet"
+            "black-hole_", (72, 72), directory="black_hole_Bullet"
         )
         flaregun = self._load_scaled_image("flaregun.png", (96, 48))
         self.FlareGun = flaregun if flaregun is not None else self._create_flaregun_image()
@@ -83,7 +84,7 @@ class Imageload:
         if self.PlasmaGun is None:
             self.PlasmaGun = self._create_plasma_gun_image()
         self.BlackHoleGun = (
-            self.BlackHoleBullet[0]
+            pygame.transform.smoothscale(self.BlackHoleBullet[0], (96, 72))
             if self.BlackHoleBullet
             else self._create_blackhole_gun_image()
         )
@@ -341,6 +342,9 @@ class Imageload:
 
     def GetBlackHoleEffectFrames(self):
         return self.BlackHoleEffect
+
+    def GetBlackHoleBulletFrames(self):
+        return self.BlackHoleBullet
 
     def GetTileTest(self):
         return self.Tile

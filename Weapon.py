@@ -69,12 +69,6 @@ WEAPONS = {
         reload_time=0.0, projectile=False, recoil=0.0, bullet_lifetime=0.2,
         vision_radius=WEAPON_VISION_RADIUS, vision_fov=180, vision_width=420,
     ),
-    "flaregun": WeaponConfig(
-        "플레어건", damage=0, magazine_size=1, reserve_ammo=0,
-        fire_interval=0.8, reload_time=0.0, bullet_size=0,
-        projectile=True, recoil=0.0, bullet_lifetime=0.2,
-        vision_radius=WEAPON_VISION_RADIUS, vision_fov=180, vision_width=420,
-    ),
 }
 
 # 노란 특수상자에서 지급할 무기를 여기에 추가하면 일반 무기 목록에도 등록됩니다.
@@ -120,7 +114,6 @@ class SpecialWeaponCrate:
         self.last_weapon_id = None
 
     def open(self):
-        WEAPONS.update(SPECIAL_CRATE_WEAPONS)
         weapon_ids = tuple(SPECIAL_CRATE_WEAPONS)
         if not weapon_ids:
             return None
@@ -131,6 +124,18 @@ class SpecialWeaponCrate:
             )
         self.last_weapon_id = random.choice(weapon_ids)
         return self.last_weapon_id
+
+
+def next_special_weapon_id(current_weapon_id):
+    """Return the next crate weapon in stable order for practice-mode selection."""
+    weapon_ids = tuple(SPECIAL_CRATE_WEAPONS)
+    if not weapon_ids:
+        return None
+    try:
+        current_index = weapon_ids.index(current_weapon_id)
+    except ValueError:
+        return weapon_ids[0]
+    return weapon_ids[(current_index + 1) % len(weapon_ids)]
 
 
 class WeaponState:

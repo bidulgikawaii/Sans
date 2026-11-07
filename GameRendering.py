@@ -179,13 +179,15 @@ def draw_visibility_geometry(surface, geometry, camera_x, camera_y, zoom):
 
 
 def draw_bush_vision_angle(
-    surface, center_x, center_y, direction_angle, fov_angle, bonus_angle, radius
+    surface, center_x, center_y, direction_angle, fov_angle, bonus_angle, radius,
+    zoom=1.0,
 ):
     """Mark the extra cone edges used to spot players hiding in nearby bushes."""
     direction = math.radians(direction_angle)
     base_half = math.radians(fov_angle / 2)
     bonus_half = math.radians(bonus_angle / 2)
     center = (round(center_x), round(center_y))
+    line_width = max(1, round(3 * zoom))
     for sign in (-1, 1):
         inner_angle = direction + sign * base_half
         outer_angle = direction + sign * (base_half + bonus_half)
@@ -193,8 +195,8 @@ def draw_bush_vision_angle(
             round(center_x + math.cos(outer_angle) * radius),
             round(center_y + math.sin(outer_angle) * radius),
         )
-        pygame.draw.line(surface, (70, 235, 150), center, outer, 3)
-        pygame.draw.line(surface, (205, 255, 220), center, outer, 1)
+        pygame.draw.line(surface, (70, 235, 150), center, outer, line_width)
+        pygame.draw.line(surface, (205, 255, 220), center, outer, max(1, round(zoom)))
         arc_points = []
         for step in range(7):
             angle = inner_angle + (outer_angle - inner_angle) * step / 6
@@ -203,7 +205,10 @@ def draw_bush_vision_angle(
                 round(center_y + math.sin(angle) * radius),
             ))
         if len(arc_points) > 1:
-            pygame.draw.lines(surface, (90, 245, 165), False, arc_points, 2)
+            pygame.draw.lines(
+                surface, (90, 245, 165), False, arc_points,
+                max(1, round(2 * zoom)),
+            )
 
 
 def draw_player_hitboxes(surface, head_rect, body_rect, camera_x, camera_y, zoom):

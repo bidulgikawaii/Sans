@@ -95,7 +95,8 @@ SKILL_BOOK = {
     "텔포": Skill("텔포", (180, 255, 180), "일반전: 석상을 설치해 이동합니다. 데스매치: 벽을 통과해 조준 지점으로 즉시 이동합니다.", 0, "일반전은 설치/재사용, 데스매치는 벽을 통과하는 지정 위치 순간이동"),
     "기절탄": Skill("기절탄", (255, 245, 180), "맞은 플레이어를 2.5초 동안 기절시킵니다.", 10, "청록색 전기 탄환, 적중 시 2.5초 스턴"),
     "자폭": Skill("자폭", (255, 105, 75), "짧은 신관 후 넓은 범위에 큰 피해를 주고 자신도 사망합니다.", 180, "1초 후 반경 420 범위에 180 피해를 주며 자신은 반드시 사망"),
-    "지뢰": Skill("지뢰", (235, 190, 105), "작은 지뢰를 설치합니다. 적이 밟으면 0.9초간 점멸한 뒤 주변 반경 120 안에 10 피해를 줍니다.", 10, "밟히면 점멸 후 주변에 폭발 피해를 주는 소형 지뢰"),
+    "지뢰": Skill("지뢰", (235, 190, 105), "작은 지뢰를 설치합니다. 적이 밟으면 0.6초간 점멸한 뒤 주변 반경 120 안에 10 피해를 줍니다.", 10, "밟히면 점멸 후 주변에 폭발 피해를 주는 소형 지뢰"),
+    "플레어건": Skill("플레어건", (255, 155, 75), "지정한 위치에 보급품을 부르는 플레어를 한 번 발사합니다.", 0, "사용하면 사라지는 일회성 보급 호출"),
 }
 
 # 현재 보유 중인 스킬입니다. 도감(SKILL_BOOK)과 달리 실제 획득 목록만 표시합니다.
@@ -236,6 +237,18 @@ def add_skill_to_inventory(skill_name):
     if skill_name not in SKILL_BOOK or skill_name in owned_skills:
         return False
     owned_skills.add(skill_name)
+    refresh_skill_inventory()
+    return True
+
+
+def remove_skill_from_inventory(skill_name):
+    """소모형 스킬을 보유 목록과 장착 슬롯에서 함께 제거합니다."""
+    if skill_name not in owned_skills:
+        return False
+    owned_skills.remove(skill_name)
+    for slot in quick_slots:
+        if slot.assigned_skill == skill_name:
+            slot.assigned_skill = None
     refresh_skill_inventory()
     return True
 

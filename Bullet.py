@@ -77,6 +77,7 @@ class Bullet:
         self.life_time = 2.5
         self.spawn_time = 0.0
         self.flight_start_time = 0.0
+        self.launch_hold_ms = 0
         self.reflect_until = 0
 
     @property
@@ -117,7 +118,8 @@ class Bullet:
         # 총알 활성화
         self.is_active = True
         self.spawn_time = time.monotonic()
-        self.flight_start_time = self.spawn_time + max(0, hold_ms) / 1000
+        self.launch_hold_ms = max(0, round(hold_ms))
+        self.flight_start_time = self.spawn_time + self.launch_hold_ms / 1000
 
     def update(self):
         # 활성화 상태일 때만 매 프레임 위치 이동

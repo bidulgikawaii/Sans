@@ -17,6 +17,7 @@ from Weapon import (
     WeaponState,
     WEAPONS,
     WEAPON_KEYS,
+    next_special_weapon_id,
 )
 from Effects import ParticleSystem
 from MineMechanics import (
@@ -199,13 +200,7 @@ def _draw_melee_weapon(surface, image, center, angle, zoom):
     scaled_image = _scale_cached(image, display_size)
     flipped_image = pygame.transform.flip(scaled_image, True, False)
     rotated_image = pygame.transform.rotate(flipped_image, -angle)
-    forward_offset = 14 * zoom
-    radians = math.radians(angle)
-    weapon_center = (
-        round(center[0] + math.cos(radians) * forward_offset),
-        round(center[1] + math.sin(radians) * forward_offset + 10 * zoom),
-    )
-    surface.blit(rotated_image, rotated_image.get_rect(center=weapon_center))
+    surface.blit(rotated_image, rotated_image.get_rect(center=tuple(map(round, center))))
 
 
 def get_aim_mouse_position(camera_x=None, camera_y=None):
@@ -500,6 +495,10 @@ pending_mine_placements = []
 next_mine_request_id = 1
 processed_mine_blast_ids = set()
 last_processed_flagdown_reward_id = 0
+flagdown_reward_notice = ""
+flagdown_reward_notice_until = 0
+flagdown_reward_notice_image = None
+flaregun_used = False
 knife_attack_until = 0
 hurt_flash_started_at = 0
 supply_drops = []
@@ -563,8 +562,10 @@ preserve_magazine_after_chest = False
 teleport_anchor = None
 teleport_anchor_expires_at = 0
 teleport_placements_remaining = TELEPORT_MAX_PLACEMENTS
-third_weapon_id = "flaregun"
+third_weapon_id = None
 special_weapon_crate = SpecialWeaponCrate()
+next_local_supply_id = -1
+practice_weapon_selection = None
 
 
 def is_hidden_player(player_info):
@@ -643,8 +644,8 @@ def get_unique_supply_countdown(now):
 
 
 def launch_flare_supplies(center_x, center_y, now):
-    """플레어 발사 지점 주변에 떨어질 보급품 세 개를 서버에 요청합니다."""
-    del now
+    """플레어 발사 지점 주변에 보급품을 생성하거나 서버에 요청합니다."""
+    global next_local_supply_id
     offsets = (
         (TileGene.tile_size * 3, 0),
         (-round(TileGene.tile_size * 1.5), round(TileGene.tile_size * 2.6)),
@@ -684,13 +685,26 @@ def launch_flare_supplies(center_x, center_y, now):
                 break
         if drop_position is None:
             drop_position = (desired_x, desired_y)
-        pending_supply_spawn_requests.append({
-            "x": drop_position[0],
-            "y": drop_position[1],
-            "type": "flare_ammo",
-            "warning_ms": SUPPLY_DROP_WARNING_MS + index * 250,
-            "lifetime_ms": SUPPLY_DROP_LIFETIME_MS,
-        })
+        warning_ms = SUPPLY_DROP_WARNING_MS + index * 250
+        if practice_mode_active or debug_mode:
+            supply_drops.append({
+                "id": next_local_supply_id,
+                "x": drop_position[0],
+                "y": drop_position[1],
+                "type": "flare_ammo",
+                "fall_started_at": now,
+                "warning_until": now + warning_ms,
+                "expires_at": now + warning_ms + SUPPLY_DROP_LIFETIME_MS,
+            })
+            next_local_supply_id -= 1
+        else:
+            pending_supply_spawn_requests.append({
+                "x": drop_position[0],
+                "y": drop_position[1],
+                "type": "flare_ammo",
+                "warning_ms": warning_ms,
+                "lifetime_ms": SUPPLY_DROP_LIFETIME_MS,
+            })
     particles.ring(
         center_x, center_y, (255, 155, 70),
         count=36, radius=TileGene.tile_size * 2, lifetime=700, size=7,
@@ -754,6 +768,8 @@ def apply_supply_reward(reward_type):
 
 def apply_flagdown_skill_reward(reward):
     global healing_item_count, system_message
+    global flagdown_reward_notice, flagdown_reward_notice_until
+    global flagdown_reward_notice_image
     skill_name = reward.get("skill")
     if reward.get("type") == "skill" and add_skill_to_inventory(skill_name):
         system_message = f"플래그다운 보급: [{skill_name}] 스킬 획득"
@@ -762,6 +778,13 @@ def apply_flagdown_skill_reward(reward):
         healing_item_count += 1
         system_message = "플래그다운 보급: 중복 스킬 대신 회복 아이템 획득"
         color = (100, 255, 130)
+    flagdown_reward_notice = system_message
+    flagdown_reward_notice_until = pygame.time.get_ticks() + 2600
+    flagdown_reward_notice_image = GuiFont.render(
+        flagdown_reward_notice,
+        True,
+        (245, 225, 255),
+    )
     center_x, center_y = get_player_world_center(
         my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
     )
@@ -814,6 +837,13 @@ def collect_treasure(tile_position, from_bullet=False):
     available = [
         name for name in SKILL_BOOK
         if name not in owned_skills
+        and not (
+            name == "플레어건"
+            and (
+                selected_game_mode == GAME_MODE_FLAGDOWN
+                or flaregun_used
+            )
+        )
     ]
     chest_label = "보물상자:" if from_bullet else "보물상자 획득:"
     if random.random() < CHEST_SKILL_REWARD_CHANCE and available:
@@ -885,6 +915,10 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global local_kill_count, match_elapsed_ms, respawn_ms_remaining
     global bush_leaf_request_token
     global next_unique_supply_drop_at, unique_supply_notice, unique_supply_notice_until
+    global next_local_supply_id
+    global practice_weapon_selection
+    global flaregun_used, flagdown_reward_notice, flagdown_reward_notice_until
+    global flagdown_reward_notice_image
     global spawn_tiles, spawn_tile_x, spawn_tile_y
     if regenerate_world:
         world_seed = (
@@ -933,6 +967,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     skill_cooldowns.clear()
     clear_selected_skill()
     owned_skills.clear()
+    add_skill_to_inventory("플레어건")
     for slot in quick_slots:
         slot.assigned_skill = None
     refresh_skill_inventory()
@@ -945,7 +980,13 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     teleport_anchor = None
     teleport_anchor_expires_at = 0
     teleport_placements_remaining = TELEPORT_MAX_PLACEMENTS
-    third_weapon_id = "flaregun"
+    third_weapon_id = None
+    next_local_supply_id = -1
+    practice_weapon_selection = None
+    flaregun_used = False
+    flagdown_reward_notice = ""
+    flagdown_reward_notice_until = 0
+    flagdown_reward_notice_image = None
     special_weapon_crate = SpecialWeaponCrate()
     training_dummy = None
     preserve_magazine_after_chest = False
@@ -972,7 +1013,6 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     active_world_weather = None
     system_message = ""
     weapon_state.reset(main_weapon_id)
-    weapon_state.reset_weapon_ammo("flaregun")
     CameraPosX = CameraPosY = AimCameraPosX = AimCameraPosY = 0
     camera_fov = CAMERA_FOV
     camera_zoom = 1.0 / camera_fov
@@ -1658,6 +1698,7 @@ def _start_teleport_visual(x, y, now):
 
 def activate_quick_slot(key, reinstall=False):
     global system_message, vision_shape_override, vision_skill_until, shield_hp, shield_token, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining, screen_shake, next_mine_request_id
+    global flaregun_used
     slot_actions = {get_key(f"slot_{name.lower()}"): name for name in ("Q", "E", "T")}
     slot_name = slot_actions.get(key)
     slot = next((slot for slot in quick_slots if slot.key_name == slot_name), None)
@@ -1668,6 +1709,22 @@ def activate_quick_slot(key, reinstall=False):
 
     skill_name = slot.assigned_skill
     now = pygame.time.get_ticks()
+    if skill_name == "플레어건":
+        if my_player.Hp <= 0:
+            system_message = "사망 또는 리스폰 중에는 플레어건을 사용할 수 없습니다."
+            return
+        target_x, target_y = get_mouse_world_position(CameraPosX, CameraPosY)
+        launch_flare_supplies(target_x, target_y, now)
+        break_stealth_on_attack()
+        pending_spectator_skill_events.append({
+            "skill": skill_name,
+            "x": my_player.X + my_player.rect.width / 2,
+            "y": my_player.Y + my_player.rect.height / 2,
+        })
+        remove_skill_from_inventory(skill_name)
+        flaregun_used = True
+        system_message = "플레어 발사! 지정 위치에 보급품이 떨어집니다."
+        return
     if skill_name == "자폭" and my_player.Hp <= 0:
         system_message = "사망 또는 리스폰 중에는 자폭을 사용할 수 없습니다."
         return
@@ -2073,6 +2130,8 @@ def remove_ward_at_cursor():
 def handle_key_event(event, _mouse_pos):
     global inventory_open, debug_mode, system_message, show_hitboxes
     global healing_inventory_open, coordinate_overlay_enabled
+    global third_weapon_id
+    global practice_weapon_selection
     if event.key == pygame.K_F8:
         coordinate_overlay_enabled = not coordinate_overlay_enabled
         return
@@ -2088,6 +2147,17 @@ def handle_key_event(event, _mouse_pos):
     elif event.key == pygame.K_2:
         weapon_id = "knife"
     elif event.key == pygame.K_3 and ScreenState in ("GameView", "PracticeView"):
+        if ScreenState == "PracticeView":
+            practice_weapon_selection = next_special_weapon_id(
+                practice_weapon_selection
+            )
+            third_weapon_id = practice_weapon_selection
+            if third_weapon_id is None:
+                system_message = "선택할 특수 무기가 없습니다."
+                return
+            weapon_state.reset_weapon_ammo(third_weapon_id)
+            select_weapon(third_weapon_id)
+            return
         if third_weapon_id:
             select_weapon(third_weapon_id)
         else:
@@ -2340,12 +2410,27 @@ def fire_knife():
         system_message = f"{config.name} 휘둘렀습니다. (데미지: {config.damage})"
         if destroyed_furniture_count:
             system_message += f" 가구 {destroyed_furniture_count}개 파괴"
+    consume_third_weapon(weapon_state.weapon_id)
 
 
 def _assign_client_bullet_token(bullet):
     global next_client_bullet_token
     bullet.client_bullet_token = next_client_bullet_token
     next_client_bullet_token += 1
+
+
+def consume_third_weapon(weapon_id):
+    """Remove a one-use special weapon and return to the primary weapon."""
+    global third_weapon_id, screen_shake, system_message
+    if weapon_id != third_weapon_id:
+        return False
+    attack_message = system_message
+    attack_shake = screen_shake
+    third_weapon_id = None
+    select_weapon(main_weapon_id)
+    system_message = attack_message
+    screen_shake = attack_shake
+    return True
 
 
 def _line_rect_intersects(x1, y1, x2, y2, rect):
@@ -2482,6 +2567,9 @@ def fire_blackhole_generator():
     muzzle_x = center_x + math.cos(angle) * 44
     muzzle_y = center_y + math.sin(angle) * 44
     bullet = Bullet(weapon_state.config.bullet_size, damage=0, owner_id=network.player_id, weapon_id="blackhole_generator")
+    black_hole_bullet_frames = IML.GetBlackHoleBulletFrames()
+    if black_hole_bullet_frames:
+        bullet.surface = black_hole_bullet_frames[0]
     _assign_client_bullet_token(bullet)
     bullet.launch(muzzle_x, muzzle_y, muzzle_x + math.cos(angle) * BULLET_TARGET_DISTANCE, muzzle_y + math.sin(angle) * BULLET_TARGET_DISTANCE, speed=weapon_state.config.bullet_speed)
     bullet.just_fired = True
@@ -2492,6 +2580,7 @@ def fire_blackhole_generator():
     weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
     weapon_smoke_until = animation_started_at + WEAPON_SMOKE_ANIMATION_MS
     particles.emit(muzzle_x, muzzle_y, (155, 85, 255), count=18, speed=85, lifetime=380, size=5)
+    consume_third_weapon("blackhole_generator")
 
 
 def fire_plasma_cannon():
@@ -2523,6 +2612,11 @@ def fire_plasma_cannon():
             "damage": PLASMA_DAMAGE,
             "hit_part": "body",
             "weapon_id": "plasma_cannon",
+            "stun_ms": (
+                STUN_DURATION_MS
+                if random.random() < PLASMA_STUN_CHANCE
+                else 0
+            ),
         })
     if (debug_mode or ScreenState == "PracticeView") and training_dummy is not None and training_dummy.Hp > 0:
         hit_part = "head" if _line_rect_intersects(muzzle_x, muzzle_y, end_x, end_y, training_dummy.head_hitbox) else "body" if _line_rect_intersects(muzzle_x, muzzle_y, end_x, end_y, training_dummy.body_hitbox) else None
@@ -2537,6 +2631,7 @@ def fire_plasma_cannon():
     weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
     weapon_smoke_until = animation_started_at + WEAPON_SMOKE_ANIMATION_MS
     particles.emit(muzzle_x, muzzle_y, (100, 225, 255), count=6, speed=45, lifetime=160, size=3)
+    consume_third_weapon("plasma_cannon")
 
 
 def fire_stun_bullet():
@@ -2564,7 +2659,7 @@ def fire_stun_bullet():
         center_x + math.cos(angle) * BULLET_TARGET_DISTANCE,
         center_y + math.sin(angle) * BULLET_TARGET_DISTANCE,
         speed=weapon_state.config.bullet_speed,
-        hold_ms=0,
+        hold_ms=BULLET_MOVE_HOLD_MS if my_player.is_moving else 0,
     )
     bullet.just_fired = True
     bullets.append(bullet)
@@ -2595,7 +2690,7 @@ def fire_stun_bullet():
 
 
 def fire_bullet():
-    global system_message, third_weapon_id
+    global system_message
     global weapon_fire_until, weapon_smoke_until
     if my_player.Hp <= 0:
         return
@@ -2613,33 +2708,6 @@ def fire_bullet():
         fire_plasma_cannon()
         return
 
-    if weapon_state.weapon_id == "flaregun":
-        if not weapon_state.can_fire():
-            system_message = "플레어건은 이미 사용했습니다."
-            return
-        break_stealth_on_attack()
-        target_x, target_y = screen_to_world(
-            *get_aim_mouse_position(AimCameraPosX, AimCameraPosY), AimCameraPosX, AimCameraPosY, camera_zoom
-        )
-        launch_flare_supplies(target_x, target_y, pygame.time.get_ticks())
-        weapon_state.consume_round()
-        third_weapon_id = None
-        animation_started_at = pygame.time.get_ticks()
-        weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
-        weapon_smoke_until = animation_started_at + WEAPON_SMOKE_ANIMATION_MS
-        particles.emit(
-            my_player.X + my_player.rect.width / 2,
-            my_player.Y + my_player.rect.height / 2,
-            (255, 115, 55),
-            count=18,
-            speed=95,
-            lifetime=500,
-            size=6,
-        )
-        select_weapon(main_weapon_id)
-        system_message = "플레어 발사! 지정 위치에 보급품이 떨어집니다."
-        return
-    
     # 근접 무기는 투사체 발사 대신 공통 공격 처리를 사용합니다.
     if not config.projectile:
         if not weapon_state.can_fire():
@@ -2704,7 +2772,7 @@ def fire_bullet():
             muzzle_x + math.cos(shot_angle) * BULLET_TARGET_DISTANCE,
             muzzle_y + math.sin(shot_angle) * BULLET_TARGET_DISTANCE,
             speed=config.bullet_speed,
-            hold_ms=0,
+            hold_ms=BULLET_MOVE_HOLD_MS if my_player.is_moving else 0,
         )
         new_bullet.just_fired = True
         new_bullet.life_time = config.bullet_lifetime
@@ -3109,6 +3177,8 @@ def GameFrame(practice_mode: bool = False):
     collect_treasure(TileGene.treasure_at(player_rect))
     remaining_supply_drops = []
     for supply in supply_drops:
+        if now >= supply["expires_at"]:
+            continue
         supply_rect = pygame.Rect(
             round(supply["x"] - SUPPLY_DROP_RADIUS),
             round(supply["y"] - SUPPLY_DROP_RADIUS),
@@ -3119,8 +3189,14 @@ def GameFrame(practice_mode: bool = False):
             remaining_supply_drops.append(supply)
             continue
         if player_rect.colliderect(supply_rect):
-            pending_supply_collect_ids.add(supply["id"])
-        remaining_supply_drops.append(supply)
+            if is_practice_mode or debug_mode:
+                system_message = apply_supply_reward(supply["type"])
+            else:
+                pending_supply_collect_ids.add(supply["id"])
+                remaining_supply_drops.append(supply)
+                continue
+        else:
+            remaining_supply_drops.append(supply)
     supply_drops = remaining_supply_drops
 
     pending_bombs = []
@@ -3289,7 +3365,7 @@ def GameFrame(practice_mode: bool = False):
             "weapon_id": bullet.weapon_id,
             "damage": bullet.damage,
             "stun_ms": bullet.stun_ms,
-            "hold_ms": 0,
+            "hold_ms": bullet.launch_hold_ms,
             "client_bullet_token": getattr(
                 bullet, "client_bullet_token", None
             ),
@@ -3893,8 +3969,8 @@ def GameFrame(practice_mode: bool = False):
     for beam in active_plasma_beams:
         start = world_to_screen(beam["x1"], beam["y1"], CameraPosX, CameraPosY, camera_zoom)
         end = world_to_screen(beam["x2"], beam["y2"], CameraPosX, CameraPosY, camera_zoom)
-        pygame.draw.line(display, (70, 205, 255), tuple(map(round, start)), tuple(map(round, end)), max(3, round(6 * camera_zoom)))
-        pygame.draw.line(display, (230, 255, 255), tuple(map(round, start)), tuple(map(round, end)), max(1, round(2 * camera_zoom)))
+        pygame.draw.line(display, (70, 205, 255), tuple(map(round, start)), tuple(map(round, end)), max(4, round(9 * camera_zoom)))
+        pygame.draw.line(display, (230, 255, 255), tuple(map(round, start)), tuple(map(round, end)), max(2, round(4 * camera_zoom)))
 
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
     if vision_skill_until > now:
@@ -4582,6 +4658,7 @@ def GameFrame(practice_mode: bool = False):
             current_vision.vision_fov,
             BUSH_VISION_FOV_BONUS,
             current_vision_radius * camera_zoom,
+            camera_zoom,
         )
 
     for target_id, launch in list(bat_launch_animations.items()):
@@ -4840,36 +4917,27 @@ def GameFrame(practice_mode: bool = False):
         pygame.draw.circle(display, bomb_color, (round(bomb_screen[0]), round(bomb_screen[1])),
                            max(5, round(12 * camera_zoom)), 3)
     for mine in active_mines:
+        if "detonates_at" not in mine:
+            continue
         mine_screen = world_to_screen(
             mine["x"], mine["y"], CameraPosX, CameraPosY, camera_zoom
         )
-        armed = now >= mine["armed_at"]
-        detonating = "detonates_at" in mine
-        pulse = 1.0 + 0.12 * math.sin(now * 0.018)
-        if detonating:
-            flash_on = int(now / 90) % 2 == 0
-            time_left = max(0, mine["detonates_at"] - now)
-            pulse = 1.0 + 0.25 * math.sin(now * 0.04)
-        else:
-            flash_on = True
+        flash_on = int(now / 70) % 2 == 0
+        time_left = max(0, mine["detonates_at"] - now)
+        pulse = 1.0 + 0.25 * math.sin(now * 0.04)
         center = (round(mine_screen[0]), round(mine_screen[1]))
         radius = max(4, round(9 * camera_zoom))
-        mine_color = (
-            (255, 45, 35) if flash_on else (65, 20, 20)
-        ) if detonating else (
-            (245, 105, 55) if armed else (190, 170, 115)
-        )
-        if detonating:
-            pygame.draw.circle(
-                display,
-                (255, 70, 45) if flash_on else (90, 25, 20),
-                center,
-                max(4, round(MINE_BLAST_RADIUS * camera_zoom)),
-                max(1, round(2 * camera_zoom)),
-            )
+        mine_color = (255, 45, 35) if flash_on else (65, 20, 20)
         pygame.draw.circle(
             display,
-            (35, 20, 20) if detonating else (35, 29, 22),
+            (255, 70, 45) if flash_on else (90, 25, 20),
+            center,
+            max(4, round(MINE_BLAST_RADIUS * camera_zoom)),
+            max(1, round(2 * camera_zoom)),
+        )
+        pygame.draw.circle(
+            display,
+            (35, 20, 20),
             center,
             max(6, round(14 * camera_zoom * pulse)),
         )
@@ -4882,23 +4950,18 @@ def GameFrame(practice_mode: bool = False):
         )
         pygame.draw.circle(
             display,
-            (
-                (255, 245, 225) if flash_on else (85, 30, 25)
-            ) if detonating else (
-                (255, 225, 135) if armed else (205, 200, 175)
-            ),
+            (255, 245, 225) if flash_on else (85, 30, 25),
             center,
             max(2, round(radius * 0.35)),
         )
-        if armed or detonating:
-            pygame.draw.circle(
-                display,
-                (255, 95, 55) if detonating else (255, 150, 65),
-                center,
-                max(7, round(15 * camera_zoom * pulse)),
-                1,
-            )
-        if detonating and time_left <= MINE_TRIGGER_DELAY_MS * 0.45:
+        pygame.draw.circle(
+            display,
+            (255, 95, 55),
+            center,
+            max(7, round(15 * camera_zoom * pulse)),
+            1,
+        )
+        if time_left <= MINE_TRIGGER_DELAY_MS * 0.45:
             pygame.draw.circle(
                 display,
                 (255, 225, 180) if flash_on else (90, 25, 20),
@@ -5306,6 +5369,16 @@ def GameFrame(practice_mode: bool = False):
         # [커스텀 가능] 시스템 메시지 텍스트 폰트 (GuiFont 사용)
         message_text = GuiFont.render(system_message, True, (255, 255, 255))
         display.blit(message_text, (30, ScreenY - 42))
+    if now < flagdown_reward_notice_until and flagdown_reward_notice_image:
+        notice_text = flagdown_reward_notice_image
+        notice_rect = notice_text.get_rect(
+            center=(ScreenX // 2, ScreenY // 2 - 180)
+        )
+        notice_panel = pygame.Rect(0, 0, notice_rect.width + 40, notice_rect.height + 24)
+        notice_panel.center = notice_rect.center
+        pygame.draw.rect(display, (24, 16, 38), notice_panel, border_radius=8)
+        pygame.draw.rect(display, (190, 135, 255), notice_panel, 2, border_radius=8)
+        display.blit(notice_text, notice_rect)
     
     if is_practice_mode or debug_mode: # 스킬 창 상태 표시 (우측 상단)
         if zone_enabled:

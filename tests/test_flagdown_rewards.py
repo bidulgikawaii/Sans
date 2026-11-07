@@ -1,7 +1,11 @@
 import random
 import unittest
 
-from Config import FLAGDOWN_SKILL_REWARD_INTERVAL_MS, SUPPLY_REWARD_TYPES
+from Config import (
+    FLAGDOWN_SKILL_NAMES,
+    FLAGDOWN_SKILL_REWARD_INTERVAL_MS,
+    SUPPLY_REWARD_TYPES,
+)
 from FlagdownRewards import (
     acknowledge_flagdown_skill_rewards,
     update_flagdown_skill_rewards,
@@ -12,6 +16,7 @@ class FlagdownRewardTests(unittest.TestCase):
     def test_rewards_are_scheduled_every_fifteen_seconds(self):
         self.assertEqual(FLAGDOWN_SKILL_REWARD_INTERVAL_MS, 15_000)
         self.assertNotIn("skill", SUPPLY_REWARD_TYPES)
+        self.assertNotIn("플레어건", FLAGDOWN_SKILL_NAMES)
 
     def test_rewards_are_due_every_interval_without_repeats(self):
         state = {}

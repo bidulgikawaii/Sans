@@ -1328,7 +1328,7 @@ def handle_client(conn, player_id):
                 ):
                     allowed_skills = {
                         "폭탄받아라!", "자폭", "매의 눈", "와드", "영혼의 시험",
-                        "보호막", "은신", "텔포", "기절탄",
+                        "보호막", "은신", "텔포", "기절탄", "플레어건",
                     }
                     for skill_event in skill_events[:8]:
                         if not isinstance(skill_event, dict):

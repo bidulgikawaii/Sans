@@ -9,6 +9,9 @@ from MineMechanics import (
 
 
 class MineMechanicsTests(unittest.TestCase):
+    def test_mine_detonation_delay_is_shortened(self):
+        self.assertEqual(MINE_TRIGGER_DELAY_MS, 600)
+
     def test_mine_flashes_for_delay_before_detonating(self):
         mine = {"armed_at": 100}
         self.assertFalse(trigger_mine(mine, 99))

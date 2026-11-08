@@ -206,7 +206,10 @@ class Player:
             image = self.walk_frames[frame_index]
         return pygame.transform.flip(image, True, False) if self.facing_left else image
 
-    def draw(self, surface, camera_x=0, camera_y=0, zoom=1.0, offset_x=0, offset_y=0):
+    def draw(
+        self, surface, camera_x=0, camera_y=0, zoom=1.0,
+        offset_x=0, offset_y=0, alpha=255,
+    ):
         # 카메라 위치를 차감하여 화면용 상대 좌표 계산
         screen_x = (self.rect.x - camera_x) * zoom + offset_x
         screen_y = (self.rect.y - camera_y) * zoom + offset_y
@@ -216,5 +219,8 @@ class Player:
         image = source_image if zoom == 1.0 else pygame.transform.scale(
             source_image, (max(1, round(source_image.get_width() * zoom)), max(1, round(source_image.get_height() * zoom)))
         )
+        if alpha < 255:
+            image = image.copy()
+            image.set_alpha(alpha)
         surface.blit(image, (screen_x, screen_y))
         

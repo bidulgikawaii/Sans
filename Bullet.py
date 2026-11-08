@@ -203,6 +203,33 @@ class Bullet:
                     max(1, round(2 * zoom)),
                 )
             display.blit(image, image.get_rect(center=(round(center_x), round(center_y))))
+            if self.stun_ms:
+                angle = math.radians(self.angle)
+                direction = (math.cos(angle), math.sin(angle))
+                perpendicular = (-direction[1], direction[0])
+                bolt_points = []
+                for along, across in (
+                    (-5, -4),
+                    (-1, -1),
+                    (-3, 2),
+                    (2, 4),
+                    (1, 0),
+                    (5, -3),
+                ):
+                    bolt_points.append(
+                        (
+                            round(center_x + (direction[0] * along + perpendicular[0] * across) * zoom),
+                            round(center_y + (direction[1] * along + perpendicular[1] * across) * zoom),
+                        )
+                    )
+                pygame.draw.lines(
+                    display, (70, 195, 255), False, bolt_points,
+                    max(1, round(2 * zoom)),
+                )
+                pygame.draw.lines(
+                    display, (220, 250, 255), False, bolt_points,
+                    max(1, round(zoom)),
+                )
             return
 
         # 총알은 시야 레이어에서 가려지지 않도록 최종 렌더 단계에서 강제로 다시 그린다.

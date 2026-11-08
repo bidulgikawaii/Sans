@@ -1893,6 +1893,7 @@ def activate_quick_slot(key, reinstall=False):
             active_mines.append({
                 "x": target_x,
                 "y": target_y,
+                "owner_id": network.player_id,
                 "armed_at": now + MINE_ARM_DELAY_MS,
             })
         else:
@@ -4519,6 +4520,12 @@ def GameFrame(practice_mode: bool = False):
             return
 
     visible_player_ids = set()
+    mine_owner_ids = {
+        str(mine["owner_id"])
+        for mine in active_mines
+        if mine.get("owner_id") is not None
+    }
+    local_is_mine_placer = str(network.player_id) in mine_owner_ids
     # 다른 플레이어 그리기
     remote_players = {} if is_practice_mode else frame_server_players
     hawk_vision_active = vision_skill_until > now
@@ -4559,9 +4566,18 @@ def GameFrame(practice_mode: bool = False):
             if p_info.get("stun_ms_remaining", 0) > 0
             else (0, 0)
         )
-        other_image = IML.Player if camera_zoom == 1.0 else pygame.transform.scale(
-            IML.Player, (round(IML.Player.get_width() * camera_zoom), round(IML.Player.get_height() * camera_zoom))
-        )
+        is_mine_placer = str(p_id) in mine_owner_ids
+        other_image = IML.Player.copy() if is_mine_placer else IML.Player
+        if camera_zoom != 1.0:
+            other_image = pygame.transform.scale(
+                other_image,
+                (
+                    max(1, round(other_image.get_width() * camera_zoom)),
+                    max(1, round(other_image.get_height() * camera_zoom)),
+                ),
+            )
+        if is_mine_placer:
+            other_image.set_alpha(145)
         display.blit(
             other_image,
             (other_screen_x + stun_offset_x, other_screen_y + stun_offset_y),
@@ -4662,6 +4678,7 @@ def GameFrame(practice_mode: bool = False):
             camera_zoom,
             local_stun_offset_x,
             local_stun_offset_y,
+            alpha=145 if local_is_mine_placer else 255,
         )
         active_melee_weapon_id = (
             melee_attack_weapon_id
@@ -4902,6 +4919,7 @@ def GameFrame(practice_mode: bool = False):
             camera_zoom,
             local_stun_offset_x,
             local_stun_offset_y,
+            alpha=145 if local_is_mine_placer else 255,
         )
 
     if my_player.Hp > 0 and weapon_state.weapon_id not in MELEE_WEAPON_IDS:

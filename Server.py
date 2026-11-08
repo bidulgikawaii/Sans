@@ -773,7 +773,10 @@ def handle_client(conn, player_id):
                 reported_shield_token = max(0, int(client_data.get("shield_token", 0)))
             except (TypeError, ValueError):
                 reported_shield_token = players[player_id]["shield_token"]
-            if (
+            if reported_shield_token < players[player_id]["shield_token"]:
+                players[player_id]["shield_token"] = reported_shield_token
+                players[player_id]["shield_hp"] = 0
+            elif (
                 reported_shield_token > players[player_id]["shield_token"]
                 and players[player_id]["hp"] > 0
             ):

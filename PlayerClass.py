@@ -136,9 +136,49 @@ class Player:
         else:
             self.is_moving = False
 
+    def _position_collides(self, x, y):
+        if not self.tile_generator:
+            return False
+        next_head_hitbox, next_body_hitbox = self.hitboxes_for_position(
+            x, y, self.rect.width - 0.5, self.rect.height - 0.5
+        )
+        margin = PLAYER_COLLISION_MARGIN
+        next_head_hitbox = next_head_hitbox.inflate(-margin * 2, -margin * 2)
+        next_body_hitbox = next_body_hitbox.inflate(-margin * 2, -margin * 2)
+        return (
+            self.tile_generator.check_collision(next_head_hitbox)
+            or self.tile_generator.check_collision(next_body_hitbox)
+        )
+
+    def _eject_from_wall(self):
+        if not self.tile_generator or not self._position_collides(self.X, self.Y):
+            return False
+
+        directions = (
+            (-1, 0), (1, 0), (0, -1), (0, 1),
+            (-math.sqrt(0.5), -math.sqrt(0.5)),
+            (math.sqrt(0.5), -math.sqrt(0.5)),
+            (-math.sqrt(0.5), math.sqrt(0.5)),
+            (math.sqrt(0.5), math.sqrt(0.5)),
+        )
+        step = max(4, self.tile_generator.tile_size // 8)
+        max_distance = self.tile_generator.tile_size * 2
+        for distance in range(step, max_distance + step, step):
+            for direction_x, direction_y in directions:
+                candidate_x = self.X + direction_x * distance
+                candidate_y = self.Y + direction_y * distance
+                if self._position_collides(candidate_x, candidate_y):
+                    continue
+                self.X = candidate_x
+                self.Y = candidate_y
+                self.rect.topleft = (round(self.X), round(self.Y))
+                self._update_hitboxes()
+                return True
+        return False
+
     def Move(self, dx, dy):
         """이동 시 벽 충돌 감지를 수행합니다."""
-        moved = False
+        moved = self._eject_from_wall()
         for delta_x, delta_y in ((dx, 0), (0, dy)):
             distance = delta_x if delta_x else delta_y
             if distance == 0:
@@ -149,16 +189,7 @@ class Player:
             for _ in range(steps):
                 candidate_x = self.X + step_x
                 candidate_y = self.Y + step_y
-                next_head_hitbox, next_body_hitbox = self.hitboxes_for_position(
-                    candidate_x, candidate_y, self.rect.width -0.5, self.rect.height -0.5
-                )
-                margin = PLAYER_COLLISION_MARGIN
-                next_head_hitbox = next_head_hitbox.inflate(-margin * 2, -margin * 2)
-                next_body_hitbox = next_body_hitbox.inflate(-margin * 2, -margin * 2)
-                if self.tile_generator and (
-                    self.tile_generator.check_collision(next_head_hitbox)
-                    or self.tile_generator.check_collision(next_body_hitbox)
-                ):
+                if self._position_collides(candidate_x, candidate_y):
                     break
                 self.X = candidate_x
                 self.Y = candidate_y

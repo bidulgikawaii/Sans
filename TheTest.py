@@ -54,6 +54,7 @@ from GameRendering import (
 from GameAudio import load_effect_sound, play_effect_sound, set_effect_volume
 from Zone import MagneticZone
 from GameModes import get_game_mode, get_game_modes
+from FlareSupply import select_flare_supply_reward_types
 from WorldEffects import RainWeather, register_weather, world_effects
 from Animation import FrameAnimation
 from NetworkClient import (
@@ -657,11 +658,7 @@ def launch_flare_supplies(center_x, center_y, now):
         (-round(TileGene.tile_size * 1.5), round(TileGene.tile_size * 2.6)),
         (-round(TileGene.tile_size * 1.5), -round(TileGene.tile_size * 2.6)),
     )[:FLARE_SUPPLY_DROP_COUNT]
-    reward_types = (
-        DEATHMATCH_FLARE_SUPPLY_TYPES
-        if selected_game_mode == GAME_MODE_DEATHMATCH
-        else ("flare_ammo",) * len(offsets)
-    )
+    reward_types = select_flare_supply_reward_types(selected_game_mode)
     placed_rects = []
     for index, ((offset_x, offset_y), reward_type) in enumerate(
         zip(offsets, reward_types)
@@ -917,7 +914,7 @@ vision_shape_override = None
 def reset_match_state(regenerate_world=False, independent_world=False, world_seed=None):
     """새 경기에 들어갈 때 이전 경기의 클라이언트 상태를 초기화합니다."""
     global match_result, result_started_at, system_message, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
-    global pending_heal_amount, vision_skill_until, shield_hp, haste_until
+    global pending_heal_amount, vision_skill_until, shield_hp, shield_token, haste_until
     global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
     global teleport_placements_remaining, third_weapon_id, special_weapon_crate
     global training_dummy, preserve_magazine_after_chest
@@ -998,7 +995,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     heal_token = pending_heal_amount = 0
     healing_item_count = 0
     vision_skill_until = haste_until = stealth_until = 0
-    shield_hp = 0
+    shield_hp = shield_token = 0
     stealth_token = 0
     active_rune_tile = None
     teleport_anchor = None
@@ -1755,7 +1752,7 @@ def activate_quick_slot(key, reinstall=False):
         system_message = "사망 또는 리스폰 중에는 자폭을 사용할 수 없습니다."
         return
     if skill_name == "영혼의 시험":
-        if local_match or debug_mode:
+        if not practice_mode_active and not debug_mode:
             system_message = "영혼의 시험은 온라인 대전에서 사용할 수 있습니다."
             return
         if now < skill_cooldowns.get(skill_name, 0):
@@ -4099,20 +4096,50 @@ def GameFrame(practice_mode: bool = False):
                     IML.Player.get_height(),
                 )
                 if clone_rect.colliderect(bullet.rect):
-                    pending_hit_events.append({
-                        "target_id": f"clone:{clone['clone_id']}",
-                        "target_kind": "clone",
-                        "clone_id": clone["clone_id"],
-                        "attacker_id": bullet.owner_id,
-                        "damage": bullet.damage,
-                        "hit_part": "body",
-                        "weapon_id": bullet.weapon_id,
-                        "client_bullet_token": getattr(
-                            bullet, "client_bullet_token", None
-                        ),
-                        "impact_x": bullet.x,
-                        "impact_y": bullet.y,
-                    })
+                    if (
+                        is_practice_mode
+                        and clone.get("linked_player_id") == "training_dummy"
+                        and training_dummy is not None
+                        and training_dummy.Hp > 0
+                    ):
+                        clone_damage = min(
+                            clone["hp"], max(0, int(bullet.damage))
+                        )
+                        clone["hp"] -= clone_damage
+                        previous_hp = training_dummy.Hp
+                        training_dummy.Hp = max(
+                            0, training_dummy.Hp - clone_damage
+                        )
+                        damage_numbers.append({
+                            "x": training_dummy.rect.centerx,
+                            "y": training_dummy.rect.top,
+                            "damage": previous_hp - training_dummy.Hp,
+                            "color": (255, 255, 255),
+                            "started_at": now,
+                            "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+                        })
+                        if training_dummy.Hp <= 0:
+                            training_dummy.respawn_at = (
+                                now + TRAINING_DUMMY_RESPAWN_MS
+                            )
+                        if clone["hp"] <= 0:
+                            linked_clones.remove(clone)
+                            known_linked_clone_ids.discard(clone["clone_id"])
+                    else:
+                        pending_hit_events.append({
+                            "target_id": f"clone:{clone['clone_id']}",
+                            "target_kind": "clone",
+                            "clone_id": clone["clone_id"],
+                            "attacker_id": bullet.owner_id,
+                            "damage": bullet.damage,
+                            "hit_part": "body",
+                            "weapon_id": bullet.weapon_id,
+                            "client_bullet_token": getattr(
+                                bullet, "client_bullet_token", None
+                            ),
+                            "impact_x": bullet.x,
+                            "impact_y": bullet.y,
+                        })
                     _deactivate_bullet(bullet, now)
                     break
             if not bullet.is_active:
@@ -4164,17 +4191,59 @@ def GameFrame(practice_mode: bool = False):
                     break
             if bullet.is_active and (is_practice_mode or debug_mode) and training_dummy is not None:
                 previous_hp = training_dummy.Hp
-                hit_part = training_dummy.check_bullet_hit(bullet.rect, bullet.damage)
+                if bullet.weapon_id == "spirit_trial":
+                    if training_dummy.head_hitbox.colliderect(bullet.rect):
+                        hit_part = "head"
+                    elif training_dummy.body_hitbox.colliderect(bullet.rect):
+                        hit_part = "body"
+                    else:
+                        hit_part = None
+                else:
+                    hit_part = training_dummy.check_bullet_hit(
+                        bullet.rect, bullet.damage
+                    )
                 if hit_part:
-                    dealt_damage = previous_hp - training_dummy.Hp
-                    damage_numbers.append({
-                        "x": training_dummy.rect.centerx,
-                        "y": training_dummy.rect.top,
-                        "damage": dealt_damage,
-                        "color": (255, 235, 100) if hit_part == "head" else (255, 255, 255),
-                        "started_at": now,
-                        "lifetime": DAMAGE_TEXT_LIFETIME_MS,
-                    })
+                    if bullet.weapon_id == "spirit_trial":
+                        practice_clones = [
+                            clone for clone in linked_clones
+                            if clone.get("linked_player_id") == "training_dummy"
+                        ]
+                        if len(practice_clones) >= 3:
+                            oldest_clone = practice_clones[0]
+                            linked_clones.remove(oldest_clone)
+                            known_linked_clone_ids.discard(
+                                oldest_clone["clone_id"]
+                            )
+                        clone_id = -int(
+                            getattr(bullet, "client_bullet_token", 1)
+                        )
+                        linked_clones.append({
+                            "clone_id": clone_id,
+                            "owner_id": network.player_id,
+                            "linked_player_id": "training_dummy",
+                            "x": bullet.x,
+                            "y": bullet.y,
+                            "hp": SPIRIT_TRIAL_CLONE_HP,
+                            "max_hp": SPIRIT_TRIAL_CLONE_HP,
+                        })
+                        known_linked_clone_ids.add(clone_id)
+                        particles.ring(
+                            bullet.x, bullet.y, (150, 240, 255),
+                            count=24, radius=44, lifetime=550, size=4,
+                        )
+                        system_message = (
+                            "영혼의 시험 성공! 더미에게 연결된 분신을 소환했습니다."
+                        )
+                    else:
+                        dealt_damage = previous_hp - training_dummy.Hp
+                        damage_numbers.append({
+                            "x": training_dummy.rect.centerx,
+                            "y": training_dummy.rect.top,
+                            "damage": dealt_damage,
+                            "color": (255, 235, 100) if hit_part == "head" else (255, 255, 255),
+                            "started_at": now,
+                            "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+                        })
                     particles.emit(
                         bullet.x,
                         bullet.y,
@@ -4185,7 +4254,10 @@ def GameFrame(practice_mode: bool = False):
                         size=5 if bullet.weapon_id == "spirit_trial" else 4,
                     )
                     _deactivate_bullet(bullet, now)
-                    if training_dummy.Hp <= 0:
+                    if (
+                        bullet.weapon_id != "spirit_trial"
+                        and training_dummy.Hp <= 0
+                    ):
                         training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
                     break
     bullets = [b for b in bullets if b.is_active]

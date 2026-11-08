@@ -20,6 +20,10 @@ from Config import (
     FLAGDOWN_MAP_HEIGHT_TILES,
     FLAGDOWN_MAP_WIDTH_TILES,
     GAME_MODE_FLAGDOWN,
+    HEAD_HITBOX_WIDTH_RATIO,
+    HEAD_HITBOX_HEIGHT_RATIO,
+    BODY_HITBOX_INSET_RATIO,
+    PLAYER_COLLISION_MARGIN,
 )
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
@@ -698,9 +702,29 @@ class TileGenerator(TileRenderingMixin):
             return None
 
         def is_clear(center_x, center_y):
-            rect = pygame.Rect(0, 0, width, height)
-            rect.center = (round(center_x), round(center_y))
-            return not self.check_collision(rect)
+            player_x = center_x - width / 2
+            player_y = center_y - height / 2
+            head_width = round(width * HEAD_HITBOX_WIDTH_RATIO)
+            head_height = round(height * HEAD_HITBOX_HEIGHT_RATIO)
+            head = pygame.Rect(
+                player_x + (width - head_width) // 2,
+                player_y,
+                head_width,
+                head_height,
+            )
+            inset = round(width * BODY_HITBOX_INSET_RATIO)
+            body = pygame.Rect(
+                player_x + inset,
+                player_y + head_height,
+                width - inset * 2,
+                height - head_height,
+            )
+            margin = PLAYER_COLLISION_MARGIN
+            head = head.inflate(-margin * 2, -margin * 2)
+            body = body.inflate(-margin * 2, -margin * 2)
+            return not (
+                self.check_collision(head) or self.check_collision(body)
+            )
 
         if is_clear(target_x, target_y):
             return target_x, target_y

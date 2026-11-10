@@ -13,6 +13,11 @@ from FlagdownRewards import (
     update_flagdown_skill_rewards,
 )
 
+def test_():
+    global a
+
+
+a = 10
 
 class FlagdownRewardTests(unittest.TestCase):
     def test_rewards_are_scheduled_every_fifteen_seconds(self):

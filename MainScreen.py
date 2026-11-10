@@ -1,6 +1,7 @@
 import pygame
 from Config import MAIN_SCREEN_BACKGROUND_COLOR
 from FontAssets import get_game_font
+from Settings import MOUSE_SENSITIVITY_MAX, MOUSE_SENSITIVITY_MIN
 from GameModes import get_game_mode, get_game_modes
 from Settings import KEY_ACTION_LABELS
 
@@ -41,7 +42,16 @@ class MainScreenRenderer:
         self.surface.blit(profile, profile_rect)
         if weapon_name:
             weapon_text = self.font.render(f"무기: {weapon_name}  [1~5 선택]", True, (220, 235, 255))
-            self.surface.blit(weapon_text, weapon_text.get_rect(center=(270, 820)))
+            max_width = min(520, self.screen_width - 40)
+            if weapon_text.get_width() > max_width:
+                scaled_height = max(
+                    1,
+                    round(weapon_text.get_height() * max_width / weapon_text.get_width()),
+                )
+                weapon_text = pygame.transform.smoothscale(
+                    weapon_text, (max_width, scaled_height)
+                )
+            self.surface.blit(weapon_text, weapon_text.get_rect(midleft=(20, 820)))
         if weapon_image is not None:
             cache_key = id(weapon_image)
             preview = self._weapon_previews.get(cache_key)
@@ -121,12 +131,17 @@ class MainScreenRenderer:
         pygame.draw.rect(self.surface, (20, 30, 48), sensitivity_rect, border_radius=6)
         pygame.draw.rect(self.surface, (90, 120, 150), sensitivity_rect, 2, border_radius=6)
         sensitivity_label = self.font.render(
-            f"마우스 감도  {settings['mouse_sensitivity']:.2f}", True, (235, 240, 250)
+            f"마우스/시야각 감도  {settings['mouse_sensitivity']:.2f}",
+            True,
+            (235, 240, 250),
         )
         self.surface.blit(sensitivity_label, (sensitivity_rect.x + 18, sensitivity_rect.y + 13))
         slider = pygame.Rect(sensitivity_rect.right - 420, sensitivity_rect.y + 27, 380, 8)
         pygame.draw.rect(self.surface, (70, 85, 105), slider, border_radius=4)
-        progress = (settings["mouse_sensitivity"] - 0.25) / 1.75
+        progress = (
+            (settings["mouse_sensitivity"] - MOUSE_SENSITIVITY_MIN)
+            / (MOUSE_SENSITIVITY_MAX - MOUSE_SENSITIVITY_MIN)
+        )
         knob_x = slider.x + round(slider.width * progress)
         pygame.draw.line(self.surface, (255, 220, 120), slider.topleft, (knob_x, slider.centery), 8)
         pygame.draw.circle(self.surface, (255, 235, 170), (knob_x, slider.centery), 12)

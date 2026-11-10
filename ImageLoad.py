@@ -70,6 +70,16 @@ class Imageload:
             (72, 72),
             directory="comet-on-a-path-frames (1)",
         )
+        self.SpiritTrialGhost = self._load_animation(
+            "floating-ghost_",
+            (56, 56),
+            directory="floating-ghost-frames",
+        )
+        self.SpiritTrialAura = self._load_animation(
+            "haunted-candle-blue-flame_",
+            (88, 88),
+            directory="haunted-candle-blue-flame-frames",
+        )
         self.BatIcon = self.Bat[0] if self.Bat else self._create_flaregun_image()
         self.Expo = self._load_animation("Expo", (128, 128))
         self.BlackHoleEffect = self._load_animation(
@@ -77,6 +87,9 @@ class Imageload:
         )
         self.BlackHoleBullet = self._load_animation(
             "black-hole_", (72, 72), directory="black_hole_Bullet"
+        )
+        self.ManaLance = self._load_animation(
+            "mana-lance_", (256, 136), directory="mana-lance-frames"
         )
         flaregun = self._load_scaled_image("flaregun.png", (96, 48))
         self.FlareGun = flaregun if flaregun is not None else self._create_flaregun_image()
@@ -120,9 +133,9 @@ class Imageload:
             name: self._load_scaled_image(filename, (SKILL_ICON_SIZE, SKILL_ICON_SIZE))
             for name, filename in SKILL_ICON_FILES.items()
         }
-        if self.Comet:
+        if self.SpiritTrialGhost:
             self.skill_icons["영혼의 시험"] = pygame.transform.smoothscale(
-                self.Comet[0], (SKILL_ICON_SIZE, SKILL_ICON_SIZE)
+                self.SpiritTrialGhost[0], (SKILL_ICON_SIZE, SKILL_ICON_SIZE)
             )
         self.Protect = self._load_image_file(self.root / "Protect.png")
         self.GrassTile = self._load_scaled_image("GrassTile.png", (64, 64))
@@ -334,6 +347,12 @@ class Imageload:
     def GetCometFrames(self):
         return self.Comet
 
+    def GetSpiritTrialGhostFrames(self):
+        return self.SpiritTrialGhost
+
+    def GetSpiritTrialAuraFrames(self):
+        return self.SpiritTrialAura
+
     def GetHurtImage(self):
         return self.Hurt
 
@@ -345,6 +364,9 @@ class Imageload:
 
     def GetBlackHoleBulletFrames(self):
         return self.BlackHoleBullet
+
+    def GetManaLanceFrames(self):
+        return self.ManaLance
 
     def GetTileTest(self):
         return self.Tile

@@ -14,6 +14,20 @@ from Config import (
 _BULLET_IMAGE_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "Image", BULLET_IMAGE_FILE
 )
+_SPIRIT_TRIAL_GHOST_FRAMES = ()
+_SPIRIT_TRIAL_AURA_FRAMES = ()
+_BLACK_HOLE_BULLET_FRAMES = ()
+
+
+def set_spirit_trial_animations(ghost_frames, aura_frames):
+    global _SPIRIT_TRIAL_GHOST_FRAMES, _SPIRIT_TRIAL_AURA_FRAMES
+    _SPIRIT_TRIAL_GHOST_FRAMES = tuple(ghost_frames)
+    _SPIRIT_TRIAL_AURA_FRAMES = tuple(aura_frames)
+
+
+def set_black_hole_bullet_frames(frames):
+    global _BLACK_HOLE_BULLET_FRAMES
+    _BLACK_HOLE_BULLET_FRAMES = tuple(frames)
 
 # 크기별 총알 Surface를 재사용해 발사 때마다 같은 이미지 변환을 반복하지 않습니다.
 
@@ -46,16 +60,22 @@ class Bullet:
         stun_ms=0,
     ):
         if weapon_id == "spirit_trial":
-            self.surface = pygame.Surface((34, 16), pygame.SRCALPHA)
-            pygame.draw.ellipse(self.surface, (40, 185, 255, 75), (0, 1, 34, 14))
-            pygame.draw.ellipse(self.surface, (110, 230, 255, 210), (4, 4, 25, 8))
-            pygame.draw.ellipse(self.surface, (235, 255, 255), (10, 5, 15, 6))
+            self.surface = (
+                _SPIRIT_TRIAL_GHOST_FRAMES[0]
+                if _SPIRIT_TRIAL_GHOST_FRAMES
+                else pygame.Surface((34, 16), pygame.SRCALPHA)
+            )
         elif weapon_id == "blackhole_generator":
-            self.surface = pygame.Surface((32, 32), pygame.SRCALPHA)
-            pygame.draw.circle(self.surface, (95, 35, 150, 90), (16, 16), 15)
-            pygame.draw.circle(self.surface, (20, 10, 35, 245), (16, 16), 10)
-            pygame.draw.circle(self.surface, (185, 115, 255, 230), (16, 16), 6, 2)
-            pygame.draw.circle(self.surface, (255, 245, 255, 220), (20, 12), 3)
+            self.surface = (
+                _BLACK_HOLE_BULLET_FRAMES[0]
+                if _BLACK_HOLE_BULLET_FRAMES
+                else pygame.Surface((32, 32), pygame.SRCALPHA)
+            )
+        elif weapon_id == "Revolver_golden":
+            self.surface = pygame.Surface((30, 18), pygame.SRCALPHA)
+            pygame.draw.ellipse(self.surface, (255, 195, 45, 80), (0, 1, 30, 16))
+            pygame.draw.ellipse(self.surface, (255, 220, 95, 230), (4, 4, 23, 10))
+            pygame.draw.ellipse(self.surface, (255, 250, 210), (10, 5, 12, 8))
         else:
             self.surface = _get_bullet_surface(size)
         
@@ -82,7 +102,11 @@ class Bullet:
 
     @property
     def rect(self):
-        rect = self.surface.get_rect()
+        rect = (
+            pygame.Rect(0, 0, 30, 30)
+            if self.weapon_id == "spirit_trial"
+            else self.surface.get_rect()
+        )
         rect.center = (round(self.x), round(self.y))
         return rect
 
@@ -147,7 +171,25 @@ class Bullet:
     def draw(self, display, camera_x=0, camera_y=0, zoom=1.0, force_visible=False):
         # 활성화 상태일 때만 메인 화면(display)에 총알 그리기
         if self.is_active:
-            image = pygame.transform.rotate(self.surface, -self.angle)
+            if (
+                self.weapon_id == "spirit_trial"
+                and _SPIRIT_TRIAL_GHOST_FRAMES
+            ):
+                frame_index = (pygame.time.get_ticks() // 70) % len(
+                    _SPIRIT_TRIAL_GHOST_FRAMES
+                )
+                source_image = _SPIRIT_TRIAL_GHOST_FRAMES[frame_index]
+            elif (
+                self.weapon_id == "blackhole_generator"
+                and _BLACK_HOLE_BULLET_FRAMES
+            ):
+                frame_index = (pygame.time.get_ticks() // 45) % len(
+                    _BLACK_HOLE_BULLET_FRAMES
+                )
+                source_image = _BLACK_HOLE_BULLET_FRAMES[frame_index]
+            else:
+                source_image = self.surface
+            image = pygame.transform.rotate(source_image, -self.angle)
             if zoom != 1.0:
                 image = pygame.transform.smoothscale(
                     image,
@@ -159,7 +201,7 @@ class Bullet:
 
             center_x = (self.x - camera_x) * zoom
             center_y = (self.y - camera_y) * zoom
-            if self.weapon_id == "blackhole_generator":
+            if self.weapon_id == "blackhole_generator" and not _BLACK_HOLE_BULLET_FRAMES:
                 pulse = 1.0 + 0.22 * math.sin(pygame.time.get_ticks() * 0.03)
                 pygame.draw.circle(
                     display,
@@ -174,23 +216,37 @@ class Bullet:
                     (round(center_x), round(center_y)),
                     max(5, round(9 * zoom)),
                 )
+            elif self.weapon_id == "Revolver_golden":
+                pygame.draw.circle(
+                    display,
+                    (255, 220, 95),
+                    (round(center_x), round(center_y)),
+                    max(4, round(9 * zoom)),
+                    max(1, round(2 * zoom)),
+                )
             elif self.weapon_id == "spirit_trial":
                 previous_x = (self.previous_x - camera_x) * zoom
                 previous_y = (self.previous_y - camera_y) * zoom
-                pulse = 1.0 + 0.18 * math.sin(pygame.time.get_ticks() * 0.025)
+                now = pygame.time.get_ticks()
+                pulse = 1.0 + 0.08 * math.sin(now * 0.025)
+                if _SPIRIT_TRIAL_AURA_FRAMES:
+                    aura_index = (now // 65) % len(_SPIRIT_TRIAL_AURA_FRAMES)
+                    aura = _SPIRIT_TRIAL_AURA_FRAMES[aura_index]
+                    aura_size = max(1, round(aura.get_width() * zoom * pulse))
+                    if aura_size != aura.get_width():
+                        aura = pygame.transform.smoothscale(
+                            aura, (aura_size, aura_size)
+                        )
+                    display.blit(
+                        aura,
+                        aura.get_rect(center=(round(center_x), round(center_y))),
+                    )
                 pygame.draw.line(
                     display,
                     (60, 190, 255),
                     (round(previous_x), round(previous_y)),
                     (round(center_x), round(center_y)),
-                    max(2, round(7 * zoom * pulse)),
-                )
-                pygame.draw.circle(
-                    display,
-                    (130, 225, 255),
-                    (round(center_x), round(center_y)),
-                    max(5, round(10 * zoom * pulse)),
-                    max(1, round(2 * zoom)),
+                    max(2, round(4 * zoom * pulse)),
                 )
             elif self.stun_ms:
                 pulse = 1.0 + 0.15 * math.sin(pygame.time.get_ticks() * 0.025)

@@ -1,6 +1,6 @@
 import pygame
 
-from GameRendering import draw_player_hitboxes
+from GameRendering import draw_player_hitboxes, draw_stun_effect
 from Tool_Cordinate import world_to_screen
 
 
@@ -13,7 +13,7 @@ class PracticeView:
         self.font = font
         self.screen_width = screen_width
 
-    def draw_training_dummy(self, dummy, camera_x, camera_y, zoom):
+    def draw_training_dummy(self, dummy, camera_x, camera_y, zoom, now):
         if dummy is None or dummy.Hp <= 0:
             return
 
@@ -28,6 +28,14 @@ class PracticeView:
             ),
         )
         self.surface.blit(image, (screen_x, screen_y))
+        if now < getattr(dummy, "stunned_until", 0):
+            draw_stun_effect(
+                self.surface,
+                screen_x + image.get_width() / 2,
+                screen_y + image.get_height() / 2,
+                zoom,
+                now,
+            )
         hp_text = self.font.render(
             f"더미 {dummy.Hp}/{dummy.MaxHp}", True, (255, 235, 120)
         )

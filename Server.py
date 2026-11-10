@@ -1201,11 +1201,14 @@ def handle_client(conn, player_id):
                     ):
                         continue
                 damage = max(0, int(hit_event.get("damage", 0)))
-                if hit_event.get("hit_part") == "head":
-                    damage *= HEADSHOT_DAMAGE_MULTIPLIER
                 hit_weapon_id = hit_event.get("weapon_id")
                 if not isinstance(hit_weapon_id, str) or hit_weapon_id not in WEAPONS:
                     hit_weapon_id = players[attacker_id].get("weapon_id", DEFAULT_WEAPON_ID)
+                if (
+                    hit_event.get("hit_part") == "head"
+                    and hit_weapon_id != "Revolver_golden"
+                ):
+                    damage *= HEADSHOT_DAMAGE_MULTIPLIER
                 is_bat_hit = (
                     attacker_id == player_id
                     and hit_weapon_id == "bat"

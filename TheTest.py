@@ -27,7 +27,15 @@ from MineMechanics import (
 )
 from FontAssets import get_game_font
 from MainScreen import MainScreenRenderer
-from Settings import RESERVED_KEYS, get_key, key_bindings, save_settings, settings
+from Settings import (
+    MOUSE_SENSITIVITY_MAX,
+    MOUSE_SENSITIVITY_MIN,
+    RESERVED_KEYS,
+    get_key,
+    key_bindings,
+    save_settings,
+    settings,
+)
 from PracticeView import PracticeView
 from MiniMap import MiniMap
 from SpectatorMode import SpectatorMode
@@ -44,7 +52,6 @@ from GameRendering import (
     draw_teleport_anchor,
     draw_visibility_geometry,
     draw_ward,
-    draw_bush_vision_angle,
     draw_linked_clone,
     draw_kill_feed,
     draw_skill_range,
@@ -293,6 +300,11 @@ def leave_lobby():
 
 random.seed(network.init_data["seed"])
 IML = Imageload()
+set_spirit_trial_animations(
+    IML.GetSpiritTrialGhostFrames(),
+    IML.GetSpiritTrialAuraFrames(),
+)
+set_black_hole_bullet_frames(IML.GetBlackHoleBulletFrames())
 blade_animation = FrameAnimation(
     IML.GetBladeFrames(),
     max(1, MELEE_ATTACK_DURATION_MS // max(1, len(IML.GetBladeFrames()))),
@@ -421,6 +433,7 @@ def respawn_training_dummy():
             training_dummy.MaxHp = TRAINING_DUMMY_MAX_HP
             training_dummy.Hp = TRAINING_DUMMY_MAX_HP
             training_dummy.respawn_at = 0
+            training_dummy.stunned_until = 0
             return
 
 # 보내는 데이터 - 멀티플레이 동기화용
@@ -493,6 +506,8 @@ active_bombs = []
 active_explosions = []
 active_black_holes = []
 active_plasma_beams = []
+active_aim_locks = []
+golden_revolver_until = 0
 active_mines = []
 pending_mine_placements = []
 next_mine_request_id = 1
@@ -556,6 +571,7 @@ SUPPLY_COLORS = {
 }
 # 픽셀 위치와 정확한 방향이 바뀌면 시야 폴리곤을 다시 계산합니다.
 visibility_polygon_cache = {}
+golden_time_overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
 mouse_fire_hold = False
 aim_lock_until = 0
 aim_locked_pos = None
@@ -938,6 +954,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global next_unique_supply_drop_at, unique_supply_notice, unique_supply_notice_until
     global next_local_supply_id
     global practice_weapon_selection
+    global golden_revolver_until
     global flaregun_used, flagdown_reward_notice, flagdown_reward_notice_until
     global flagdown_reward_notice_image
     global spawn_tiles, spawn_tile_x, spawn_tile_y
@@ -960,7 +977,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     for collection in (
         bullets, remote_bullets, kill_feed, active_bombs, active_explosions,
         active_mines,
-        active_black_holes, active_plasma_beams,
+        active_black_holes, active_plasma_beams, active_aim_locks,
         supply_drops, pending_treasure_destroys, pending_furniture_destroys,
         pending_hit_events, wards, rune_alerts, damage_numbers,
     ):
@@ -1050,6 +1067,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     weapon_smoke_until = 0
     aim_lock_until = 0
     aim_locked_pos = None
+    golden_revolver_until = 0
     easter_egg_found = False
     easter_egg_flash_until = 0
     vision_shape_index = 0
@@ -1148,7 +1166,11 @@ def SettingsView():
     def update_sensitivity(mouse_x):
         track = buttons["sensitivity"]
         progress = min(1.0, max(0.0, (mouse_x - track.left - 12) / (track.width - 24)))
-        settings["mouse_sensitivity"] = round(0.25 + progress * 1.75, 2)
+        settings["mouse_sensitivity"] = round(
+            MOUSE_SENSITIVITY_MIN
+            + progress * (MOUSE_SENSITIVITY_MAX - MOUSE_SENSITIVITY_MIN),
+            2,
+        )
 
     def update_volume(mouse_x):
         track = buttons["volume"]
@@ -1752,9 +1774,6 @@ def activate_quick_slot(key, reinstall=False):
         system_message = "사망 또는 리스폰 중에는 자폭을 사용할 수 없습니다."
         return
     if skill_name == "영혼의 시험":
-        if not practice_mode_active and not debug_mode:
-            system_message = "영혼의 시험은 온라인 대전에서 사용할 수 있습니다."
-            return
         if now < skill_cooldowns.get(skill_name, 0):
             remain = (skill_cooldowns[skill_name] - now) / 1000
             system_message = f"영혼의 시험 재사용 대기: {remain:.1f}초"
@@ -2495,6 +2514,84 @@ def _line_rect_intersects(x1, y1, x2, y2, rect):
     return bool(rect.clipline((x1, y1), (x2, y2))) or rect.collidepoint(x1, y1)
 
 
+def _golden_revolver_impact(x, y):
+    global screen_shake
+    screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 10)
+    particles.emit(
+        x, y, (255, 235, 155), count=90, speed=210,
+        lifetime=850, size=8, gravity=-20,
+    )
+    particles.emit(
+        x, y, (255, 185, 70), count=55, speed=150,
+        lifetime=650, size=6, gravity=75,
+    )
+    particles.ring(
+        x, y, (255, 250, 210), count=48, radius=95,
+        lifetime=650, size=7,
+    )
+    particles.ring(
+        x, y, (255, 190, 65), count=32, radius=145,
+        lifetime=850, size=5,
+    )
+
+
+def _damage_plasma_beam(beam, frame_server_players, now):
+    beam_hitbox_padding = PLASMA_BEAM_WIDTH
+    own_team = frame_server_players.get(beam["owner_id"], {}).get("team_id")
+    for target_id, player_info in frame_server_players.items():
+        if (
+            str(target_id) == str(beam["owner_id"])
+            or is_hidden_player(player_info)
+            or (
+                selected_game_mode == GAME_MODE_FLAGDOWN
+                and own_team in (0, 1)
+                and player_info.get("team_id") == own_team
+            )
+        ):
+            continue
+        head, body = Player.hitboxes_for_position(
+            player_info["posX"],
+            player_info["posY"],
+            IML.Player.get_width(),
+            IML.Player.get_height(),
+        )
+        head = head.inflate(beam_hitbox_padding, beam_hitbox_padding)
+        body = body.inflate(beam_hitbox_padding, beam_hitbox_padding)
+        if _line_rect_intersects(beam["x1"], beam["y1"], beam["x2"], beam["y2"], head) or _line_rect_intersects(
+            beam["x1"], beam["y1"], beam["x2"], beam["y2"], body
+        ):
+            pending_hit_events.append({
+                "target_id": target_id,
+                "attacker_id": beam["owner_id"],
+                "damage": PLASMA_DAMAGE,
+                "hit_part": "body",
+                "weapon_id": "plasma_cannon",
+            })
+
+    if (practice_mode_active or debug_mode) and training_dummy is not None and training_dummy.Hp > 0:
+        head = training_dummy.head_hitbox.inflate(
+            beam_hitbox_padding, beam_hitbox_padding
+        )
+        body = training_dummy.body_hitbox.inflate(
+            beam_hitbox_padding, beam_hitbox_padding
+        )
+        if _line_rect_intersects(beam["x1"], beam["y1"], beam["x2"], beam["y2"], head) or _line_rect_intersects(
+            beam["x1"], beam["y1"], beam["x2"], beam["y2"], body
+        ):
+            previous_hp = training_dummy.Hp
+            training_dummy.Hp = max(0, training_dummy.Hp - PLASMA_DAMAGE)
+            damage_numbers.append({
+                "x": training_dummy.rect.centerx,
+                "y": training_dummy.rect.top,
+                "damage": previous_hp - training_dummy.Hp,
+                "color": (100, 225, 255),
+                "started_at": now,
+                "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+            })
+            if training_dummy.Hp <= 0:
+                training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
+
+
 def _ray_endpoint(start_x, start_y, angle, max_distance):
     step = max(4, TileGene.tile_size // 4)
     last_x, last_y = start_x, start_y
@@ -2507,6 +2604,135 @@ def _ray_endpoint(start_x, start_y, angle, max_distance):
     return last_x, last_y
 
 
+def fire_golden_revolver():
+    global weapon_fire_until, weapon_smoke_until, system_message
+    global golden_revolver_until, screen_shake
+    config = weapon_state.config
+    if not weapon_state.can_fire():
+        return
+
+    center_x, center_y = get_player_world_center(
+        my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
+    )
+    own_team = server_players.get(network.player_id, {}).get("team_id")
+    targets = []
+    for player_id, player_info in server_players.items():
+        if (
+            str(player_id) == str(network.player_id)
+            or is_hidden_player(player_info)
+            or (
+                selected_game_mode == GAME_MODE_FLAGDOWN
+                and own_team in (0, 1)
+                and player_info.get("team_id") == own_team
+            )
+        ):
+            continue
+        target_x = player_info["posX"] + IML.Player.get_width() / 2
+        target_y = player_info["posY"] + IML.Player.get_height() / 2
+        weapon_visible = TileGene.is_point_visible_from(
+            center_x,
+            center_y,
+            target_x,
+            target_y,
+            config.vision_radius,
+            vision_shape=config.vision_shape,
+            direction_angle=vision_angle,
+            fov_angle=config.vision_fov,
+            vision_width=config.vision_width,
+        )
+        base_visible = TileGene.is_point_visible_from(
+            center_x,
+            center_y,
+            target_x,
+            target_y,
+            PLAYER_BASE_VISION_RADIUS,
+            vision_shape=VISION_CIRCLE,
+        )
+        ward_visible = any(
+            TileGene.is_point_visible_from(
+                ward_x,
+                ward_y,
+                target_x,
+                target_y,
+                WARD_VISION_RADIUS,
+                vision_shape=VISION_CIRCLE,
+            )
+            for ward_x, ward_y in wards
+        )
+        if not (weapon_visible or base_visible or ward_visible):
+            continue
+        targets.append((target_x, target_y, player_id))
+
+    if (practice_mode_active or debug_mode) and training_dummy is not None and training_dummy.Hp > 0:
+        target_x = training_dummy.rect.centerx
+        target_y = training_dummy.rect.centery
+        visible = TileGene.is_point_visible_from(
+            center_x,
+            center_y,
+            target_x,
+            target_y,
+            config.vision_radius,
+            vision_shape=config.vision_shape,
+            direction_angle=vision_angle,
+            fov_angle=config.vision_fov,
+            vision_width=config.vision_width,
+        )
+        if visible:
+            targets.append((target_x, target_y, "training_dummy"))
+
+    now = pygame.time.get_ticks()
+    aim_until = now + 600
+    golden_revolver_until = aim_until
+    screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 5)
+    for target_x, target_y, target_id in targets:
+        angle = math.atan2(target_y - center_y, target_x - center_x)
+        muzzle_x = center_x + math.cos(angle) * 42
+        muzzle_y = center_y + math.sin(angle) * 42
+        bullet = Bullet(
+            config.bullet_size,
+            damage=99,
+            owner_id=network.player_id,
+            weapon_id="Revolver_golden",
+        )
+        _assign_client_bullet_token(bullet)
+        bullet.launch(
+            muzzle_x,
+            muzzle_y,
+            target_x,
+            target_y,
+            speed=config.bullet_speed,
+            hold_ms=aim_until - now,
+        )
+        bullet.just_fired = True
+        bullet.life_time = config.bullet_lifetime
+        bullet.aim_target_id = target_id
+        bullets.append(bullet)
+        active_aim_locks.append({
+            "x": target_x,
+            "y": target_y,
+            "target_id": target_id,
+            "until": aim_until,
+        })
+
+    weapon_state.consume_round()
+    weapon_fire_until = now + WEAPON_FIRE_ANIMATION_MS
+    weapon_smoke_until = now + WEAPON_SMOKE_ANIMATION_MS
+    break_stealth_on_attack()
+    particles.emit(
+        center_x, center_y, (255, 235, 155), count=42, speed=130,
+        lifetime=650, size=6,
+    )
+    particles.ring(
+        center_x, center_y, (255, 225, 125),
+        count=32, radius=70, lifetime=600, size=5,
+    )
+    if targets:
+        system_message = f"황금 조준 완료! 시야 내 적 {len(targets)}명에게 특수 탄환 발사."
+    else:
+        system_message = "황금 리볼버 발동: 시야 내 조준할 적이 없습니다."
+    consume_third_weapon("Revolver_golden")
+
+
 def _spawn_black_hole(x, y, owner_id, now):
     active_black_holes.append({
         "x": x,
@@ -2516,10 +2742,6 @@ def _spawn_black_hole(x, y, owner_id, now):
         "until": now + BLACK_HOLE_DURATION_MS,
         "next_damage_at": now,
     })
-    particles.ring(x, y, (160, 90, 255), count=42, radius=BLACK_HOLE_RADIUS, lifetime=900, size=5)
-    particles.emit(x, y, (95, 40, 160), count=42, speed=120, lifetime=800, size=6)
-
-
 def _deactivate_bullet(bullet, now):
     if bullet.is_active and bullet.weapon_id == "blackhole_generator":
         _spawn_black_hole(bullet.x, bullet.y, bullet.owner_id, now)
@@ -2537,8 +2759,9 @@ def _draw_black_holes(surface, now):
             size = max(1, round(BLACK_HOLE_RADIUS * 2.2 * camera_zoom * pulse))
             image = _scale_cached(frame, (size, size))
             surface.blit(image, image.get_rect(center=(round(screen_x), round(screen_y))))
-        pygame.draw.circle(surface, (115, 55, 200), (round(screen_x), round(screen_y)), round(radius * pulse), max(1, round(2 * camera_zoom)))
-        pygame.draw.circle(surface, (20, 10, 30), (round(screen_x), round(screen_y)), max(4, round(radius * 0.34)))
+        else:
+            pygame.draw.circle(surface, (115, 55, 200), (round(screen_x), round(screen_y)), round(radius * pulse), max(1, round(2 * camera_zoom)))
+            pygame.draw.circle(surface, (20, 10, 30), (round(screen_x), round(screen_y)), max(4, round(radius * 0.34)))
 
 
 def _apply_pull_to_player(player, hole_x, hole_y, strength):
@@ -2625,9 +2848,6 @@ def fire_blackhole_generator():
     muzzle_x = center_x + math.cos(angle) * 44
     muzzle_y = center_y + math.sin(angle) * 44
     bullet = Bullet(weapon_state.config.bullet_size, damage=0, owner_id=network.player_id, weapon_id="blackhole_generator")
-    black_hole_bullet_frames = IML.GetBlackHoleBulletFrames()
-    if black_hole_bullet_frames:
-        bullet.surface = black_hole_bullet_frames[0]
     _assign_client_bullet_token(bullet)
     bullet.launch(muzzle_x, muzzle_y, muzzle_x + math.cos(angle) * BULLET_TARGET_DISTANCE, muzzle_y + math.sin(angle) * BULLET_TARGET_DISTANCE, speed=weapon_state.config.bullet_speed)
     bullet.just_fired = True
@@ -2652,38 +2872,17 @@ def fire_plasma_cannon():
     muzzle_x = center_x + math.cos(angle) * 48
     muzzle_y = center_y + math.sin(angle) * 48
     end_x, end_y = _ray_endpoint(muzzle_x, muzzle_y, angle, PLASMA_RANGE)
-    active_plasma_beams.append({"x1": muzzle_x, "y1": muzzle_y, "x2": end_x, "y2": end_y, "until": pygame.time.get_ticks() + PLASMA_BEAM_DURATION_MS})
-    candidates = []
-    for p_id, p_info in server_players.items():
-        if str(p_id) == str(network.player_id) or is_hidden_player(p_info):
-            continue
-        head, body = Player.hitboxes_for_position(p_info["posX"], p_info["posY"], IML.Player.get_width(), IML.Player.get_height())
-        hit_part = "head" if _line_rect_intersects(muzzle_x, muzzle_y, end_x, end_y, head) else "body" if _line_rect_intersects(muzzle_x, muzzle_y, end_x, end_y, body) else None
-        if hit_part:
-            distance = math.hypot((p_info["posX"] + IML.Player.get_width() / 2) - muzzle_x, (p_info["posY"] + IML.Player.get_height() / 2) - muzzle_y)
-            candidates.append((distance, p_id, hit_part))
-    if candidates:
-        _, target_id, hit_part = min(candidates, key=lambda item: item[0])
-        pending_hit_events.append({
-            "target_id": target_id,
-            "attacker_id": network.player_id,
-            "damage": PLASMA_DAMAGE,
-            "hit_part": "body",
-            "weapon_id": "plasma_cannon",
-            "stun_ms": (
-                STUN_DURATION_MS
-                if random.random() < PLASMA_STUN_CHANCE
-                else 0
-            ),
-        })
-    if (debug_mode or ScreenState == "PracticeView") and training_dummy is not None and training_dummy.Hp > 0:
-        hit_part = "head" if _line_rect_intersects(muzzle_x, muzzle_y, end_x, end_y, training_dummy.head_hitbox) else "body" if _line_rect_intersects(muzzle_x, muzzle_y, end_x, end_y, training_dummy.body_hitbox) else None
-        if hit_part:
-            previous_hp = training_dummy.Hp
-            training_dummy.Hp = max(0, training_dummy.Hp - PLASMA_DAMAGE)
-            damage_numbers.append({"x": training_dummy.rect.centerx, "y": training_dummy.rect.top, "damage": previous_hp - training_dummy.Hp, "color": (100, 225, 255), "started_at": pygame.time.get_ticks(), "lifetime": DAMAGE_TEXT_LIFETIME_MS})
-            if training_dummy.Hp <= 0:
-                training_dummy.respawn_at = pygame.time.get_ticks() + TRAINING_DUMMY_RESPAWN_MS
+    now = pygame.time.get_ticks()
+    active_plasma_beams.append({
+        "x1": muzzle_x,
+        "y1": muzzle_y,
+        "x2": end_x,
+        "y2": end_y,
+        "owner_id": network.player_id,
+        "started_at": now,
+        "next_damage_at": now,
+        "until": now + PLASMA_BEAM_DURATION_MS,
+    })
     weapon_state.consume_round()
     animation_started_at = pygame.time.get_ticks()
     weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
@@ -2760,6 +2959,10 @@ def fire_bullet():
 
     if weapon_state.weapon_id == "blackhole_generator":
         fire_blackhole_generator()
+        return
+
+    if weapon_state.weapon_id == "Revolver_golden":
+        fire_golden_revolver()
         return
 
     if weapon_state.weapon_id == "plasma_cannon":
@@ -2905,7 +3108,11 @@ def handle_settings_overlay_event(event):
                 1.0,
                 max(0.0, (event.pos[0] - track.left - 12) / (track.width - 24)),
             )
-            settings["mouse_sensitivity"] = round(0.25 + progress * 1.75, 2)
+            settings["mouse_sensitivity"] = round(
+                MOUSE_SENSITIVITY_MIN
+                + progress * (MOUSE_SENSITIVITY_MAX - MOUSE_SENSITIVITY_MIN),
+                2,
+            )
         elif buttons["volume"].collidepoint(event.pos):
             settings_dragging = "volume"
             track = buttons["volume"]
@@ -2935,7 +3142,11 @@ def handle_settings_overlay_event(event):
             max(0.0, (event.pos[0] - track.left - 12) / (track.width - 24)),
         )
         if settings_dragging == "sensitivity":
-            settings["mouse_sensitivity"] = round(0.25 + progress * 1.75, 2)
+            settings["mouse_sensitivity"] = round(
+                MOUSE_SENSITIVITY_MIN
+                + progress * (MOUSE_SENSITIVITY_MAX - MOUSE_SENSITIVITY_MIN),
+                2,
+            )
         else:
             settings["sound_volume"] = round(progress, 2)
             set_effect_volume(settings["sound_volume"])
@@ -3357,7 +3568,17 @@ def GameFrame(practice_mode: bool = False):
     active_bombs = pending_bombs
     active_explosions = [explosion for explosion in active_explosions if now < explosion["until"]]
     _update_black_holes(now, frame_server_players, is_practice_mode)
-    active_plasma_beams[:] = [beam for beam in active_plasma_beams if now < beam["until"]]
+    active_plasma_beams[:] = [
+        beam for beam in active_plasma_beams if now < beam["until"]
+    ]
+    active_aim_locks[:] = [
+        lock for lock in active_aim_locks if now < lock["until"]
+    ]
+    for beam in active_plasma_beams:
+        if now >= beam["next_damage_at"]:
+            _damage_plasma_beam(beam, frame_server_players, now)
+            beam["next_damage_at"] = now + PLASMA_DAMAGE_INTERVAL_MS
+        screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 2)
 
     # ★ [정리] 서버 데이터 동기화 - 필요한 움직임 데이터만 전송
     send_data["posX"] = my_player.X
@@ -3948,10 +4169,7 @@ def GameFrame(practice_mode: bool = False):
     )
     Weapon_Angle = Tool.GetAtn2Angle_Degrees(aim_player_center, Weapon_Pos)
     angle_delta = (Weapon_Angle - vision_angle + 180) % 360 - 180
-    vision_alpha = max(
-        0.015,
-        min(0.12, 0.05 * settings["mouse_sensitivity"]),
-    )
+    vision_alpha = max(0.015, min(0.4, 0.1 * settings["mouse_sensitivity"]))
     vision_angle = (vision_angle + angle_delta * vision_alpha) % 360
     if weapon_state.weapon_id == "pistol" and now < weapon_fire_until and IML.GetPistolFire():
         weapon_image = IML.GetPistolFire()
@@ -4037,8 +4255,44 @@ def GameFrame(practice_mode: bool = False):
     for beam in active_plasma_beams:
         start = world_to_screen(beam["x1"], beam["y1"], CameraPosX, CameraPosY, camera_zoom)
         end = world_to_screen(beam["x2"], beam["y2"], CameraPosX, CameraPosY, camera_zoom)
-        pygame.draw.line(display, (70, 205, 255), tuple(map(round, start)), tuple(map(round, end)), max(4, round(9 * camera_zoom)))
-        pygame.draw.line(display, (230, 255, 255), tuple(map(round, start)), tuple(map(round, end)), max(2, round(4 * camera_zoom)))
+        lance_frames = IML.GetManaLanceFrames()
+        if lance_frames:
+            dx, dy = end[0] - start[0], end[1] - start[1]
+            beam_length = math.hypot(dx, dy)
+            beam_angle = math.degrees(math.atan2(dy, dx))
+            beam_width = max(24, round(82 * camera_zoom))
+            segment_length = max(90, round(beam_width * 2.4))
+            frame_index = ((now - beam["started_at"]) // 50) % len(lance_frames)
+            lance_frame = lance_frames[frame_index]
+            scaled_lance = _scale_cached(
+                lance_frame,
+                (segment_length, beam_width),
+            )
+            rotated_lance = pygame.transform.rotate(scaled_lance, -beam_angle)
+            segment_count = max(1, math.ceil(beam_length / (segment_length * 0.72)))
+            for segment_index in range(segment_count):
+                distance = min(
+                    beam_length,
+                    segment_index * beam_length / max(1, segment_count - 1),
+                )
+                center = (
+                    start[0] + math.cos(math.radians(beam_angle)) * distance,
+                    start[1] + math.sin(math.radians(beam_angle)) * distance,
+                )
+                display.blit(
+                    rotated_lance,
+                    rotated_lance.get_rect(
+                        center=(round(center[0]), round(center[1]))
+                    ),
+                )
+        else:
+            pygame.draw.line(
+                display,
+                (45, 165, 255),
+                tuple(map(round, start)),
+                tuple(map(round, end)),
+                max(8, round(PLASMA_BEAM_WIDTH * camera_zoom)),
+            )
 
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
     if vision_skill_until > now:
@@ -4063,6 +4317,36 @@ def GameFrame(practice_mode: bool = False):
             particles.ring(map_center_x, map_center_y, (100, 220, 255), count=36, radius=80, lifetime=1200, size=5)
 
     for bullet in bullets:
+        if bullet.is_active and bullet.weapon_id == "Revolver_golden":
+            target_id = getattr(bullet, "aim_target_id", None)
+            if target_id == "training_dummy":
+                target = (
+                    training_dummy
+                    if training_dummy is not None and training_dummy.Hp > 0
+                    else None
+                )
+                target_x = target.rect.centerx if target else None
+                target_y = target.rect.centery if target else None
+            else:
+                target = frame_server_players.get(target_id)
+                target_x = (
+                    target["posX"] + IML.Player.get_width() / 2
+                    if target is not None
+                    else None
+                )
+                target_y = (
+                    target["posY"] + IML.Player.get_height() / 2
+                    if target is not None
+                    else None
+                )
+            if target_x is not None and target_y is not None:
+                dx, dy = target_x - bullet.x, target_y - bullet.y
+                distance = math.hypot(dx, dy)
+                if distance > 0:
+                    speed = math.hypot(bullet.speed_x, bullet.speed_y)
+                    bullet.speed_x = dx / distance * speed
+                    bullet.speed_y = dy / distance * speed
+                    bullet.angle = math.degrees(math.atan2(dy, dx))
         bullet.update()
         if not bullet.is_active:
             if bullet.weapon_id == "blackhole_generator":
@@ -4097,6 +4381,8 @@ def GameFrame(practice_mode: bool = False):
                     IML.Player.get_height(),
                 )
                 if clone_rect.colliderect(bullet.rect):
+                    if bullet.weapon_id == "Revolver_golden":
+                        _golden_revolver_impact(bullet.x, bullet.y)
                     if (
                         is_practice_mode
                         and clone.get("linked_player_id") == "training_dummy"
@@ -4167,18 +4453,21 @@ def GameFrame(practice_mode: bool = False):
                         "impact_y": bullet.y,
                     })
                     _deactivate_bullet(bullet, now)
-                    impact_color = (
-                        (100, 225, 255)
-                        if bullet.stun_ms or bullet.weapon_id == "spirit_trial"
-                        else (255, 70, 70)
-                    )
-                    particles.emit(
-                        bullet.x, bullet.y, impact_color,
-                        count=24 if bullet.weapon_id == "spirit_trial" else 12,
-                        speed=95 if bullet.weapon_id == "spirit_trial" else 65,
-                        lifetime=500 if bullet.weapon_id == "spirit_trial" else 350,
-                        size=5 if bullet.weapon_id == "spirit_trial" else 4,
-                    )
+                    if bullet.weapon_id == "Revolver_golden":
+                        _golden_revolver_impact(bullet.x, bullet.y)
+                    else:
+                        impact_color = (
+                            (100, 225, 255)
+                            if bullet.stun_ms or bullet.weapon_id == "spirit_trial"
+                            else (255, 70, 70)
+                        )
+                        particles.emit(
+                            bullet.x, bullet.y, impact_color,
+                            count=24 if bullet.weapon_id == "spirit_trial" else 12,
+                            speed=95 if bullet.weapon_id == "spirit_trial" else 65,
+                            lifetime=500 if bullet.weapon_id == "spirit_trial" else 350,
+                            size=5 if bullet.weapon_id == "spirit_trial" else 4,
+                        )
                     if bullet.weapon_id == "spirit_trial":
                         particles.ring(
                             bullet.x, bullet.y, (150, 240, 255),
@@ -4204,6 +4493,10 @@ def GameFrame(practice_mode: bool = False):
                         bullet.rect, bullet.damage
                     )
                 if hit_part:
+                    if bullet.stun_ms:
+                        training_dummy.stunned_until = now + bullet.stun_ms
+                    if bullet.weapon_id == "Revolver_golden":
+                        _golden_revolver_impact(bullet.x, bullet.y)
                     if bullet.weapon_id == "spirit_trial":
                         practice_clones = [
                             clone for clone in linked_clones
@@ -4651,9 +4944,9 @@ def GameFrame(practice_mode: bool = False):
             linked_player,
         )
 
-    if debug_mode:
+    if debug_mode or practice_mode_active:
         practice_view.draw_training_dummy(
-            training_dummy, CameraPosX, CameraPosY, camera_zoom
+            training_dummy, CameraPosX, CameraPosY, camera_zoom, now
         )
 
     # 내 캐릭터 및 무기 그리기
@@ -4817,20 +5110,6 @@ def GameFrame(practice_mode: bool = False):
         )
 
     display.blit(dark_overlay, (0, 0))
-    if current_vision_shape == VISION_CONE:
-        bush_angle_center = world_to_screen(
-            player_world_x, player_world_y, CameraPosX, CameraPosY, camera_zoom
-        )
-        draw_bush_vision_angle(
-            display,
-            *bush_angle_center,
-            vision_angle,
-            current_vision.vision_fov,
-            BUSH_VISION_FOV_BONUS,
-            current_vision_radius * camera_zoom,
-            camera_zoom,
-        )
-
     for target_id, launch in list(bat_launch_animations.items()):
         center_x, center_y, rotation, alpha, finished = get_bat_launch_frame(launch, now)
         if finished:
@@ -4986,6 +5265,87 @@ def GameFrame(practice_mode: bool = False):
         TileGene,
         BULLET_TARGET_DISTANCE,
     )
+
+    if now < golden_revolver_until:
+        golden_time_overlay.fill((145, 150, 162, 108))
+        display.blit(golden_time_overlay, (0, 0))
+        for bolt_index in range(7):
+            phase = now * 0.012 + bolt_index * 1.7
+            start_x = round((bolt_index * 311 + now * 0.17) % ScreenX)
+            start_y = 0 if bolt_index % 2 == 0 else ScreenY
+            end_x = round(start_x + math.sin(phase) * 180)
+            end_y = round(ScreenY * (0.25 + 0.1 * (bolt_index % 5)))
+            points = [
+                (start_x, start_y),
+                (round(start_x + math.sin(phase + 1) * 55), round(start_y * 0.62 + end_y * 0.38)),
+                (round(end_x - math.cos(phase) * 35), round(start_y * 0.3 + end_y * 0.7)),
+                (end_x, end_y),
+            ]
+            pygame.draw.lines(
+                display, (220, 240, 255), False, points, max(1, round(2 * camera_zoom))
+            )
+        for lock in active_aim_locks:
+            target_screen = world_to_screen(
+                lock["x"], lock["y"], CameraPosX, CameraPosY, camera_zoom
+            )
+            target_center = tuple(map(round, target_screen))
+            crackle = 1.0 + 0.2 * math.sin(now * 0.045)
+            radius = max(10, round(24 * camera_zoom * crackle))
+            pygame.draw.circle(
+                display, (255, 235, 155), target_center, radius,
+                max(1, round(3 * camera_zoom)),
+            )
+            for direction in (-1, 1):
+                pygame.draw.line(
+                    display,
+                    (255, 250, 220),
+                    (
+                        round(target_center[0] - radius * 1.5),
+                        round(target_center[1] + direction * radius),
+                    ),
+                    (
+                        round(target_center[0] + radius * 1.5),
+                        round(target_center[1] - direction * radius),
+                    ),
+                    max(1, round(2 * camera_zoom)),
+                )
+
+    for aim_lock in active_aim_locks:
+        lock_screen = world_to_screen(
+            aim_lock["x"], aim_lock["y"], CameraPosX, CameraPosY, camera_zoom
+        )
+        player_screen = world_to_screen(
+            player_world_x, player_world_y, CameraPosX, CameraPosY, camera_zoom
+        )
+        pulse = 1.0 + 0.15 * math.sin(now * 0.035)
+        pygame.draw.line(
+            display,
+            (255, 205, 70),
+            tuple(map(round, player_screen)),
+            tuple(map(round, lock_screen)),
+            max(1, round(2 * camera_zoom)),
+        )
+        pygame.draw.circle(
+            display,
+            (255, 230, 115),
+            tuple(map(round, lock_screen)),
+            max(8, round(22 * camera_zoom * pulse)),
+            max(1, round(3 * camera_zoom)),
+        )
+        pygame.draw.line(
+            display,
+            (255, 245, 200),
+            (round(lock_screen[0] - 12 * camera_zoom), round(lock_screen[1])),
+            (round(lock_screen[0] + 12 * camera_zoom), round(lock_screen[1])),
+            max(1, round(2 * camera_zoom)),
+        )
+        pygame.draw.line(
+            display,
+            (255, 245, 200),
+            (round(lock_screen[0]), round(lock_screen[1] - 12 * camera_zoom)),
+            (round(lock_screen[0]), round(lock_screen[1] + 12 * camera_zoom)),
+            max(1, round(2 * camera_zoom)),
+        )
 
     # 시야 밖에 있어도 총알은 항상 보이도록 최종 레이어에서 다시 그립니다.
     for bullet in bullets:

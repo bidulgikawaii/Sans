@@ -95,9 +95,10 @@ SPECIAL_CRATE_WEAPONS = {
         vision_fov=180, vision_width=420,
     ),
     "Revolver_golden": WeaponConfig(
-        "", damage=20, magazine_size=6, reserve_ammo=36,
-        fire_interval=0.5, reload_time=1.8, bullet_size=5, bullet_speed=22.0,
-        recoil=3.0, bullet_lifetime=2.5, vision_radius=WEAPON_VISION_RADIUS,
+        "밀랍칠한 도금벗긴 약간 깍인 도금 리볼버",
+        damage=99, magazine_size=1, reserve_ammo=0,
+        fire_interval=0.5, reload_time=0.0, bullet_size=7, bullet_speed=24.0,
+        recoil=0.0, bullet_lifetime=2.5, vision_radius=WEAPON_VISION_RADIUS,
         vision_fov=90, vision_width=220,
     ),
 }

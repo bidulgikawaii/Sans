@@ -61,6 +61,8 @@ RESERVED_KEYS = {
 }
 
 SETTINGS_PATH = Path(__file__).resolve().with_name("settings.json")
+MOUSE_SENSITIVITY_MIN = 0.25
+MOUSE_SENSITIVITY_MAX = 4.0
 settings = {
     "mouse_sensitivity": 1.0,
     "sound_volume": 0.7,
@@ -78,7 +80,10 @@ def load_settings():
 
     sensitivity = saved.get("mouse_sensitivity", settings["mouse_sensitivity"])
     if isinstance(sensitivity, (int, float)):
-        settings["mouse_sensitivity"] = min(2.0, max(0.25, float(sensitivity)))
+        settings["mouse_sensitivity"] = min(
+            MOUSE_SENSITIVITY_MAX,
+            max(MOUSE_SENSITIVITY_MIN, float(sensitivity)),
+        )
     sound_volume = saved.get("sound_volume", settings["sound_volume"])
     if isinstance(sound_volume, (int, float)):
         settings["sound_volume"] = min(1.0, max(0.0, float(sound_volume)))

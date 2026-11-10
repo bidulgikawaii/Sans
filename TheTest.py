@@ -305,6 +305,7 @@ set_spirit_trial_animations(
     IML.GetSpiritTrialAuraFrames(),
 )
 set_black_hole_bullet_frames(IML.GetBlackHoleBulletFrames())
+set_golden_revolver_bullet_frames(IML.GetGoldenRevolverBulletFrames())
 blade_animation = FrameAnimation(
     IML.GetBladeFrames(),
     max(1, MELEE_ATTACK_DURATION_MS // max(1, len(IML.GetBladeFrames()))),
@@ -676,41 +677,61 @@ def launch_flare_supplies(center_x, center_y, now):
     )[:FLARE_SUPPLY_DROP_COUNT]
     reward_types = select_flare_supply_reward_types(selected_game_mode)
     placed_rects = []
-    for index, ((offset_x, offset_y), reward_type) in enumerate(
-        zip(offsets, reward_types)
-    ):
+    map_pixel_width = TileGene.map_width * TileGene.tile_size
+    map_pixel_height = TileGene.map_height * TileGene.tile_size
+
+    def find_drop_position(desired_x, desired_y):
+        max_x = max(SUPPLY_DROP_RADIUS, map_pixel_width - SUPPLY_DROP_RADIUS)
+        max_y = max(SUPPLY_DROP_RADIUS, map_pixel_height - SUPPLY_DROP_RADIUS)
+        max_ring = math.ceil(
+            math.hypot(map_pixel_width, map_pixel_height)
+            / max(1, TileGene.tile_size // 2)
+        )
+        for ring in range(max_ring + 1):
+            radius = ring * TileGene.tile_size // 2
+            directions = (
+                ((0, 0),)
+                if ring == 0
+                else (
+                    (1, 0), (1, 1), (0, 1), (-1, 1),
+                    (-1, 0), (-1, -1), (0, -1), (1, -1),
+                )
+            )
+            for direction_x, direction_y in directions:
+                candidate_x = min(
+                    max_x,
+                    max(SUPPLY_DROP_RADIUS, desired_x + direction_x * radius),
+                )
+                candidate_y = min(
+                    max_y,
+                    max(SUPPLY_DROP_RADIUS, desired_y + direction_y * radius),
+                )
+                drop_rect = pygame.Rect(
+                    round(candidate_x - SUPPLY_DROP_RADIUS),
+                    round(candidate_y - SUPPLY_DROP_RADIUS),
+                    SUPPLY_DROP_RADIUS * 2,
+                    SUPPLY_DROP_RADIUS * 2,
+                )
+                if (
+                    not TileGene.check_collision(drop_rect)
+                    and not any(drop_rect.colliderect(rect) for rect in placed_rects)
+                ):
+                    placed_rects.append(drop_rect)
+                    return candidate_x, candidate_y
+        return None
+
+    drop_positions = []
+    for offset_x, offset_y in offsets:
         desired_x = center_x + offset_x
         desired_y = center_y + offset_y
-        candidates = [(desired_x, desired_y)]
-        for ring in range(1, 7):
-            radius = ring * TileGene.tile_size // 2
-            candidates.extend(
-                (
-                    desired_x + round(math.cos(angle) * radius),
-                    desired_y + round(math.sin(angle) * radius),
-                )
-                for angle in (
-                    0, math.pi / 4, math.pi / 2, 3 * math.pi / 4,
-                    math.pi, 5 * math.pi / 4, 3 * math.pi / 2, 7 * math.pi / 4,
-                )
-            )
-        drop_position = None
-        for candidate_x, candidate_y in candidates:
-            drop_rect = pygame.Rect(
-                round(candidate_x - SUPPLY_DROP_RADIUS),
-                round(candidate_y - SUPPLY_DROP_RADIUS),
-                SUPPLY_DROP_RADIUS * 2,
-                SUPPLY_DROP_RADIUS * 2,
-            )
-            if (
-                not TileGene.check_collision(drop_rect)
-                and not any(drop_rect.colliderect(rect) for rect in placed_rects)
-            ):
-                drop_position = (candidate_x, candidate_y)
-                placed_rects.append(drop_rect)
-                break
+        drop_position = find_drop_position(desired_x, desired_y)
         if drop_position is None:
-            drop_position = (desired_x, desired_y)
+            return False
+        drop_positions.append(drop_position)
+
+    for index, (drop_position, reward_type) in enumerate(
+        zip(drop_positions, reward_types)
+    ):
         warning_ms = SUPPLY_DROP_WARNING_MS + index * 250
         if practice_mode_active or debug_mode:
             supply_drops.append({
@@ -739,6 +760,7 @@ def launch_flare_supplies(center_x, center_y, now):
         center_x, center_y, (255, 230, 130),
         count=24, radius=TileGene.tile_size, lifetime=500, size=5,
     )
+    return True
 
 
 def apply_supply_reward(reward_type):
@@ -1759,7 +1781,9 @@ def activate_quick_slot(key, reinstall=False):
             system_message = "사망 또는 리스폰 중에는 플레어건을 사용할 수 없습니다."
             return
         target_x, target_y = get_mouse_world_position(CameraPosX, CameraPosY)
-        launch_flare_supplies(target_x, target_y, now)
+        if not launch_flare_supplies(target_x, target_y, now):
+            system_message = "보급품을 놓을 안전한 위치가 없어 플레어건을 보존했습니다."
+            return
         break_stealth_on_attack()
         pending_spectator_skill_events.append({
             "skill": skill_name,
@@ -4261,28 +4285,38 @@ def GameFrame(practice_mode: bool = False):
             beam_length = math.hypot(dx, dy)
             beam_angle = math.degrees(math.atan2(dy, dx))
             beam_width = max(24, round(82 * camera_zoom))
-            segment_length = max(90, round(beam_width * 2.4))
             frame_index = ((now - beam["started_at"]) // 50) % len(lance_frames)
             lance_frame = lance_frames[frame_index]
             scaled_lance = _scale_cached(
                 lance_frame,
-                (segment_length, beam_width),
+                (max(1, round(beam_length)), beam_width),
             )
             rotated_lance = pygame.transform.rotate(scaled_lance, -beam_angle)
-            segment_count = max(1, math.ceil(beam_length / (segment_length * 0.72)))
-            for segment_index in range(segment_count):
-                distance = min(
-                    beam_length,
-                    segment_index * beam_length / max(1, segment_count - 1),
+            beam_center = (
+                (start[0] + end[0]) / 2,
+                (start[1] + end[1]) / 2,
+            )
+            display.blit(
+                rotated_lance,
+                rotated_lance.get_rect(
+                    center=(round(beam_center[0]), round(beam_center[1]))
+                ),
+            )
+            emitter_frames = IML.GetLaserGunEffectFrames()
+            if emitter_frames:
+                emitter = emitter_frames[frame_index % len(emitter_frames)]
+                emitter_image = _scale_cached(
+                    emitter,
+                    (
+                        max(1, round(emitter.get_width() * camera_zoom)),
+                        max(1, round(emitter.get_height() * camera_zoom)),
+                    ),
                 )
-                center = (
-                    start[0] + math.cos(math.radians(beam_angle)) * distance,
-                    start[1] + math.sin(math.radians(beam_angle)) * distance,
-                )
+                emitter_image = pygame.transform.rotate(emitter_image, -beam_angle)
                 display.blit(
-                    rotated_lance,
-                    rotated_lance.get_rect(
-                        center=(round(center[0]), round(center[1]))
+                    emitter_image,
+                    emitter_image.get_rect(
+                        center=(round(start[0]), round(start[1]))
                     ),
                 )
         else:
@@ -5269,21 +5303,14 @@ def GameFrame(practice_mode: bool = False):
     if now < golden_revolver_until:
         golden_time_overlay.fill((145, 150, 162, 108))
         display.blit(golden_time_overlay, (0, 0))
-        for bolt_index in range(7):
-            phase = now * 0.012 + bolt_index * 1.7
-            start_x = round((bolt_index * 311 + now * 0.17) % ScreenX)
-            start_y = 0 if bolt_index % 2 == 0 else ScreenY
-            end_x = round(start_x + math.sin(phase) * 180)
-            end_y = round(ScreenY * (0.25 + 0.1 * (bolt_index % 5)))
-            points = [
-                (start_x, start_y),
-                (round(start_x + math.sin(phase + 1) * 55), round(start_y * 0.62 + end_y * 0.38)),
-                (round(end_x - math.cos(phase) * 35), round(start_y * 0.3 + end_y * 0.7)),
-                (end_x, end_y),
-            ]
-            pygame.draw.lines(
-                display, (220, 240, 255), False, points, max(1, round(2 * camera_zoom))
+        shatter_frames = IML.GetGoldenRevolverScreenShatterFrames()
+        if shatter_frames:
+            elapsed = max(0, 600 - (golden_revolver_until - now))
+            frame_index = min(
+                len(shatter_frames) - 1,
+                elapsed * len(shatter_frames) // 600,
             )
+            display.blit(shatter_frames[frame_index], (0, 0))
         for lock in active_aim_locks:
             target_screen = world_to_screen(
                 lock["x"], lock["y"], CameraPosX, CameraPosY, camera_zoom

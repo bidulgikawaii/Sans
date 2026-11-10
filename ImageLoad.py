@@ -91,6 +91,21 @@ class Imageload:
         self.ManaLance = self._load_animation(
             "mana-lance_", (256, 136), directory="mana-lance-frames"
         )
+        self.GoldenRevolverBullet = self._load_animation(
+            "pixel-art-blue-fireball_",
+            (56, 32),
+            directory="Golden_Revolver_Bullet",
+        )
+        self.GoldenRevolverScreenShatter = self._load_animation(
+            "screen-shatter_",
+            (SCREEN_WIDTH, SCREEN_HEIGHT),
+            directory="screen-shatter-frames",
+        )
+        self.LaserGunEffect = self._load_animation(
+            "sprite_",
+            (112, 64),
+            directory="Laser_Gun_Effect",
+        )
         flaregun = self._load_scaled_image("flaregun.png", (96, 48))
         self.FlareGun = flaregun if flaregun is not None else self._create_flaregun_image()
         self.PlasmaGun = self._load_scaled_image("plazmaGun.png", (128, 64))
@@ -367,6 +382,15 @@ class Imageload:
 
     def GetManaLanceFrames(self):
         return self.ManaLance
+
+    def GetGoldenRevolverBulletFrames(self):
+        return self.GoldenRevolverBullet
+
+    def GetGoldenRevolverScreenShatterFrames(self):
+        return self.GoldenRevolverScreenShatter
+
+    def GetLaserGunEffectFrames(self):
+        return self.LaserGunEffect
 
     def GetTileTest(self):
         return self.Tile

@@ -17,6 +17,7 @@ _BULLET_IMAGE_PATH = os.path.join(
 _SPIRIT_TRIAL_GHOST_FRAMES = ()
 _SPIRIT_TRIAL_AURA_FRAMES = ()
 _BLACK_HOLE_BULLET_FRAMES = ()
+_GOLDEN_REVOLVER_BULLET_FRAMES = ()
 
 
 def set_spirit_trial_animations(ghost_frames, aura_frames):
@@ -28,6 +29,12 @@ def set_spirit_trial_animations(ghost_frames, aura_frames):
 def set_black_hole_bullet_frames(frames):
     global _BLACK_HOLE_BULLET_FRAMES
     _BLACK_HOLE_BULLET_FRAMES = tuple(frames)
+
+
+def set_golden_revolver_bullet_frames(frames):
+    global _GOLDEN_REVOLVER_BULLET_FRAMES
+    _GOLDEN_REVOLVER_BULLET_FRAMES = tuple(frames)
+
 
 # 크기별 총알 Surface를 재사용해 발사 때마다 같은 이미지 변환을 반복하지 않습니다.
 
@@ -72,10 +79,11 @@ class Bullet:
                 else pygame.Surface((32, 32), pygame.SRCALPHA)
             )
         elif weapon_id == "Revolver_golden":
-            self.surface = pygame.Surface((30, 18), pygame.SRCALPHA)
-            pygame.draw.ellipse(self.surface, (255, 195, 45, 80), (0, 1, 30, 16))
-            pygame.draw.ellipse(self.surface, (255, 220, 95, 230), (4, 4, 23, 10))
-            pygame.draw.ellipse(self.surface, (255, 250, 210), (10, 5, 12, 8))
+            self.surface = (
+                _GOLDEN_REVOLVER_BULLET_FRAMES[0]
+                if _GOLDEN_REVOLVER_BULLET_FRAMES
+                else pygame.Surface((56, 32), pygame.SRCALPHA)
+            )
         else:
             self.surface = _get_bullet_surface(size)
         
@@ -105,6 +113,8 @@ class Bullet:
         rect = (
             pygame.Rect(0, 0, 30, 30)
             if self.weapon_id == "spirit_trial"
+            else pygame.Rect(0, 0, 30, 18)
+            if self.weapon_id == "Revolver_golden"
             else self.surface.get_rect()
         )
         rect.center = (round(self.x), round(self.y))
@@ -187,6 +197,14 @@ class Bullet:
                     _BLACK_HOLE_BULLET_FRAMES
                 )
                 source_image = _BLACK_HOLE_BULLET_FRAMES[frame_index]
+            elif (
+                self.weapon_id == "Revolver_golden"
+                and _GOLDEN_REVOLVER_BULLET_FRAMES
+            ):
+                frame_index = (pygame.time.get_ticks() // 45) % len(
+                    _GOLDEN_REVOLVER_BULLET_FRAMES
+                )
+                source_image = _GOLDEN_REVOLVER_BULLET_FRAMES[frame_index]
             else:
                 source_image = self.surface
             image = pygame.transform.rotate(source_image, -self.angle)
@@ -215,14 +233,6 @@ class Bullet:
                     (30, 15, 45),
                     (round(center_x), round(center_y)),
                     max(5, round(9 * zoom)),
-                )
-            elif self.weapon_id == "Revolver_golden":
-                pygame.draw.circle(
-                    display,
-                    (255, 220, 95),
-                    (round(center_x), round(center_y)),
-                    max(4, round(9 * zoom)),
-                    max(1, round(2 * zoom)),
                 )
             elif self.weapon_id == "spirit_trial":
                 previous_x = (self.previous_x - camera_x) * zoom

@@ -103,6 +103,8 @@ class Imageload:
             directory="screen-shatter-frames",
             stretch_to_target=True,
         )
+        for frame in self.GoldenRevolverScreenShatter:
+            frame.set_alpha(150)
         self.LaserGunEffect = self._load_animation(
             "sprite_",
             (112, 64),

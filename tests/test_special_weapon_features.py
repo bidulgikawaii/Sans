@@ -25,11 +25,11 @@ class SpecialWeaponFeatureTests(unittest.TestCase):
         self.assertEqual(weapon.reserve_ammo, 0)
         self.assertEqual(weapon.damage, 99)
 
-    def test_spirit_trial_is_registered_as_an_equipable_skill(self):
-        self.assertIn("영혼의 시험", SKILL_BOOK)
-        self.assertTrue(add_skill_to_inventory("영혼의 시험"))
-        self.assertIn("영혼의 시험", owned_skills)
-        self.assertTrue(remove_skill_from_inventory("영혼의 시험"))
+    def test_spirit_bullet_is_registered_as_an_equipable_skill(self):
+        self.assertIn("영혼탄환", SKILL_BOOK)
+        self.assertTrue(add_skill_to_inventory("영혼탄환"))
+        self.assertIn("영혼탄환", owned_skills)
+        self.assertTrue(remove_skill_from_inventory("영혼탄환"))
 
     def test_ultimate_laser_has_sustained_range_and_damage(self):
         self.assertGreaterEqual(PLASMA_BEAM_DURATION_MS, 2000)

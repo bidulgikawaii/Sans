@@ -104,7 +104,7 @@ SPECIAL_CRATE_WEAPONS = {
 }
 WEAPONS.update(SPECIAL_CRATE_WEAPONS)
 WEAPONS["spirit_trial"] = WeaponConfig(
-    "영혼의 시험", damage=25, magazine_size=0, reserve_ammo=0,
+    "영혼탄환", damage=25, magazine_size=0, reserve_ammo=0,
     fire_interval=0.0, bullet_size=5, bullet_speed=20.0,
     projectile=True, recoil=0.0, bullet_lifetime=2.5,
     vision_radius=WEAPON_VISION_RADIUS, vision_fov=180, vision_width=420,

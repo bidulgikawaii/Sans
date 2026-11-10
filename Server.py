@@ -51,6 +51,7 @@ from Weapon import WEAPONS
 from Lobby import LobbyState
 from Zone import MagneticZone
 from GameModes import get_game_mode, get_game_modes, is_game_mode_registered
+from FlareSupply import supply_spawn_requires_leader
 from NetworkProtocol import FramedSocket
 from FlagdownRewards import (
     acknowledge_flagdown_skill_rewards,
@@ -634,7 +635,9 @@ def handle_client(conn, player_id):
                             continue
                         if len(events["supply_drops"]) >= 64:
                             continue
-                        if drop_type in ("heal", "skill", "special_weapon"):
+                        if supply_spawn_requires_leader(
+                            drop_type, request.get("source")
+                        ):
                             active_ids = sorted(lobby.active_player_ids(mode))
                             if not active_ids or player_id != active_ids[0]:
                                 continue
@@ -1336,7 +1339,7 @@ def handle_client(conn, player_id):
                     players[player_id]["hp"] > 0 or suicide_detonated
                 ):
                     allowed_skills = {
-                        "폭탄받아라!", "자폭", "매의 눈", "와드", "영혼의 시험",
+                        "폭탄받아라!", "자폭", "매의 눈", "와드", "영혼탄환",
                         "보호막", "은신", "텔포", "기절탄", "플레어건",
                     }
                     for skill_event in skill_events[:8]:

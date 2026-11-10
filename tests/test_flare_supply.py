@@ -4,7 +4,10 @@ from Config import (
     DEATHMATCH_FLARE_SUPPLY_TYPES,
     DEATHMATCH_FLARE_UNIQUE_SUPPLY_TYPES,
 )
-from FlareSupply import select_flare_supply_reward_types
+from FlareSupply import (
+    select_flare_supply_reward_types,
+    supply_spawn_requires_leader,
+)
 from GameModes import GAME_MODE_DEATHMATCH
 
 
@@ -36,6 +39,10 @@ class FlareSupplyTests(unittest.TestCase):
             "other_mode", rng=FixedRandom(0.0)
         )
         self.assertEqual(rewards, ("flare_ammo",) * 3)
+
+    def test_flare_skill_drops_are_not_restricted_to_lobby_leader(self):
+        self.assertFalse(supply_spawn_requires_leader("skill", "flare"))
+        self.assertTrue(supply_spawn_requires_leader("skill", None))
 
 
 if __name__ == "__main__":

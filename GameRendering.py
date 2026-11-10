@@ -553,6 +553,7 @@ def draw_supply_drop(surface, supply, camera_x, camera_y, zoom, colors, now):
         "special_weapon": "3",
         "flare_ammo": "+10",
         "flare_skill": "S",
+        "skill": "S",
     }
     label_text = labels.get(supply["type"])
     if label_text:

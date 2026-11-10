@@ -61,7 +61,14 @@ from GameRendering import (
 from GameAudio import load_effect_sound, play_effect_sound, set_effect_volume
 from Zone import MagneticZone
 from GameModes import get_game_mode, get_game_modes
-from FlareSupply import select_flare_supply_reward_types
+from FlareSupply import (
+    select_flare_supply_reward_types,
+    supply_spawn_requires_leader,
+)
+from GoldenRevolverEffects import (
+    EFFECT_DURATION_MS as GOLDEN_REVOLVER_EFFECT_DURATION_MS,
+    shatter_frame_index as golden_revolver_shatter_frame_index,
+)
 from WorldEffects import RainWeather, register_weather, world_effects
 from Animation import FrameAnimation
 from NetworkClient import (
@@ -750,6 +757,7 @@ def launch_flare_supplies(center_x, center_y, now):
                 "x": drop_position[0],
                 "y": drop_position[1],
                 "type": reward_type,
+                "source": "flare",
                 "warning_ms": warning_ms,
                 "lifetime_ms": SUPPLY_DROP_LIFETIME_MS,
             })
@@ -1825,10 +1833,10 @@ def activate_quick_slot(key, reinstall=False):
     if skill_name == "자폭" and my_player.Hp <= 0:
         system_message = "사망 또는 리스폰 중에는 자폭을 사용할 수 없습니다."
         return
-    if skill_name == "영혼탄막":
+    if skill_name == "영혼탄환":
         if now < skill_cooldowns.get(skill_name, 0):
             remain = (skill_cooldowns[skill_name] - now) / 1000
-            system_message = f"영혼탄막 재사용 대기: {remain:.1f}초"
+            system_message = f"영혼탄환 재사용 대기: {remain:.1f}초"
             return
         center_x, center_y = get_player_world_center(
             my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
@@ -1870,7 +1878,7 @@ def activate_quick_slot(key, reinstall=False):
             center_x, center_y, (170, 240, 255),
             count=28, radius=48, lifetime=550, size=4,
         )
-        system_message = "영혼탄막 탄환 발사! 적중하면 분신이 소환됩니다."
+        system_message = "영혼탄환 발사! 적중하면 분신이 소환됩니다."
         return
     direct_teleport = skill_name == "텔포"
     if direct_teleport and now < skill_cooldowns.get(skill_name, 0):
@@ -2733,7 +2741,7 @@ def fire_golden_revolver():
             targets.append((target_x, target_y, "training_dummy"))
 
     now = pygame.time.get_ticks()
-    aim_until = now + 600
+    aim_until = now + GOLDEN_REVOLVER_EFFECT_DURATION_MS
     golden_revolver_until = aim_until
     screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 5)
     for target_x, target_y, target_id in targets:
@@ -2756,7 +2764,7 @@ def fire_golden_revolver():
             hold_ms=aim_until - now,
         )
         bullet.just_fired = True
-        bullet.life_time = config.bullet_lifetime
+        bullet.life_time = config.bullet_lifetime + bullet.launch_hold_ms / 1000
         bullet.aim_target_id = target_id
         bullets.append(bullet)
         active_aim_locks.append({
@@ -4590,7 +4598,7 @@ def GameFrame(practice_mode: bool = False):
                             count=24, radius=44, lifetime=550, size=4,
                         )
                         system_message = (
-                            "영혼의 시험 성공! 더미에게 연결된 분신을 소환했습니다."
+                            "영혼탄환 명중! 더미에게 연결된 분신을 소환했습니다."
                         )
                     else:
                         dealt_damage = previous_hp - training_dummy.Hp
@@ -4655,6 +4663,8 @@ def GameFrame(practice_mode: bool = False):
                 speed=config.bullet_speed,
                 hold_ms=bullet_info.get("hold_ms", 45),
             )
+            if weapon_id == "Revolver_golden":
+                enemy_bullet.life_time += enemy_bullet.launch_hold_ms / 1000
             enemy_bullet.source_bullet_event_id = event_id
             remote_bullets.append(enemy_bullet)
 
@@ -5335,10 +5345,12 @@ def GameFrame(practice_mode: bool = False):
         display.blit(golden_time_overlay, (0, 0))
         shatter_frames = IML.GetGoldenRevolverScreenShatterFrames()
         if shatter_frames:
-            elapsed = max(0, 600 - (golden_revolver_until - now))
-            frame_index = min(
-                len(shatter_frames) - 1,
-                elapsed * len(shatter_frames) // 1400,
+            elapsed = max(
+                0,
+                GOLDEN_REVOLVER_EFFECT_DURATION_MS - (golden_revolver_until - now),
+            )
+            frame_index = golden_revolver_shatter_frame_index(
+                elapsed, len(shatter_frames)
             )
             display.blit(shatter_frames[frame_index], (0, 0))
         for lock in active_aim_locks:

@@ -94,6 +94,12 @@ SPECIAL_CRATE_WEAPONS = {
         bullet_lifetime=0.12, vision_radius=PLASMA_RANGE,
         vision_fov=180, vision_width=420,
     ),
+    "Revolver_golden": WeaponConfig(
+        "", damage=20, magazine_size=6, reserve_ammo=36,
+        fire_interval=0.5, reload_time=1.8, bullet_size=5, bullet_speed=22.0,
+        recoil=3.0, bullet_lifetime=2.5, vision_radius=WEAPON_VISION_RADIUS,
+        vision_fov=90, vision_width=220,
+    ),
 }
 WEAPONS.update(SPECIAL_CRATE_WEAPONS)
 WEAPONS["spirit_trial"] = WeaponConfig(

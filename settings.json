@@ -1,7 +1,7 @@
 {
-  "mouse_sensitivity": 2.0,
+  "mouse_sensitivity": 4.0,
   "sound_volume": 1.0,
-  "owned_skills_only": false,
+  "owned_skills_only": true,
   "key_bindings": {
     "move_up": 119,
     "move_down": 115,

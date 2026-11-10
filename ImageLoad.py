@@ -99,8 +99,9 @@ class Imageload:
         )
         self.GoldenRevolverScreenShatter = self._load_animation(
             "screen-shatter_",
-            (SCREEN_WIDTH, SCREEN_HEIGHT),
+            (1920, 1080),
             directory="screen-shatter-frames",
+            stretch_to_target=True,
         )
         self.LaserGunEffect = self._load_animation(
             "sprite_",
@@ -199,7 +200,9 @@ class Imageload:
         frame.blit(visible_image, visible_image.get_rect(center=frame.get_rect().center))
         return frame
 
-    def _load_animation(self, prefix, target_size=None, directory=None):
+    def _load_animation(
+        self, prefix, target_size=None, directory=None, stretch_to_target=False
+    ):
         """괄호 또는 밑줄 뒤의 숫자를 기준으로 프레임을 정렬해 로드합니다."""
         animation_dir = self.root / directory if directory else self.root
         if not animation_dir.is_dir():
@@ -212,8 +215,11 @@ class Imageload:
 
         def frame_number(path):
             match = re.search(r"\((\d+)\)|_(\d+)$", path.stem)
+
+
             return int(match.group(1) or match.group(2)) if match else -1
 
+    
         ordered_paths = sorted(paths, key=frame_number)
         if target_size is None:
             images = []
@@ -236,6 +242,7 @@ class Imageload:
         visible_bounds = [
             item[1] for item in bounds if item[1].width and item[1].height
         ]
+        print(f"애니메이션프레임 {len(visible_bounds)}개")
         if not visible_bounds:
             frames = []
             for item in bounds:
@@ -243,6 +250,7 @@ class Imageload:
                 if image is not None:
                     frames.append(pygame.transform.smoothscale(image, target_size))
             return frames
+
         left = min(rect.left for rect in visible_bounds)
         top = min(rect.top for rect in visible_bounds)
         right = max(rect.right for rect in visible_bounds)
@@ -256,17 +264,24 @@ class Imageload:
             if image is None:
                 continue
             frame = pygame.Surface(target_size, pygame.SRCALPHA)
-            frame_crop = crop if shared_canvas else visible_rect
+            frame_crop = (
+                visible_rect
+                if stretch_to_target
+                else crop if shared_canvas else visible_rect
+            )
             if frame_crop.width and frame_crop.height:
-                frame_scale = min(
-                    target_size[0] / frame_crop.width,
-                    target_size[1] / frame_crop.height,
-                )
-                frame_size = (
-                    max(1, round(frame_crop.width * frame_scale)),
-                    max(1, round(frame_crop.height * frame_scale)),
-                )
                 visible = image.subsurface(frame_crop).copy()
+                if stretch_to_target:
+                    frame_size = target_size
+                else:
+                    frame_scale = min(
+                        target_size[0] / frame_crop.width,
+                        target_size[1] / frame_crop.height,
+                    )
+                    frame_size = (
+                        max(1, round(frame_crop.width * frame_scale)),
+                        max(1, round(frame_crop.height * frame_scale)),
+                    )
                 visible = pygame.transform.smoothscale(visible, frame_size)
             else:
                 visible = pygame.transform.smoothscale(image, target_size)

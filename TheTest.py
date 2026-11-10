@@ -127,6 +127,7 @@ BannerFont = get_game_font(54)
 RuneAlertFont = get_game_font(24)
 _scaled_surface_cache = {}
 _deathmatch_leaderboard_text_cache = {}
+_mine_render_surface = None
 HEAL_INVENTORY_PANEL_RECT = pygame.Rect(30, 220, 330, 112)
 HEAL_ITEM_RECT = pygame.Rect(42, 236, 68, 68)
 
@@ -977,6 +978,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global next_local_supply_id
     global practice_weapon_selection
     global golden_revolver_until
+    global _mine_render_surface
     global flaregun_used, flagdown_reward_notice, flagdown_reward_notice_until
     global flagdown_reward_notice_image
     global spawn_tiles, spawn_tile_x, spawn_tile_y
@@ -1699,38 +1701,64 @@ def _draw_result_screen(title_text, color, elapsed):
             ),
             {},
         )
-        team_kills = {0: 0, 1: 0}
+        rows = []
         for player_id, player in server_players.items():
-            team_id = player.get("team_id")
-            if team_id not in team_kills:
-                continue
             try:
-                team_kills[team_id] += int(
-                    score_table.get(player_id, player.get("kill_count", 0))
+                score = int(
+                    score_table.get(
+                        player_id,
+                        score_table.get(
+                            str(player_id), player.get("kill_count", 0)
+                        ),
+                    )
                 )
             except (TypeError, ValueError):
-                continue
-        score_panel = pygame.Rect(0, 0, 580, 54)
-        score_panel.center = (ScreenX // 2, ScreenY // 2 + 55)
+                score = 0
+            rows.append((
+                player_id,
+                str(player.get("name", "플레이어")),
+                score,
+                player.get("team_id"),
+            ))
+        rows.sort(key=lambda row: (-row[2], str(row[1]), str(row[0])))
+
+        row_height = 28
+        panel_height = 48 + len(rows) * row_height
+        score_panel = pygame.Rect(0, 0, 620, panel_height)
+        score_panel.center = (
+            ScreenX // 2,
+            ScreenY // 2 + 45 + panel_height // 2,
+        )
         pygame.draw.rect(display, (12, 20, 32), score_panel, border_radius=8)
         pygame.draw.rect(display, (90, 125, 150), score_panel, 1, border_radius=8)
-        for team_id, label, color, x in (
-            (0, "청팀", (105, 195, 255), score_panel.centerx - 130),
-            (1, "홍팀", (255, 125, 135), score_panel.centerx + 130),
-        ):
-            team_text = KillFeedFont.render(
-                f"{label} 팀 킬: {team_kills[team_id]}",
-                True,
-                color,
+        header = KillFeedFont.render("플레이어: 킬 수", True, (255, 235, 160))
+        display.blit(header, (score_panel.left + 14, score_panel.top + 10))
+        row_y = score_panel.top + 42
+        for player_id, name, score, team_id in rows[:MAX_PLAYERS]:
+            color = (
+                (150, 210, 255) if team_id == 0
+                else (255, 165, 175) if team_id == 1
+                else (245, 245, 245)
             )
-            display.blit(team_text, team_text.get_rect(center=(x, score_panel.centery)))
+            text = KillFeedFont.render(f"{name}: {score}", True, color)
+            max_width = score_panel.width - 28
+            if text.get_width() > max_width:
+                text = pygame.transform.smoothscale(
+                    text,
+                    (
+                        max_width,
+                        max(1, round(text.get_height() * max_width / text.get_width())),
+                    ),
+                )
+            display.blit(text, (score_panel.left + 14, row_y))
+            row_y += row_height
 
     guide_text = "Space: 다시 대기열 참가   ESC: 메인 메뉴"
     guide = result_text_cache.get(guide_text)
     if guide is None:
         guide = GuiFont.render(guide_text, True, (255, 255, 255))
         result_text_cache[guide_text] = guide
-    guide_y = ScreenY - 36 if is_deathmatch_result else ScreenY // 2 + 110 if is_flagdown_result else ScreenY // 2 + 70
+    guide_y = ScreenY - 36 if is_deathmatch_result or is_flagdown_result else ScreenY // 2 + 70
     display.blit(guide, guide.get_rect(center=(ScreenX // 2, guide_y)))
 
 
@@ -1797,10 +1825,10 @@ def activate_quick_slot(key, reinstall=False):
     if skill_name == "자폭" and my_player.Hp <= 0:
         system_message = "사망 또는 리스폰 중에는 자폭을 사용할 수 없습니다."
         return
-    if skill_name == "영혼의 시험":
+    if skill_name == "영혼탄막":
         if now < skill_cooldowns.get(skill_name, 0):
             remain = (skill_cooldowns[skill_name] - now) / 1000
-            system_message = f"영혼의 시험 재사용 대기: {remain:.1f}초"
+            system_message = f"영혼탄막 재사용 대기: {remain:.1f}초"
             return
         center_x, center_y = get_player_world_center(
             my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height()
@@ -1842,7 +1870,7 @@ def activate_quick_slot(key, reinstall=False):
             center_x, center_y, (170, 240, 255),
             count=28, radius=48, lifetime=550, size=4,
         )
-        system_message = "영혼의 시험 탄환 발사! 적중하면 분신이 소환됩니다."
+        system_message = "영혼탄막 탄환 발사! 적중하면 분신이 소환됩니다."
         return
     direct_teleport = skill_name == "텔포"
     if direct_teleport and now < skill_cooldowns.get(skill_name, 0):
@@ -4281,27 +4309,11 @@ def GameFrame(practice_mode: bool = False):
         end = world_to_screen(beam["x2"], beam["y2"], CameraPosX, CameraPosY, camera_zoom)
         lance_frames = IML.GetManaLanceFrames()
         if lance_frames:
-            dx, dy = end[0] - start[0], end[1] - start[1]
-            beam_length = math.hypot(dx, dy)
-            beam_angle = math.degrees(math.atan2(dy, dx))
-            beam_width = max(24, round(82 * camera_zoom))
+            beam_angle = math.degrees(
+                math.atan2(end[1] - start[1], end[0] - start[0])
+            )
             frame_index = ((now - beam["started_at"]) // 50) % len(lance_frames)
             lance_frame = lance_frames[frame_index]
-            scaled_lance = _scale_cached(
-                lance_frame,
-                (max(1, round(beam_length)), beam_width),
-            )
-            rotated_lance = pygame.transform.rotate(scaled_lance, -beam_angle)
-            beam_center = (
-                (start[0] + end[0]) / 2,
-                (start[1] + end[1]) / 2,
-            )
-            display.blit(
-                rotated_lance,
-                rotated_lance.get_rect(
-                    center=(round(beam_center[0]), round(beam_center[1]))
-                ),
-            )
             emitter_frames = IML.GetLaserGunEffectFrames()
             if emitter_frames:
                 emitter = emitter_frames[frame_index % len(emitter_frames)]
@@ -4316,9 +4328,27 @@ def GameFrame(practice_mode: bool = False):
                 display.blit(
                     emitter_image,
                     emitter_image.get_rect(
-                        center=(round(start[0]), round(start[1]))
+                        center=(
+                            round(player_center_screen_x),
+                            round(player_center_screen_y),
+                        )
                     ),
                 )
+            lance_size = (
+                max(1, round(lance_frame.get_width() * 1.8 * camera_zoom)),
+                max(1, round(lance_frame.get_height() * 1.8 * camera_zoom)),
+            )
+            scaled_lance = _scale_cached(lance_frame, lance_size)
+            rotated_lance = pygame.transform.rotate(scaled_lance, -beam_angle)
+            display.blit(
+                rotated_lance,
+                rotated_lance.get_rect(
+                    center=(
+                        round(player_center_screen_x),
+                        round(player_center_screen_y),
+                    )
+                ),
+            )
         else:
             pygame.draw.line(
                 display,
@@ -5308,7 +5338,7 @@ def GameFrame(practice_mode: bool = False):
             elapsed = max(0, 600 - (golden_revolver_until - now))
             frame_index = min(
                 len(shatter_frames) - 1,
-                elapsed * len(shatter_frames) // 600,
+                elapsed * len(shatter_frames) // 1400,
             )
             display.blit(shatter_frames[frame_index], (0, 0))
         for lock in active_aim_locks:
@@ -5475,57 +5505,98 @@ def GameFrame(practice_mode: bool = False):
         pygame.draw.circle(display, bomb_color, (round(bomb_screen[0]), round(bomb_screen[1])),
                            max(5, round(12 * camera_zoom)), 3)
     for mine in active_mines:
-        if "detonates_at" not in mine:
+        if str(mine.get("owner_id")) != str(network.player_id):
             continue
         mine_screen = world_to_screen(
             mine["x"], mine["y"], CameraPosX, CameraPosY, camera_zoom
         )
+        if "detonates_at" not in mine:
+            marker_size = max(1, round(32 * camera_zoom))
+            mine_marker = pygame.Surface(
+                (marker_size, marker_size), pygame.SRCALPHA
+            )
+            marker_center = (marker_size // 2, marker_size // 2)
+            pygame.draw.circle(
+                mine_marker, (145, 105, 55, 180), marker_center,
+                max(4, round(10 * camera_zoom)),
+            )
+            pygame.draw.circle(
+                mine_marker, (255, 215, 125, 190), marker_center,
+                max(3, round(8 * camera_zoom)), max(1, round(2 * camera_zoom)),
+            )
+            pygame.draw.circle(
+                mine_marker, (80, 55, 35, 175), marker_center,
+                max(2, round(3 * camera_zoom)),
+            )
+            display.blit(
+                mine_marker,
+                mine_marker.get_rect(
+                    center=(round(mine_screen[0]), round(mine_screen[1]))
+                ),
+            )
+            continue
         flash_on = int(now / 70) % 2 == 0
         time_left = max(0, mine["detonates_at"] - now)
         pulse = 1.0 + 0.25 * math.sin(now * 0.04)
-        center = (round(mine_screen[0]), round(mine_screen[1]))
+        blast_size = max(1, round(MINE_BLAST_RADIUS * 2 * camera_zoom))
+        if (
+            _mine_render_surface is None
+            or _mine_render_surface.get_size() != (blast_size, blast_size)
+        ):
+            _mine_render_surface = pygame.Surface(
+                (blast_size, blast_size), pygame.SRCALPHA
+            )
+        mine_effect = _mine_render_surface
+        mine_effect.fill((0, 0, 0, 0))
+        center = (blast_size // 2, blast_size // 2)
         radius = max(4, round(9 * camera_zoom))
         mine_color = (255, 45, 35) if flash_on else (65, 20, 20)
         pygame.draw.circle(
-            display,
-            (255, 70, 45) if flash_on else (90, 25, 20),
+            mine_effect,
+            (*((255, 70, 45) if flash_on else (90, 25, 20)), 180),
             center,
             max(4, round(MINE_BLAST_RADIUS * camera_zoom)),
             max(1, round(2 * camera_zoom)),
         )
         pygame.draw.circle(
-            display,
-            (35, 20, 20),
+            mine_effect,
+            (35, 20, 20, 180),
             center,
             max(6, round(14 * camera_zoom * pulse)),
         )
         pygame.draw.circle(
-            display,
-            mine_color,
+            mine_effect,
+            (*mine_color, 180),
             center,
             radius,
             max(2, round(3 * camera_zoom)),
         )
         pygame.draw.circle(
-            display,
-            (255, 245, 225) if flash_on else (85, 30, 25),
+            mine_effect,
+            (*((255, 245, 225) if flash_on else (85, 30, 25)), 180),
             center,
             max(2, round(radius * 0.35)),
         )
         pygame.draw.circle(
-            display,
-            (255, 95, 55),
+            mine_effect,
+            (255, 95, 55, 180),
             center,
             max(7, round(15 * camera_zoom * pulse)),
             1,
         )
         if time_left <= MINE_TRIGGER_DELAY_MS * 0.45:
             pygame.draw.circle(
-                display,
-                (255, 225, 180) if flash_on else (90, 25, 20),
+                mine_effect,
+                (*((255, 225, 180) if flash_on else (90, 25, 20)), 180),
                 center,
                 max(2, round(radius * 0.2)),
             )
+        display.blit(
+            mine_effect,
+            mine_effect.get_rect(
+                center=(round(mine_screen[0]), round(mine_screen[1]))
+            ),
+        )
     for explosion in active_explosions:
         explosion_screen = world_to_screen(
             explosion["x"], explosion["y"], CameraPosX, CameraPosY, camera_zoom

@@ -26,6 +26,7 @@ SKILL_ICON_FILES = {
     "와드": "Ward.png",
     "지뢰": "Bomb.png",
     "플레어건": "flaregun.png",
+    #"영혼탄": "SpiritTrialGhost.png"
 }
 PLAYER_FRAME_SIZE = (72, 72)
 PLAYER_VISIBLE_SIZE = (44, 64)
@@ -40,7 +41,7 @@ class Imageload:
         "smg": "Gigwan",
         "sniper": "Sniper",
         "shotgun": "ShotGun",
-                "flaregun": "FlareGun",
+        "flaregun": "FlareGun",
         "bat": "BatIcon",
         "blackhole_generator": "BlackHoleGun",
         "plasma_cannon": "PlasmaGun",
@@ -149,7 +150,7 @@ class Imageload:
             for name, filename in SKILL_ICON_FILES.items()
         }
         if self.SpiritTrialGhost:
-            self.skill_icons["영혼의 시험"] = pygame.transform.smoothscale(
+            self.skill_icons["영혼탄"] = pygame.transform.smoothscale(
                 self.SpiritTrialGhost[0], (SKILL_ICON_SIZE, SKILL_ICON_SIZE)
             )
         self.Protect = self._load_image_file(self.root / "Protect.png")
@@ -226,15 +227,19 @@ class Imageload:
         for path in ordered_paths:
             image = self._load_image_file(path)
             if image is not None:
-                bounds.append((path, image.get_bounding_rect(min_alpha=8)))
+                bounds.append((
+                    path,
+                    image.get_bounding_rect(min_alpha=8),
+                    image.get_size(),
+                ))
                 del image
         visible_bounds = [
-            rect for _path, rect in bounds if rect.width and rect.height
+            item[1] for item in bounds if item[1].width and item[1].height
         ]
         if not visible_bounds:
             frames = []
-            for path, _rect in bounds:
-                image = self._load_image_file(path)
+            for item in bounds:
+                image = self._load_image_file(item[0])
                 if image is not None:
                     frames.append(pygame.transform.smoothscale(image, target_size))
             return frames
@@ -243,19 +248,28 @@ class Imageload:
         right = max(rect.right for rect in visible_bounds)
         bottom = max(rect.bottom for rect in visible_bounds)
         crop = pygame.Rect(left, top, right - left, bottom - top)
-        scale = min(target_size[0] / crop.width, target_size[1] / crop.height)
-        scaled_size = (
-            max(1, round(crop.width * scale)),
-            max(1, round(crop.height * scale)),
-        )
         frames = []
-        for path, _rect in bounds:
+        shared_canvas = len({item[2] for item in bounds}) == 1
+        for item in bounds:
+            path, visible_rect = item[0], item[1]
             image = self._load_image_file(path)
             if image is None:
                 continue
             frame = pygame.Surface(target_size, pygame.SRCALPHA)
-            visible = image.subsurface(crop).copy()
-            visible = pygame.transform.smoothscale(visible, scaled_size)
+            frame_crop = crop if shared_canvas else visible_rect
+            if frame_crop.width and frame_crop.height:
+                frame_scale = min(
+                    target_size[0] / frame_crop.width,
+                    target_size[1] / frame_crop.height,
+                )
+                frame_size = (
+                    max(1, round(frame_crop.width * frame_scale)),
+                    max(1, round(frame_crop.height * frame_scale)),
+                )
+                visible = image.subsurface(frame_crop).copy()
+                visible = pygame.transform.smoothscale(visible, frame_size)
+            else:
+                visible = pygame.transform.smoothscale(image, target_size)
             frame.blit(visible, visible.get_rect(center=frame.get_rect().center))
             frames.append(frame)
             del image, visible

@@ -32,6 +32,9 @@ PLAYER_FRAME_SIZE = (72, 72)
 PLAYER_VISIBLE_SIZE = (44, 64)
 
 
+GOLDEN_REVOLVER_IMAGE_SIZE = (96, 56)
+
+
 class Imageload:
     """Pygame Surface 자산을 캐시해 기존 getter 인터페이스로 제공합니다."""
 
@@ -45,6 +48,7 @@ class Imageload:
         "bat": "BatIcon",
         "blackhole_generator": "BlackHoleGun",
         "plasma_cannon": "PlasmaGun",
+        "Revolver_golden": "GoldenRevolver",
 
     }
 
@@ -97,6 +101,21 @@ class Imageload:
             (56, 32),
             directory="Golden_Revolver_Bullet",
         )
+        golden_revolver = self._load_image_file(
+            self.root / "GoldenRevolver.png"
+        )
+        if golden_revolver is not None:
+            visible_bounds = golden_revolver.get_bounding_rect(min_alpha=8)
+            self.GoldenRevolver = (
+                pygame.transform.smoothscale(
+                    golden_revolver.subsurface(visible_bounds),
+                    GOLDEN_REVOLVER_IMAGE_SIZE,
+                )
+                if visible_bounds.width > 0 and visible_bounds.height > 0
+                else None
+            )
+        else:
+            self.GoldenRevolver = None
         self.LaserGunEffect = self._load_animation(
             "sprite_",
             (112, 64),

@@ -136,7 +136,7 @@ class MainScreenRenderer:
             (235, 240, 250),
         )
         self.surface.blit(sensitivity_label, (sensitivity_rect.x + 18, sensitivity_rect.y + 13))
-        slider = pygame.Rect(sensitivity_rect.right - 420, sensitivity_rect.y + 27, 380, 8)
+        slider = pygame.Rect(sensitivity_rect.right - 540, sensitivity_rect.y + 27, 500, 8)
         pygame.draw.rect(self.surface, (70, 85, 105), slider, border_radius=4)
         progress = (
             (settings["mouse_sensitivity"] - MOUSE_SENSITIVITY_MIN)
@@ -179,7 +179,7 @@ class MainScreenRenderer:
         if waiting_action:
             guide_text = "변경할 키를 누르세요 · Esc 취소"
         else:
-            guide_text = "키 항목을 눌러 변경 · 감도와 효과음 음량 조절"
+            guide_text = "키 변경 · 감도는 슬라이더/휠 조절 · 효과음 음량 조절"
         guide = self.font.render(guide_text, True, (180, 195, 215))
         self.surface.blit(guide, guide.get_rect(center=(self.screen_width // 2, toggle_rect.bottom + 34)))
         back_rect = pygame.Rect(0, 0, 220, 60)

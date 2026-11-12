@@ -1,6 +1,7 @@
 import unittest
 
 from Config import (
+    BLACK_HOLE_DAMAGE,
     BLACK_HOLE_RADIUS,
     PLASMA_BEAM_DURATION_MS,
     PLASMA_BEAM_WIDTH,
@@ -38,7 +39,8 @@ class SpecialWeaponFeatureTests(unittest.TestCase):
         self.assertGreater(PLASMA_RANGE, 950)
 
     def test_black_hole_radius_is_larger_than_original_radius(self):
-        self.assertGreater(BLACK_HOLE_RADIUS, 32 * 4)
+        self.assertGreater(BLACK_HOLE_RADIUS, 32 * 6)
+        self.assertGreater(BLACK_HOLE_DAMAGE, 35)
 
 
 if __name__ == "__main__":

@@ -61,8 +61,8 @@ RESERVED_KEYS = {
 }
 
 SETTINGS_PATH = Path(__file__).resolve().with_name("settings.json")
-MOUSE_SENSITIVITY_MIN = 0.25
-MOUSE_SENSITIVITY_MAX = 4.0
+MOUSE_SENSITIVITY_MIN = 0.1
+MOUSE_SENSITIVITY_MAX = 6.0
 settings = {
     "mouse_sensitivity": 1.0,
     "sound_volume": 0.7,

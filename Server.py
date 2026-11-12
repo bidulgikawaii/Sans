@@ -45,8 +45,11 @@ from Config import (
     MAX_PLAYERS,
     RUNE_ALERT_DURATION_MS,
     SPIRIT_TRIAL_CLONE_HP,
+    SPIRIT_TRIAL_CLONE_LIFETIME_MS,
     SHIELD_HP,
+    SUICIDE_RESPAWN_PENALTY_MS,
 )
+from CombatMechanics import apply_shield_activation, is_suicide_hit
 from Weapon import WEAPONS
 from Lobby import LobbyState
 from Zone import MagneticZone
@@ -133,6 +136,16 @@ def append_kill_event(
         event["bat_launch"] = bat_launch
     events["kill_events"].append(event)
     events["next_kill_event_id"] += 1
+
+
+def serialize_linked_clones(clones, now):
+    return [
+        {
+            **clone,
+            "age_ms": max(0, round((now - clone["created_at"]) * 1000)),
+        }
+        for clone in clones
+    ]
 
 
 match_events = {mode.mode_id: new_match_events() for mode in get_game_modes()}
@@ -365,7 +378,9 @@ def handle_client(conn, player_id):
                             player["bullets"] = list(pending_bullets)
                             player["flagdown_skill_rewards"] = []
                             player["spectator_skill_events"] = list(pending_skills)
-                            player["linked_clones"] = list(events["linked_clones"])
+                            player["linked_clones"] = serialize_linked_clones(
+                                events["linked_clones"], time.monotonic()
+                            )
                             player["winner_id"] = (
                                 winner_ids[0] if len(winner_ids) == 1 else None
                             )
@@ -776,15 +791,16 @@ def handle_client(conn, player_id):
                 reported_shield_token = max(0, int(client_data.get("shield_token", 0)))
             except (TypeError, ValueError):
                 reported_shield_token = players[player_id]["shield_token"]
-            if reported_shield_token < players[player_id]["shield_token"]:
-                players[player_id]["shield_token"] = reported_shield_token
-                players[player_id]["shield_hp"] = 0
-            elif (
-                reported_shield_token > players[player_id]["shield_token"]
-                and players[player_id]["hp"] > 0
-            ):
-                players[player_id]["shield_token"] = reported_shield_token
-                players[player_id]["shield_hp"] = SHIELD_HP
+            (
+                players[player_id]["shield_token"],
+                players[player_id]["shield_hp"],
+            ) = apply_shield_activation(
+                players[player_id]["shield_token"],
+                players[player_id]["shield_hp"],
+                reported_shield_token,
+                players[player_id]["hp"],
+                SHIELD_HP,
+            )
             players[player_id]["shield_active"] = players[player_id]["shield_hp"] > 0
             heal_token = int(client_data.get("heal_token", 0))
             if heal_token != players[player_id]["heal_token"]:
@@ -907,6 +923,11 @@ def handle_client(conn, player_id):
                     )
 
             suicide_detonated = False
+            events["linked_clones"][:] = [
+                clone for clone in events["linked_clones"]
+                if now_monotonic - clone["created_at"]
+                < SPIRIT_TRIAL_CLONE_LIFETIME_MS / 1000
+            ]
             reported_hit_events = client_data.get("hit_events", [])
             if not isinstance(reported_hit_events, list):
                 reported_hit_events = []
@@ -1033,6 +1054,7 @@ def handle_client(conn, player_id):
                         "y": clone_y,
                         "hp": SPIRIT_TRIAL_CLONE_HP,
                         "max_hp": SPIRIT_TRIAL_CLONE_HP,
+                        "created_at": now_monotonic,
                     })
                     events["next_clone_id"] += 1
                     continue
@@ -1229,12 +1251,12 @@ def handle_client(conn, player_id):
                 health_damage = min(damage - shield_damage, previous_hp)
                 target["hp"] = previous_hp - health_damage
                 damage = shield_damage + health_damage
-                if (
-                    hit_event.get("skill_source") == "자폭"
-                    and attacker_id == player_id
-                    and target_id == player_id
-                    and previous_hp > 0
-                ):
+                is_suicide = is_suicide_hit(
+                    attacker_id,
+                    target_id,
+                    hit_event.get("skill_source"),
+                )
+                if is_suicide and previous_hp > 0:
                     suicide_detonated = True
                 events["damage_events"].append({
                     "event_id": events["next_damage_event_id"],
@@ -1259,6 +1281,11 @@ def handle_client(conn, player_id):
                                 if mode == GAME_MODE_FLAGDOWN
                                 else DEATHMATCH_RESPAWN_MS
                             ) / 1000
+                            + (
+                                SUICIDE_RESPAWN_PENALTY_MS / 1000
+                                if is_suicide
+                                else 0
+                            )
                         )
                     if (
                         mode in (
@@ -1280,7 +1307,7 @@ def handle_client(conn, player_id):
                         target.get("name", "플레이어"),
                         source_bullet["weapon_id"] if source_bullet else hit_weapon_id,
                         "bat" if is_bat_hit else (
-                            "self_inflicted" if attacker_id == target_id else "player"
+                            "self_inflicted" if is_suicide else "player"
                         ),
                         {
                             "x": target.get("posX", 0) + 36,
@@ -1600,7 +1627,9 @@ def handle_client(conn, player_id):
                     else []
                 )
                 player["spectator_skill_events"] = list(pending_skill_events)
-                player["linked_clones"] = list(events["linked_clones"])
+                player["linked_clones"] = serialize_linked_clones(
+                    events["linked_clones"], now_monotonic
+                )
                 player["active_mines"] = serialize_mines(events, now_monotonic)
                 player["mine_blast_events"] = list(events["mine_blast_events"])
                 player["mine_ack_id"] = (

@@ -76,11 +76,25 @@ def advance_mines(
 ):
     active_player_ids = set(active_player_ids)
     hits = []
-    live_players = [
-        (player_id, players[player_id])
-        for player_id in active_player_ids
-        if player_id in players and players[player_id].get("hp", 0) > 0
-    ]
+    live_players = []
+    for player_id in active_player_ids:
+        player = players.get(player_id)
+        if player is None:
+            continue
+        try:
+            hp = float(player.get("hp", 0))
+            target_x = float(player["posX"]) + 36
+            target_y = float(player["posY"]) + 36
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if (
+            hp <= 0
+            or not math.isfinite(hp)
+            or not math.isfinite(target_x)
+            or not math.isfinite(target_y)
+        ):
+            continue
+        live_players.append((player_id, player, target_x, target_y))
     for mine in tuple(events["mines"]):
         if mine["owner_id"] not in active_player_ids or mine["owner_id"] not in players:
             events["mines"].remove(mine)
@@ -88,13 +102,11 @@ def advance_mines(
         if mine["detonates_at"] is None:
             if now < mine["armed_at"]:
                 continue
-            for target_id, target in live_players:
+            for target_id, target, target_x, target_y in live_players:
                 if target_id == mine["owner_id"]:
                     continue
                 if mode == "flagdown" and team_for(target_id) == mine["team_id"]:
                     continue
-                target_x = target["posX"] + 36
-                target_y = target["posY"] + 36
                 if math.hypot(target_x - mine["x"], target_y - mine["y"]) <= trigger_radius:
                     mine["detonates_at"] = now + trigger_delay_ms / 1000
                     mine["triggered_at"] = now
@@ -109,13 +121,11 @@ def advance_mines(
             "y": mine["y"],
             "radius": blast_radius,
         })
-        for target_id, target in live_players:
+        for target_id, target, target_x, target_y in live_players:
             if target_id == mine["owner_id"]:
                 continue
             if mode == "flagdown" and team_for(target_id) == mine["team_id"]:
                 continue
-            target_x = target["posX"] + 36
-            target_y = target["posY"] + 36
             if math.hypot(target_x - mine["x"], target_y - mine["y"]) > blast_radius:
                 continue
             auth_key = (mine["mine_id"], target_id)

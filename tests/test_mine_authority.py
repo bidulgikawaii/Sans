@@ -41,7 +41,9 @@ class MineAuthorityTests(unittest.TestCase):
         self.assertEqual(self.place_mine(), 1)
         self.assertEqual(self.place_mine(), 1)
         self.assertEqual(len(self.events["mines"]), 1)
-        self.assertEqual(serialize_mines(self.events, 0)[0]["armed_in_ms"], 100)
+        serialized = serialize_mines(self.events, 0)[0]
+        self.assertEqual(serialized["armed_in_ms"], 100)
+        self.assertEqual(serialized["owner_id"], "owner")
 
     def test_trigger_waits_then_authorizes_enemy_damage_once(self):
         self.place_mine()
@@ -87,6 +89,25 @@ class MineAuthorityTests(unittest.TestCase):
         )
         self.assertEqual(acknowledgement, 1)
         self.assertEqual(self.events["mines"], [])
+
+    def test_invalid_player_position_does_not_crash_mine_processing(self):
+        self.place_mine()
+        self.players["enemy"]["posX"] = None
+        self.assertEqual(
+            advance_mines(
+                self.events,
+                self.players,
+                {"owner", "enemy", "ally"},
+                self.teams.get,
+                "flagdown",
+                0.2,
+                100,
+                120,
+                900,
+                10,
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":

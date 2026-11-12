@@ -32,6 +32,7 @@ from Settings import (
     MOUSE_SENSITIVITY_MIN,
     RESERVED_KEYS,
     get_key,
+    key_label,
     key_bindings,
     save_settings,
     settings,
@@ -51,6 +52,7 @@ from GameRendering import (
     draw_quick_slot_cooldowns,
     draw_teleport_anchor,
     draw_visibility_geometry,
+    draw_visibility_highlight,
     draw_ward,
     draw_linked_clone,
     draw_kill_feed,
@@ -886,7 +888,9 @@ def draw_healing_inventory(surface):
     pygame.draw.rect(surface, (225, 245, 225), (HEAL_ITEM_RECT.x + 12, HEAL_ITEM_RECT.y + 28, 44, 12))
     title = GuiFont.render("회복 아이템", True, (225, 245, 225))
     count = GuiFont.render(f"x {healing_item_count}", True, (150, 255, 170))
-    hint = GuiFont.render("클릭 또는 H 사용", True, (190, 205, 195))
+    hint = GuiFont.render(
+        f"클릭 또는 {key_label('use_healing')} 사용", True, (190, 205, 195)
+    )
     surface.blit(title, (HEAL_ITEM_RECT.right + 12, HEAL_ITEM_RECT.y - 2))
     surface.blit(count, (HEAL_ITEM_RECT.right + 12, HEAL_ITEM_RECT.y + 28))
     surface.blit(hint, (HEAL_ITEM_RECT.right + 12, HEAL_ITEM_RECT.y + 54))
@@ -1213,6 +1217,21 @@ def SettingsView():
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+        elif (
+            event.type == pygame.MOUSEWHEEL
+            and buttons["sensitivity"].collidepoint(pygame.mouse.get_pos())
+        ):
+            settings["mouse_sensitivity"] = round(
+                min(
+                    MOUSE_SENSITIVITY_MAX,
+                    max(
+                        MOUSE_SENSITIVITY_MIN,
+                        settings["mouse_sensitivity"] + event.y * 0.01,
+                    ),
+                ),
+                2,
+            )
+            save_settings()
         elif event.type == pygame.KEYDOWN and settings_key_waiting:
             if event.key == pygame.K_ESCAPE:
                 settings_key_waiting = None
@@ -3155,6 +3174,19 @@ def handle_settings_overlay_event(event):
         elif event.key in (pygame.K_ESCAPE, pygame.K_F1):
             settings_overlay_open = False
             save_settings()
+    elif event.type == pygame.MOUSEWHEEL:
+        if buttons["sensitivity"].collidepoint(pygame.mouse.get_pos()):
+            settings["mouse_sensitivity"] = round(
+                min(
+                    MOUSE_SENSITIVITY_MAX,
+                    max(
+                        MOUSE_SENSITIVITY_MIN,
+                        settings["mouse_sensitivity"] + event.y * 0.01,
+                    ),
+                ),
+                2,
+            )
+            save_settings()
     elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
         if buttons["back"].collidepoint(event.pos):
             settings_overlay_open = False
@@ -3388,6 +3420,13 @@ def GameFrame(practice_mode: bool = False):
             show_defeat()
             return
     now = pygame.time.get_ticks()
+    for clone in linked_clones:
+        if "created_at_ms" in clone:
+            clone["age_ms"] = max(0, now - clone["created_at_ms"])
+    linked_clones[:] = [
+        clone for clone in linked_clones
+        if clone.get("age_ms", 0) < SPIRIT_TRIAL_CLONE_LIFETIME_MS
+    ]
     if (is_practice_mode or debug_mode) and training_dummy is None:
         respawn_training_dummy()
     # 연습 프레임은 서버 스냅샷을 읽지 않고 로컬 플레이 상태만 사용합니다.
@@ -4229,7 +4268,7 @@ def GameFrame(practice_mode: bool = False):
     )
     Weapon_Angle = Tool.GetAtn2Angle_Degrees(aim_player_center, Weapon_Pos)
     angle_delta = (Weapon_Angle - vision_angle + 180) % 360 - 180
-    vision_alpha = max(0.015, min(0.4, 0.1 * settings["mouse_sensitivity"]))
+    vision_alpha = max(0.015, min(0.85, 0.14 * settings["mouse_sensitivity"]))
     vision_angle = (vision_angle + angle_delta * vision_alpha) % 360
     if weapon_state.weapon_id == "pistol" and now < weapon_fire_until and IML.GetPistolFire():
         weapon_image = IML.GetPistolFire()
@@ -4591,6 +4630,8 @@ def GameFrame(practice_mode: bool = False):
                             "y": bullet.y,
                             "hp": SPIRIT_TRIAL_CLONE_HP,
                             "max_hp": SPIRIT_TRIAL_CLONE_HP,
+                            "age_ms": 0,
+                            "created_at_ms": now,
                         })
                         known_linked_clone_ids.add(clone_id)
                         particles.ring(
@@ -4953,6 +4994,18 @@ def GameFrame(practice_mode: bool = False):
         other_center_x, other_center_y = get_player_screen_center(p_info["posX"], p_info["posY"], IML.Player.get_width(), IML.Player.get_height(), CameraPosX, CameraPosY, camera_zoom)
         other_center_x += stun_offset_x
         other_center_y += stun_offset_y
+        team_color = (
+            FLAGDOWN_TEAM_COLORS.get(p_info.get("team_id"))
+            if flagdown else None
+        )
+        if team_color is not None:
+            pygame.draw.circle(
+                display,
+                team_color,
+                (round(other_center_x), round(other_center_y)),
+                max(24, round(IML.Player.get_width() * camera_zoom / 2 + 5)),
+                max(2, round(3 * camera_zoom)),
+            )
         server_weapon_id = p_info.get("weapon_id", DEFAULT_WEAPON_ID)
         if server_weapon_id in MELEE_WEAPON_IDS:
             melee_frames = (
@@ -4987,7 +5040,11 @@ def GameFrame(practice_mode: bool = False):
                 other_gun_rect = other_rotated_gun.get_rect()
                 other_gun_rect.center = (other_center_x, other_center_y)
                 display.blit(other_rotated_gun, other_gun_rect)
-        other_name = GuiFont.render(str(p_info.get("name", f"P{p_id}")), True, (255, 230, 160))
+        other_name = GuiFont.render(
+            str(p_info.get("name", f"P{p_id}")),
+            True,
+            team_color or (255, 230, 160),
+        )
         display.blit(
             other_name,
             other_name.get_rect(
@@ -5084,12 +5141,30 @@ def GameFrame(practice_mode: bool = False):
                 Shotgun_rect.move(local_stun_offset_x, local_stun_offset_y),
             )
 
-
+    own_team = server_players.get(network.player_id, {}).get("team_id")
+    local_team_color = (
+        FLAGDOWN_TEAM_COLORS.get(own_team) if flagdown else None
+    )
+    if (
+        local_team_color is not None
+        and my_player.Hp > 0
+        and now >= stealth_until
+        and not in_bush
+    ):
+        pygame.draw.circle(
+            display,
+            local_team_color,
+            (
+                round(player_center_screen_x + local_stun_offset_x),
+                round(player_center_screen_y + local_stun_offset_y),
+            ),
+            max(24, round(IML.Player.get_width() * camera_zoom / 2 + 5)),
+            max(2, round(3 * camera_zoom)),
+        )
 
     
-    # 기본 시야는 무기 시야와 구분되는 어두운 청색 영역으로 표시합니다.
     base_overlay = base_vision_overlay
-    base_overlay.fill((8, 24, 42, PLAYER_BASE_VISION_ALPHA))
+    base_overlay.fill((0, 0, 0, 0))
     base_vision_polygon = _cached_visibility_polygon(
         ("base", PLAYER_BASE_VISION_RADIUS),
         player_world_x,
@@ -5097,16 +5172,6 @@ def GameFrame(practice_mode: bool = False):
         PLAYER_BASE_VISION_RADIUS,
         vision_shape=VISION_CIRCLE,
     )
-    if base_vision_polygon:
-        draw_visibility_geometry(
-            base_overlay,
-            base_vision_polygon,
-            CameraPosX,
-            CameraPosY,
-            camera_zoom,
-        )
-    display.blit(base_overlay, (0, 0))
-
     # 화면 전체를 어둡게 한 뒤, 아래에서 무기 시야 폴리곤만 투명하게 뚫습니다.
     dark_overlay = vision_overlay
     # 완전한 검정이 아니라 뒤의 맵이 살짝 보이는 반투명 검정입니다.
@@ -5184,6 +5249,27 @@ def GameFrame(practice_mode: bool = False):
         )
 
     display.blit(dark_overlay, (0, 0))
+    base_overlay.fill((0, 0, 0, 0))
+    highlight_color = (135, 205, 255, 36)
+    if base_vision_polygon:
+        draw_visibility_highlight(
+            base_overlay,
+            base_vision_polygon,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+            highlight_color,
+        )
+    if visibility_polygon:
+        draw_visibility_highlight(
+            base_overlay,
+            visibility_polygon,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
+            highlight_color,
+        )
+    display.blit(base_overlay, (0, 0))
     for target_id, launch in list(bat_launch_animations.items()):
         center_x, center_y, rotation, alpha, finished = get_bat_launch_frame(launch, now)
         if finished:
@@ -5949,6 +6035,22 @@ def GameFrame(practice_mode: bool = False):
     id_text = GuiFont.render(f"ID: {network.player_id}", True, (255, 255, 255))
     display.blit(id_text, (20, 20))
 
+    healing_panel = pygame.Rect(30, ScreenY - 150, 265, 58)
+    pygame.draw.rect(display, (12, 24, 20), healing_panel, border_radius=8)
+    pygame.draw.rect(display, (100, 220, 145), healing_panel, 2, border_radius=8)
+    healing_count_text = GuiFont.render(
+        f"회복 아이템  x {healing_item_count}",
+        True,
+        (175, 255, 190),
+    )
+    healing_key_text = KillFeedFont.render(
+        f"[{key_label('use_healing')}] 사용",
+        True,
+        (225, 240, 225),
+    )
+    display.blit(healing_count_text, (healing_panel.x + 12, healing_panel.y + 5))
+    display.blit(healing_key_text, (healing_panel.x + 12, healing_panel.y + 31))
+
     if coordinate_overlay_enabled:
         player_world_x, player_world_y = get_player_world_center(
             my_player.X,
@@ -6002,7 +6104,11 @@ def GameFrame(practice_mode: bool = False):
     if hovered_skill:
         draw_skill_tooltip(display, MousePos, hovered_skill)
 
-    player_name_text = GuiFont.render(player_name or "플레이어", True, (255, 230, 160))
+    player_name_text = GuiFont.render(
+        player_name or "플레이어",
+        True,
+        local_team_color or (255, 230, 160),
+    )
     display.blit(player_name_text, (30, ScreenY - 78))
 
     # 시스템 메시지

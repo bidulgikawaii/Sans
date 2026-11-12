@@ -1,7 +1,11 @@
 import math
 import pygame
 from FontAssets import get_game_font
-from Config import WARD_DISPLAY_RADIUS
+from Config import (
+    SPIRIT_TRIAL_CLONE_BLINK_START_MS,
+    SPIRIT_TRIAL_CLONE_LIFETIME_MS,
+    WARD_DISPLAY_RADIUS,
+)
 
 
 _scaled_images = {}
@@ -176,6 +180,34 @@ def draw_visibility_geometry(surface, geometry, camera_x, camera_y, zoom):
         ]
         if len(points) >= 3:
             pygame.draw.polygon(surface, (0, 0, 0, 0), points)
+
+
+def draw_visibility_highlight(surface, geometry, camera_x, camera_y, zoom, color):
+    if geometry.is_empty:
+        return
+    polygons = geometry.geoms if geometry.geom_type == "MultiPolygon" else (geometry,)
+    for polygon in polygons:
+        points = [
+            (round((world_x - camera_x) * zoom), round((world_y - camera_y) * zoom))
+            for world_x, world_y in polygon.exterior.coords
+        ]
+        if len(points) >= 3:
+            pygame.draw.polygon(surface, color, points)
+
+
+def linked_clone_opacity(age_ms, now):
+    age_ms = max(0, int(age_ms))
+    if age_ms >= SPIRIT_TRIAL_CLONE_LIFETIME_MS:
+        return 0
+    opacity = 145 + round(25 * math.sin(now * 0.012))
+    if age_ms < SPIRIT_TRIAL_CLONE_BLINK_START_MS:
+        return opacity
+    if (now // 120) % 2:
+        return 0
+    fade = (age_ms - SPIRIT_TRIAL_CLONE_BLINK_START_MS) / (
+        SPIRIT_TRIAL_CLONE_LIFETIME_MS - SPIRIT_TRIAL_CLONE_BLINK_START_MS
+    )
+    return max(0, round(opacity * (1 - fade)))
 
 
 def draw_player_hitboxes(surface, head_rect, body_rect, camera_x, camera_y, zoom):
@@ -413,8 +445,11 @@ def draw_linked_clone(
         max(1, round(player_image.get_width() * zoom)),
         max(1, round(player_image.get_height() * zoom)),
     )
+    opacity = linked_clone_opacity(clone.get("age_ms", 0), now)
+    if opacity <= 0:
+        return
     sprite = pygame.transform.scale(player_image, sprite_size)
-    sprite.set_alpha(145 + round(25 * math.sin(now * 0.012)))
+    sprite.set_alpha(opacity)
     sprite.fill((55, 150, 255, 0), special_flags=pygame.BLEND_RGBA_ADD)
     sprite_rect = sprite.get_rect(center=(screen_x, screen_y))
 

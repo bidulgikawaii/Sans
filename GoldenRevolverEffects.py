@@ -1,9 +1,11 @@
-SHATTER_ANIMATION_DURATION_MS = 1400
-SHATTER_PAUSE_FRAME_INDEX = 17
-SHATTER_PAUSE_DURATION_MS = 1800
-EFFECT_DURATION_MS = SHATTER_ANIMATION_DURATION_MS + SHATTER_PAUSE_DURATION_MS
 AIM_DURATION_MS = 900
 AIM_APPROACH_DISTANCE = 900
+GOLDEN_TINT_FADE_MS = 320
+GOLDEN_TINT_MAX_ALPHA = 72
+GOLDEN_BULLET_INITIAL_SPEED_RATIO = 0.16
+GOLDEN_BULLET_ACCELERATION_DELAY_MS = 180
+GOLDEN_BULLET_ACCELERATION_DURATION_MS = 300
+GOLDEN_BULLET_MAX_SPEED_MULTIPLIER = 2.5
 
 
 def aim_lock_position(lock, now_ms):
@@ -16,36 +18,33 @@ def aim_lock_position(lock, now_ms):
     )
 
 
-def shatter_frame_index(elapsed_ms, frame_count):
-    if frame_count <= 0:
-        raise ValueError("frame_count must be positive")
+def golden_revolver_tint_alpha(started_at, aim_until, now_ms):
+    if now_ms < started_at or now_ms >= aim_until + GOLDEN_TINT_FADE_MS:
+        return 0
+    if now_ms < aim_until:
+        progress = (now_ms - started_at) / max(1, aim_until - started_at)
+    else:
+        progress = (aim_until + GOLDEN_TINT_FADE_MS - now_ms) / GOLDEN_TINT_FADE_MS
+    eased_progress = progress * progress * (3 - 2 * progress)
+    return round(GOLDEN_TINT_MAX_ALPHA * eased_progress)
 
+
+def golden_bullet_speed(max_speed, elapsed_ms):
     elapsed_ms = max(0, elapsed_ms)
-    pause_frame = min(SHATTER_PAUSE_FRAME_INDEX, frame_count - 1)
-    pre_pause_duration = max(
-        1,
-        round(
-            SHATTER_ANIMATION_DURATION_MS * (pause_frame + 1) / frame_count
-        ),
+    if elapsed_ms <= GOLDEN_BULLET_ACCELERATION_DELAY_MS:
+        return max_speed * GOLDEN_BULLET_INITIAL_SPEED_RATIO
+    acceleration_progress = min(
+        1.0,
+        (elapsed_ms - GOLDEN_BULLET_ACCELERATION_DELAY_MS)
+        / GOLDEN_BULLET_ACCELERATION_DURATION_MS,
     )
-    if elapsed_ms < pre_pause_duration:
-        return min(
-            pause_frame,
-            elapsed_ms * (pause_frame + 1) // pre_pause_duration,
+    eased_progress = acceleration_progress * acceleration_progress
+    speed_multiplier = (
+        GOLDEN_BULLET_INITIAL_SPEED_RATIO
+        + (
+            GOLDEN_BULLET_MAX_SPEED_MULTIPLIER
+            - GOLDEN_BULLET_INITIAL_SPEED_RATIO
         )
-    if elapsed_ms < pre_pause_duration + SHATTER_PAUSE_DURATION_MS:
-        return pause_frame
-
-    remaining_frames = frame_count - pause_frame - 1
-    post_pause_elapsed = (
-        elapsed_ms - pre_pause_duration - SHATTER_PAUSE_DURATION_MS
+        * eased_progress
     )
-    post_pause_duration = max(
-        1, SHATTER_ANIMATION_DURATION_MS - pre_pause_duration
-    )
-    return min(
-        frame_count - 1,
-        pause_frame
-        + 1
-        + post_pause_elapsed * remaining_frames // post_pause_duration,
-    )
+    return max_speed * speed_multiplier

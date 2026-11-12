@@ -97,14 +97,6 @@ class Imageload:
             (56, 32),
             directory="Golden_Revolver_Bullet",
         )
-        self.GoldenRevolverScreenShatter = self._load_animation(
-            "screen-shatter_",
-            (1920, 1080),
-            directory="screen-shatter-frames",
-            stretch_to_target=True,
-        )
-        for frame in self.GoldenRevolverScreenShatter:
-            frame.set_alpha(150)
         self.LaserGunEffect = self._load_animation(
             "sprite_",
             (112, 64),
@@ -416,9 +408,6 @@ class Imageload:
 
     def GetGoldenRevolverBulletFrames(self):
         return self.GoldenRevolverBullet
-
-    def GetGoldenRevolverScreenShatterFrames(self):
-        return self.GoldenRevolverScreenShatter
 
     def GetLaserGunEffectFrames(self):
         return self.LaserGunEffect

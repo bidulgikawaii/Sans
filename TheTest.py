@@ -53,6 +53,7 @@ from GameRendering import (
     draw_teleport_anchor,
     draw_visibility_geometry,
     draw_visibility_highlight,
+    draw_team_marker,
     draw_ward,
     draw_linked_clone,
     draw_kill_feed,
@@ -68,7 +69,10 @@ from FlareSupply import (
     supply_spawn_requires_leader,
 )
 from GoldenRevolverEffects import (
+    AIM_APPROACH_DISTANCE,
+    AIM_DURATION_MS,
     EFFECT_DURATION_MS as GOLDEN_REVOLVER_EFFECT_DURATION_MS,
+    aim_lock_position,
     shatter_frame_index as golden_revolver_shatter_frame_index,
 )
 from WorldEffects import RainWeather, register_weather, world_effects
@@ -519,6 +523,7 @@ active_black_holes = []
 active_plasma_beams = []
 active_aim_locks = []
 golden_revolver_until = 0
+golden_revolver_effect_started_at = 0
 active_mines = []
 pending_mine_placements = []
 next_mine_request_id = 1
@@ -989,7 +994,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global next_unique_supply_drop_at, unique_supply_notice, unique_supply_notice_until
     global next_local_supply_id
     global practice_weapon_selection
-    global golden_revolver_until
+    global golden_revolver_until, golden_revolver_effect_started_at
     global _mine_render_surface
     global flaregun_used, flagdown_reward_notice, flagdown_reward_notice_until
     global flagdown_reward_notice_image
@@ -1104,6 +1109,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     aim_lock_until = 0
     aim_locked_pos = None
     golden_revolver_until = 0
+    golden_revolver_effect_started_at = 0
     easter_egg_found = False
     easter_egg_flash_until = 0
     vision_shape_index = 0
@@ -2685,7 +2691,7 @@ def _ray_endpoint(start_x, start_y, angle, max_distance):
 
 def fire_golden_revolver():
     global weapon_fire_until, weapon_smoke_until, system_message
-    global golden_revolver_until, screen_shake
+    global golden_revolver_until, golden_revolver_effect_started_at
     config = weapon_state.config
     if not weapon_state.can_fire():
         return
@@ -2760,11 +2766,15 @@ def fire_golden_revolver():
             targets.append((target_x, target_y, "training_dummy"))
 
     now = pygame.time.get_ticks()
-    aim_until = now + GOLDEN_REVOLVER_EFFECT_DURATION_MS
-    golden_revolver_until = aim_until
-    screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 5)
+    aim_until = now + AIM_DURATION_MS
+    golden_revolver_effect_started_at = aim_until if targets else 0
+    golden_revolver_until = (
+        aim_until + GOLDEN_REVOLVER_EFFECT_DURATION_MS if targets else 0
+    )
     for target_x, target_y, target_id in targets:
         angle = math.atan2(target_y - center_y, target_x - center_x)
+        distance = math.hypot(target_x - center_x, target_y - center_y)
+        start_distance = max(0, distance - AIM_APPROACH_DISTANCE)
         muzzle_x = center_x + math.cos(angle) * 42
         muzzle_y = center_y + math.sin(angle) * 42
         bullet = Bullet(
@@ -2780,16 +2790,24 @@ def fire_golden_revolver():
             target_x,
             target_y,
             speed=config.bullet_speed,
-            hold_ms=aim_until - now,
+            hold_ms=AIM_DURATION_MS,
         )
-        bullet.just_fired = True
-        bullet.life_time = config.bullet_lifetime + bullet.launch_hold_ms / 1000
+        bullet.just_fired = False
+        bullet.aim_released = False
+        bullet.aim_until = aim_until
+        bullet.life_time = config.bullet_lifetime + AIM_DURATION_MS / 1000
         bullet.aim_target_id = target_id
+        bullet.aim_target_x = target_x
+        bullet.aim_target_y = target_y
         bullets.append(bullet)
         active_aim_locks.append({
+            "start_x": center_x + math.cos(angle) * start_distance,
+            "start_y": center_y + math.sin(angle) * start_distance,
             "x": target_x,
             "y": target_y,
             "target_id": target_id,
+            "started_at": now,
+            "duration_ms": AIM_DURATION_MS,
             "until": aim_until,
         })
 
@@ -3384,6 +3402,7 @@ def spectator_frame():
 
 
 def GameFrame(practice_mode: bool = False):
+    global _mine_render_surface
     global ScreenState, CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY, Weapon_Angle, vision_angle, Weapon_Pos, match_result, local_stun_until, zone_elapsed_ms
     global screen_shake, server_players, bullets, remote_bullets, MousePos, system_message, kill_feed
     global vision_shape_override, vision_skill_until, local_match
@@ -4428,8 +4447,12 @@ def GameFrame(practice_mode: bool = False):
             particles.ring(map_center_x, map_center_y, (100, 220, 255), count=36, radius=80, lifetime=1200, size=5)
 
     for bullet in bullets:
-        if bullet.is_active and bullet.weapon_id == "Revolver_golden":
-            target_id = getattr(bullet, "aim_target_id", None)
+        if (
+            bullet.is_active
+            and bullet.weapon_id == "Revolver_golden"
+            and not getattr(bullet, "aim_released", True)
+        ):
+            target_id = bullet.aim_target_id
             if target_id == "training_dummy":
                 target = (
                     training_dummy
@@ -4442,22 +4465,40 @@ def GameFrame(practice_mode: bool = False):
                 target = frame_server_players.get(target_id)
                 target_x = (
                     target["posX"] + IML.Player.get_width() / 2
-                    if target is not None
+                    if target is not None and not is_hidden_player(target)
                     else None
                 )
                 target_y = (
                     target["posY"] + IML.Player.get_height() / 2
-                    if target is not None
+                    if target is not None and not is_hidden_player(target)
                     else None
                 )
-            if target_x is not None and target_y is not None:
-                dx, dy = target_x - bullet.x, target_y - bullet.y
-                distance = math.hypot(dx, dy)
-                if distance > 0:
-                    speed = math.hypot(bullet.speed_x, bullet.speed_y)
-                    bullet.speed_x = dx / distance * speed
-                    bullet.speed_y = dy / distance * speed
-                    bullet.angle = math.degrees(math.atan2(dy, dx))
+
+            if target_x is None or target_y is None:
+                bullet.is_active = False
+                continue
+
+            bullet.aim_target_x = target_x
+            bullet.aim_target_y = target_y
+            for lock in active_aim_locks:
+                if lock["target_id"] == target_id:
+                    lock["x"] = target_x
+                    lock["y"] = target_y
+
+            if now < bullet.aim_until:
+                continue
+
+            speed = math.hypot(bullet.speed_x, bullet.speed_y)
+            bullet.launch(
+                bullet.x,
+                bullet.y,
+                target_x,
+                target_y,
+                speed=speed,
+            )
+            bullet.aim_released = True
+            bullet.just_fired = True
+            continue
         bullet.update()
         if not bullet.is_active:
             if bullet.weapon_id == "blackhole_generator":
@@ -4994,18 +5035,6 @@ def GameFrame(practice_mode: bool = False):
         other_center_x, other_center_y = get_player_screen_center(p_info["posX"], p_info["posY"], IML.Player.get_width(), IML.Player.get_height(), CameraPosX, CameraPosY, camera_zoom)
         other_center_x += stun_offset_x
         other_center_y += stun_offset_y
-        team_color = (
-            FLAGDOWN_TEAM_COLORS.get(p_info.get("team_id"))
-            if flagdown else None
-        )
-        if team_color is not None:
-            pygame.draw.circle(
-                display,
-                team_color,
-                (round(other_center_x), round(other_center_y)),
-                max(24, round(IML.Player.get_width() * camera_zoom / 2 + 5)),
-                max(2, round(3 * camera_zoom)),
-            )
         server_weapon_id = p_info.get("weapon_id", DEFAULT_WEAPON_ID)
         if server_weapon_id in MELEE_WEAPON_IDS:
             melee_frames = (
@@ -5145,24 +5174,6 @@ def GameFrame(practice_mode: bool = False):
     local_team_color = (
         FLAGDOWN_TEAM_COLORS.get(own_team) if flagdown else None
     )
-    if (
-        local_team_color is not None
-        and my_player.Hp > 0
-        and now >= stealth_until
-        and not in_bush
-    ):
-        pygame.draw.circle(
-            display,
-            local_team_color,
-            (
-                round(player_center_screen_x + local_stun_offset_x),
-                round(player_center_screen_y + local_stun_offset_y),
-            ),
-            max(24, round(IML.Player.get_width() * camera_zoom / 2 + 5)),
-            max(2, round(3 * camera_zoom)),
-        )
-
-    
     base_overlay = base_vision_overlay
     base_overlay.fill((0, 0, 0, 0))
     base_vision_polygon = _cached_visibility_polygon(
@@ -5270,6 +5281,47 @@ def GameFrame(practice_mode: bool = False):
             highlight_color,
         )
     display.blit(base_overlay, (0, 0))
+    if flagdown:
+        for player_id, player_info in server_players.items():
+            if (
+                str(player_id) == str(network.player_id)
+                or player_id not in visible_player_ids
+            ):
+                continue
+            team_color = FLAGDOWN_TEAM_COLORS.get(player_info.get("team_id"))
+            if team_color is None:
+                continue
+            player_screen_x, player_screen_y = world_to_screen(
+                player_info["posX"],
+                player_info["posY"],
+                CameraPosX,
+                CameraPosY,
+                camera_zoom,
+            )
+            draw_team_marker(
+                display,
+                player_screen_x + IML.Player.get_width() * camera_zoom / 2,
+                player_screen_y + IML.Player.get_height() * camera_zoom,
+                camera_zoom,
+                team_color,
+            )
+        if (
+            local_team_color is not None
+            and my_player.Hp > 0
+            and now >= stealth_until
+            and not in_bush
+        ):
+            local_screen_x, local_screen_y = world_to_screen(
+                my_player.X, my_player.Y, CameraPosX, CameraPosY, camera_zoom
+            )
+            draw_team_marker(
+                display,
+                local_screen_x + IML.Player.get_width() * camera_zoom / 2,
+                local_screen_y + IML.Player.get_height() * camera_zoom,
+                camera_zoom,
+                local_team_color,
+            )
+
     for target_id, launch in list(bat_launch_animations.items()):
         center_x, center_y, rotation, alpha, finished = get_bat_launch_frame(launch, now)
         if finished:
@@ -5426,48 +5478,21 @@ def GameFrame(practice_mode: bool = False):
         BULLET_TARGET_DISTANCE,
     )
 
-    if now < golden_revolver_until:
+    if golden_revolver_effect_started_at <= now < golden_revolver_until:
         golden_time_overlay.fill((145, 150, 162, 108))
         display.blit(golden_time_overlay, (0, 0))
         shatter_frames = IML.GetGoldenRevolverScreenShatterFrames()
         if shatter_frames:
-            elapsed = max(
-                0,
-                GOLDEN_REVOLVER_EFFECT_DURATION_MS - (golden_revolver_until - now),
-            )
+            elapsed = now - golden_revolver_effect_started_at
             frame_index = golden_revolver_shatter_frame_index(
                 elapsed, len(shatter_frames)
             )
             display.blit(shatter_frames[frame_index], (0, 0))
-        for lock in active_aim_locks:
-            target_screen = world_to_screen(
-                lock["x"], lock["y"], CameraPosX, CameraPosY, camera_zoom
-            )
-            target_center = tuple(map(round, target_screen))
-            crackle = 1.0 + 0.2 * math.sin(now * 0.045)
-            radius = max(10, round(24 * camera_zoom * crackle))
-            pygame.draw.circle(
-                display, (255, 235, 155), target_center, radius,
-                max(1, round(3 * camera_zoom)),
-            )
-            for direction in (-1, 1):
-                pygame.draw.line(
-                    display,
-                    (255, 250, 220),
-                    (
-                        round(target_center[0] - radius * 1.5),
-                        round(target_center[1] + direction * radius),
-                    ),
-                    (
-                        round(target_center[0] + radius * 1.5),
-                        round(target_center[1] - direction * radius),
-                    ),
-                    max(1, round(2 * camera_zoom)),
-                )
 
     for aim_lock in active_aim_locks:
+        lock_x, lock_y = aim_lock_position(aim_lock, now)
         lock_screen = world_to_screen(
-            aim_lock["x"], aim_lock["y"], CameraPosX, CameraPosY, camera_zoom
+            lock_x, lock_y, CameraPosX, CameraPosY, camera_zoom
         )
         player_screen = world_to_screen(
             player_world_x, player_world_y, CameraPosX, CameraPosY, camera_zoom
@@ -5501,6 +5526,29 @@ def GameFrame(practice_mode: bool = False):
             (round(lock_screen[0]), round(lock_screen[1] + 12 * camera_zoom)),
             max(1, round(2 * camera_zoom)),
         )
+        crackle = 1.0 + 0.2 * math.sin(now * 0.045)
+        radius = max(10, round(24 * camera_zoom * crackle))
+        pygame.draw.circle(
+            display,
+            (255, 235, 155),
+            tuple(map(round, lock_screen)),
+            radius,
+            max(1, round(3 * camera_zoom)),
+        )
+        for direction in (-1, 1):
+            pygame.draw.line(
+                display,
+                (255, 250, 220),
+                (
+                    round(lock_screen[0] - radius * 1.5),
+                    round(lock_screen[1] + direction * radius),
+                ),
+                (
+                    round(lock_screen[0] + radius * 1.5),
+                    round(lock_screen[1] - direction * radius),
+                ),
+                max(1, round(2 * camera_zoom)),
+            )
 
     # 시야 밖에 있어도 총알은 항상 보이도록 최종 레이어에서 다시 그립니다.
     for bullet in bullets:
@@ -6035,9 +6083,6 @@ def GameFrame(practice_mode: bool = False):
     id_text = GuiFont.render(f"ID: {network.player_id}", True, (255, 255, 255))
     display.blit(id_text, (20, 20))
 
-    healing_panel = pygame.Rect(30, ScreenY - 150, 265, 58)
-    pygame.draw.rect(display, (12, 24, 20), healing_panel, border_radius=8)
-    pygame.draw.rect(display, (100, 220, 145), healing_panel, 2, border_radius=8)
     healing_count_text = GuiFont.render(
         f"회복 아이템  x {healing_item_count}",
         True,
@@ -6048,8 +6093,22 @@ def GameFrame(practice_mode: bool = False):
         True,
         (225, 240, 225),
     )
-    display.blit(healing_count_text, (healing_panel.x + 12, healing_panel.y + 5))
-    display.blit(healing_key_text, (healing_panel.x + 12, healing_panel.y + 31))
+    healing_panel = pygame.Rect(
+        30,
+        ScreenY - healing_count_text.get_height() - healing_key_text.get_height() - 34,
+        max(265, healing_count_text.get_width(), healing_key_text.get_width()) + 24,
+        healing_count_text.get_height() + healing_key_text.get_height() + 22,
+    )
+    pygame.draw.rect(display, (12, 24, 20), healing_panel, border_radius=8)
+    pygame.draw.rect(display, (100, 220, 145), healing_panel, 2, border_radius=8)
+    display.blit(healing_count_text, (healing_panel.x + 12, healing_panel.y + 7))
+    display.blit(
+        healing_key_text,
+        (
+            healing_panel.x + 12,
+            healing_panel.y + 11 + healing_count_text.get_height(),
+        ),
+    )
 
     if coordinate_overlay_enabled:
         player_world_x, player_world_y = get_player_world_center(

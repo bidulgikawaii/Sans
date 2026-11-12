@@ -157,7 +157,10 @@ class Bullet:
 
     def update(self):
         # 활성화 상태일 때만 매 프레임 위치 이동
-        if self.is_active:
+        if self.is_active and (
+            self.weapon_id != "Revolver_golden"
+            or getattr(self, "aim_released", True)
+        ):
             if time.monotonic() < self.flight_start_time:
                 return
             self.previous_x = self.x
@@ -180,7 +183,10 @@ class Bullet:
 
     def draw(self, display, camera_x=0, camera_y=0, zoom=1.0, force_visible=False):
         # 활성화 상태일 때만 메인 화면(display)에 총알 그리기
-        if self.is_active:
+        if self.is_active and (
+            self.weapon_id != "Revolver_golden"
+            or getattr(self, "aim_released", True)
+        ):
             if (
                 self.weapon_id == "spirit_trial"
                 and _SPIRIT_TRIAL_GHOST_FRAMES

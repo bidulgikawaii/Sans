@@ -25,6 +25,7 @@ class SpecialWeaponFeatureTests(unittest.TestCase):
         self.assertEqual(weapon.magazine_size, 1)
         self.assertEqual(weapon.reserve_ammo, 0)
         self.assertEqual(weapon.damage, 99)
+        self.assertLess(weapon.fire_interval, 0.45)
 
     def test_spirit_bullet_is_registered_as_an_equipable_skill(self):
         self.assertIn("영혼탄환", SKILL_BOOK)

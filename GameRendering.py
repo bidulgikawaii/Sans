@@ -195,6 +195,16 @@ def draw_visibility_highlight(surface, geometry, camera_x, camera_y, zoom, color
             pygame.draw.polygon(surface, color, points)
 
 
+def draw_team_marker(surface, center_x, feet_y, zoom, color):
+    width = max(28, round(58 * zoom))
+    height = max(8, round(14 * zoom))
+    rect = pygame.Rect(0, 0, width, height)
+    rect.midtop = (round(center_x), round(feet_y + 2 * zoom))
+    pygame.draw.ellipse(surface, (12, 18, 28), rect.inflate(4, 4))
+    pygame.draw.ellipse(surface, color, rect)
+    pygame.draw.ellipse(surface, (235, 250, 255), rect, max(1, round(2 * zoom)))
+
+
 def linked_clone_opacity(age_ms, now):
     age_ms = max(0, int(age_ms))
     if age_ms >= SPIRIT_TRIAL_CLONE_LIFETIME_MS:

@@ -23,6 +23,7 @@ from Effects import ParticleSystem
 from MineMechanics import (
     mine_blast_contains,
     mine_is_due_to_detonate,
+    mine_visible_to_player,
     trigger_mine,
 )
 from FontAssets import get_game_font
@@ -65,6 +66,7 @@ from GameAudio import load_effect_sound, play_effect_sound, set_effect_volume
 from Zone import MagneticZone
 from GameModes import get_game_mode, get_game_modes
 from FlareSupply import (
+    select_deathmatch_supply_batch,
     select_flare_supply_reward_types,
     supply_spawn_requires_leader,
 )
@@ -619,9 +621,14 @@ def spawn_supply_drop(now):
     )
     if drop_count <= 0:
         return
+    reward_types = (
+        select_deathmatch_supply_batch(drop_count)
+        if selected_game_mode == GAME_MODE_DEATHMATCH
+        else tuple(random.choice(SUPPLY_REWARD_TYPES) for _ in range(drop_count))
+    )
     # 벽이나 집 안에 생성되면 플레이어가 접근할 수 없으므로
     # TileGenerator가 찾은 이동 가능한 타일의 중앙에 배치합니다.
-    for _ in range(drop_count):
+    for reward_type in reward_types:
         spawn_tile = TileGene.find_safe_spawn(
             2,
             TileGene.map_width - 3,
@@ -635,11 +642,7 @@ def spawn_supply_drop(now):
         pending_supply_spawn_requests.append({
             "x": (tile_x + 0.5) * TileGene.tile_size,
             "y": (tile_y + 0.5) * TileGene.tile_size,
-            "type": random.choice(
-                DEATHMATCH_SUPPLY_REWARD_TYPES
-                if selected_game_mode == GAME_MODE_DEATHMATCH
-                else SUPPLY_REWARD_TYPES
-            ),
+            "type": reward_type,
             "warning_ms": SUPPLY_DROP_WARNING_MS,
             "lifetime_ms": SUPPLY_DROP_LIFETIME_MS,
         })
@@ -4400,8 +4403,12 @@ def GameFrame(practice_mode: bool = False):
                         )
                     ),
                 )
+            beam_length = math.hypot(
+                end[0] - start[0],
+                end[1] - start[1],
+            )
             lance_size = (
-                max(1, round(lance_frame.get_width() * 1.8 * camera_zoom)),
+                max(1, round(beam_length)),
                 max(1, round(lance_frame.get_height() * 1.8 * camera_zoom)),
             )
             scaled_lance = _scale_cached(lance_frame, lance_size)
@@ -4410,8 +4417,8 @@ def GameFrame(practice_mode: bool = False):
                 rotated_lance,
                 rotated_lance.get_rect(
                     center=(
-                        round(player_center_screen_x),
-                        round(player_center_screen_y),
+                        round((start[0] + end[0]) / 2),
+                        round((start[1] + end[1]) / 2),
                     )
                 ),
             )
@@ -4745,6 +4752,7 @@ def GameFrame(practice_mode: bool = False):
                 speed=config.bullet_speed,
                 hold_ms=bullet_info.get("hold_ms", 45),
             )
+            enemy_bullet.life_time = config.bullet_lifetime
             if weapon_id == "Revolver_golden":
                 enemy_bullet.life_time += enemy_bullet.launch_hold_ms / 1000
             enemy_bullet.source_bullet_event_id = event_id
@@ -5027,7 +5035,7 @@ def GameFrame(practice_mode: bool = False):
             )
         if is_mine_placer:
             other_image.set_alpha(145)
-        display.blit(
+        other_player_rect = display.blit(
             other_image,
             (other_screen_x + stun_offset_x, other_screen_y + stun_offset_y),
         )
@@ -5035,6 +5043,10 @@ def GameFrame(practice_mode: bool = False):
         other_center_x, other_center_y = get_player_screen_center(p_info["posX"], p_info["posY"], IML.Player.get_width(), IML.Player.get_height(), CameraPosX, CameraPosY, camera_zoom)
         other_center_x += stun_offset_x
         other_center_y += stun_offset_y
+        team_color = (
+            FLAGDOWN_TEAM_COLORS.get(p_info.get("team_id"))
+            if flagdown else None
+        )
         server_weapon_id = p_info.get("weapon_id", DEFAULT_WEAPON_ID)
         if server_weapon_id in MELEE_WEAPON_IDS:
             melee_frames = (
@@ -5078,8 +5090,8 @@ def GameFrame(practice_mode: bool = False):
             other_name,
             other_name.get_rect(
                 midbottom=(
-                    round(other_center_x),
-                    round(other_screen_y + stun_offset_y - 6),
+                    other_player_rect.centerx,
+                    other_player_rect.top - max(4, round(6 * camera_zoom)),
                 )
             ),
         )
@@ -5651,7 +5663,7 @@ def GameFrame(practice_mode: bool = False):
         pygame.draw.circle(display, bomb_color, (round(bomb_screen[0]), round(bomb_screen[1])),
                            max(5, round(12 * camera_zoom)), 3)
     for mine in active_mines:
-        if str(mine.get("owner_id")) != str(network.player_id):
+        if not mine_visible_to_player(mine, network.player_id):
             continue
         mine_screen = world_to_screen(
             mine["x"], mine["y"], CameraPosX, CameraPosY, camera_zoom
@@ -6095,7 +6107,10 @@ def GameFrame(practice_mode: bool = False):
     )
     healing_panel = pygame.Rect(
         30,
-        ScreenY - healing_count_text.get_height() - healing_key_text.get_height() - 34,
+        ScreenY
+        - healing_count_text.get_height()
+        - healing_key_text.get_height()
+        - 124,
         max(265, healing_count_text.get_width(), healing_key_text.get_width()) + 24,
         healing_count_text.get_height() + healing_key_text.get_height() + 22,
     )

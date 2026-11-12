@@ -102,7 +102,7 @@ class Bullet:
         self.weapon_id = weapon_id
         self.stun_ms = stun_ms
         self.angle = 0.0
-        self.life_time = 2.5
+        self.life_time = 2.0
         self.spawn_time = 0.0
         self.flight_start_time = 0.0
         self.launch_hold_ms = 0

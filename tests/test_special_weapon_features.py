@@ -8,7 +8,7 @@ from Config import (
     PLASMA_DAMAGE,
     PLASMA_RANGE,
 )
-from Weapon import SPECIAL_CRATE_WEAPONS
+from Weapon import SPECIAL_CRATE_WEAPONS, WEAPONS
 from SkillAndSlot import (
     SKILL_BOOK,
     add_skill_to_inventory,
@@ -26,6 +26,17 @@ class SpecialWeaponFeatureTests(unittest.TestCase):
         self.assertEqual(weapon.reserve_ammo, 0)
         self.assertEqual(weapon.damage, 99)
         self.assertLess(weapon.fire_interval, 0.45)
+
+    def test_projectile_lifetimes_are_reduced_and_bounded(self):
+        self.assertLess(WEAPONS["sniper"].bullet_lifetime, 3.8)
+        self.assertLessEqual(
+            max(
+                weapon.bullet_lifetime
+                for weapon in WEAPONS.values()
+                if weapon.projectile
+            ),
+            2.5,
+        )
 
     def test_spirit_bullet_is_registered_as_an_equipable_skill(self):
         self.assertIn("영혼탄환", SKILL_BOOK)

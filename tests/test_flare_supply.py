@@ -5,6 +5,7 @@ from Config import (
     DEATHMATCH_FLARE_UNIQUE_SUPPLY_TYPES,
 )
 from FlareSupply import (
+    select_deathmatch_supply_batch,
     select_flare_supply_reward_types,
     supply_spawn_requires_leader,
 )
@@ -19,7 +20,18 @@ class FixedRandom:
         return self.value
 
 
+class AlwaysSkill:
+    def choice(self, values):
+        return "skill"
+
+
 class FlareSupplyTests(unittest.TestCase):
+    def test_deathmatch_batch_has_at_most_one_skill_supply(self):
+        rewards = select_deathmatch_supply_batch(3, rng=AlwaysSkill())
+
+        self.assertEqual(rewards.count("skill"), 1)
+        self.assertEqual(rewards.count("heal"), 2)
+
     def test_deathmatch_uses_unique_rewards_below_three_percent(self):
         rewards = select_flare_supply_reward_types(
             GAME_MODE_DEATHMATCH, rng=FixedRandom(0.0299)

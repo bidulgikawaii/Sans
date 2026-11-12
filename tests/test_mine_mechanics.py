@@ -4,6 +4,7 @@ from Config import MINE_BLAST_RADIUS, MINE_TRIGGER_DELAY_MS
 from MineMechanics import (
     mine_blast_contains,
     mine_is_due_to_detonate,
+    mine_visible_to_player,
     trigger_mine,
 )
 
@@ -31,6 +32,14 @@ class MineMechanicsTests(unittest.TestCase):
         detonates_at = mine["detonates_at"]
         self.assertFalse(trigger_mine(mine, 60))
         self.assertEqual(mine["detonates_at"], detonates_at)
+
+    def test_enemy_mines_are_revealed_when_triggered(self):
+        mine = {"owner_id": "owner", "armed_at": 0}
+
+        self.assertTrue(mine_visible_to_player(mine, "owner"))
+        self.assertFalse(mine_visible_to_player(mine, "enemy"))
+        self.assertTrue(trigger_mine(mine, 50))
+        self.assertTrue(mine_visible_to_player(mine, "enemy"))
 
     def test_blast_hits_targets_inside_radius_only(self):
         mine = {"x": 20, "y": 30}

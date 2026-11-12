@@ -18,3 +18,10 @@ def trigger_mine(mine, now_ms):
 
 def mine_is_due_to_detonate(mine, now_ms):
     return "detonates_at" in mine and now_ms >= mine["detonates_at"]
+
+
+def mine_visible_to_player(mine, player_id):
+    return (
+        str(mine.get("owner_id")) == str(player_id)
+        or mine.get("detonates_at") is not None
+    )

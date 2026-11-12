@@ -73,9 +73,14 @@ from FlareSupply import (
 from GoldenRevolverEffects import (
     AIM_APPROACH_DISTANCE,
     AIM_DURATION_MS,
-    EFFECT_DURATION_MS as GOLDEN_REVOLVER_EFFECT_DURATION_MS,
+    GOLDEN_SEQUENCE_DURATION_MS,
+    GOLDEN_SUNSET_DURATION_MS,
+    GOLDEN_TINT_FADE_MS,
     aim_lock_position,
-    shatter_frame_index as golden_revolver_shatter_frame_index,
+    draw_golden_revolver_sunset,
+    golden_camera_focus,
+    golden_revolver_tint_alpha,
+    golden_target_timing,
 )
 from WorldEffects import RainWeather, register_weather, world_effects
 from Animation import FrameAnimation
@@ -105,7 +110,7 @@ def _snapshot_events(snapshot, key):
 
 # 클라이언트는 입력과 화면을 조정하고, 경기의 공유 상태는 서버 응답으로 확정합니다.
 pygame.init()
-pygame.display.set_caption("전설적인 게임")
+pygame.display.set_caption("The Battles")
 display = pygame.display.set_mode((ScreenX, ScreenY), 0, 32)
 clock = pygame.time.Clock()
 ScreenState = "NameInputView"
@@ -526,6 +531,7 @@ active_plasma_beams = []
 active_aim_locks = []
 golden_revolver_until = 0
 golden_revolver_effect_started_at = 0
+golden_sunset_started_at = 0
 active_mines = []
 pending_mine_placements = []
 next_mine_request_id = 1
@@ -998,6 +1004,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global next_local_supply_id
     global practice_weapon_selection
     global golden_revolver_until, golden_revolver_effect_started_at
+    global golden_sunset_started_at
     global _mine_render_surface
     global flaregun_used, flagdown_reward_notice, flagdown_reward_notice_until
     global flagdown_reward_notice_image
@@ -1113,6 +1120,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     aim_locked_pos = None
     golden_revolver_until = 0
     golden_revolver_effect_started_at = 0
+    golden_sunset_started_at = 0
     easter_egg_found = False
     easter_egg_flash_until = 0
     vision_shape_index = 0
@@ -2602,24 +2610,26 @@ def _line_rect_intersects(x1, y1, x2, y2, rect):
     return bool(rect.clipline((x1, y1), (x2, y2))) or rect.collidepoint(x1, y1)
 
 
-def _golden_revolver_impact(x, y):
+def _golden_revolver_impact(x, y, remaining_ms):
     global screen_shake
+    if remaining_ms <= 0:
+        return
     screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 10)
     particles.emit(
         x, y, (255, 235, 155), count=90, speed=210,
-        lifetime=850, size=8, gravity=-20,
+        lifetime=remaining_ms, size=8, gravity=-20,
     )
     particles.emit(
         x, y, (255, 185, 70), count=55, speed=150,
-        lifetime=650, size=6, gravity=75,
+        lifetime=remaining_ms, size=6, gravity=75,
     )
     particles.ring(
         x, y, (255, 250, 210), count=48, radius=95,
-        lifetime=650, size=7,
+        lifetime=remaining_ms, size=7,
     )
     particles.ring(
         x, y, (255, 190, 65), count=32, radius=145,
-        lifetime=850, size=5,
+        lifetime=remaining_ms, size=5,
     )
 
 
@@ -2695,6 +2705,7 @@ def _ray_endpoint(start_x, start_y, angle, max_distance):
 def fire_golden_revolver():
     global weapon_fire_until, weapon_smoke_until, system_message
     global golden_revolver_until, golden_revolver_effect_started_at
+    global golden_sunset_started_at
     config = weapon_state.config
     if not weapon_state.can_fire():
         return
@@ -2717,37 +2728,17 @@ def fire_golden_revolver():
             continue
         target_x = player_info["posX"] + IML.Player.get_width() / 2
         target_y = player_info["posY"] + IML.Player.get_height() / 2
-        weapon_visible = TileGene.is_point_visible_from(
+        if math.hypot(target_x - center_x, target_y - center_y) > BULLET_TARGET_DISTANCE:
+            continue
+        target_visible = TileGene.is_point_visible_from(
             center_x,
             center_y,
             target_x,
             target_y,
-            config.vision_radius,
-            vision_shape=config.vision_shape,
-            direction_angle=vision_angle,
-            fov_angle=config.vision_fov,
-            vision_width=config.vision_width,
-        )
-        base_visible = TileGene.is_point_visible_from(
-            center_x,
-            center_y,
-            target_x,
-            target_y,
-            PLAYER_BASE_VISION_RADIUS,
+            BULLET_TARGET_DISTANCE,
             vision_shape=VISION_CIRCLE,
         )
-        ward_visible = any(
-            TileGene.is_point_visible_from(
-                ward_x,
-                ward_y,
-                target_x,
-                target_y,
-                WARD_VISION_RADIUS,
-                vision_shape=VISION_CIRCLE,
-            )
-            for ward_x, ward_y in wards
-        )
-        if not (weapon_visible or base_visible or ward_visible):
+        if not target_visible:
             continue
         targets.append((target_x, target_y, player_id))
 
@@ -2759,22 +2750,34 @@ def fire_golden_revolver():
             center_y,
             target_x,
             target_y,
-            config.vision_radius,
-            vision_shape=config.vision_shape,
-            direction_angle=vision_angle,
-            fov_angle=config.vision_fov,
-            vision_width=config.vision_width,
+            BULLET_TARGET_DISTANCE,
+            vision_shape=VISION_CIRCLE,
         )
-        if visible:
+        if (
+            visible
+            and math.hypot(target_x - center_x, target_y - center_y)
+            <= BULLET_TARGET_DISTANCE
+        ):
             targets.append((target_x, target_y, "training_dummy"))
 
-    now = pygame.time.get_ticks()
-    aim_until = now + AIM_DURATION_MS
-    golden_revolver_effect_started_at = aim_until if targets else 0
-    golden_revolver_until = (
-        aim_until + GOLDEN_REVOLVER_EFFECT_DURATION_MS if targets else 0
+    targets.sort(
+        key=lambda target: math.hypot(
+            target[0] - center_x, target[1] - center_y
+        )
     )
-    for target_x, target_y, target_id in targets:
+    now = pygame.time.get_ticks()
+    golden_sunset_started_at = now
+    aim_until = now + AIM_DURATION_MS
+    golden_revolver_effect_started_at = now if targets else 0
+    golden_revolver_until = (
+        aim_until + GOLDEN_TINT_FADE_MS if targets else 0
+    )
+    for target_index, (target_x, target_y, target_id) in enumerate(targets):
+        aim_delay_ms, target_aim_ms = golden_target_timing(
+            target_index, len(targets)
+        )
+        target_aim_started_at = now + aim_delay_ms
+        target_aim_until = target_aim_started_at + target_aim_ms
         angle = math.atan2(target_y - center_y, target_x - center_x)
         distance = math.hypot(target_x - center_x, target_y - center_y)
         start_distance = max(0, distance - AIM_APPROACH_DISTANCE)
@@ -2793,12 +2796,13 @@ def fire_golden_revolver():
             target_x,
             target_y,
             speed=config.bullet_speed,
-            hold_ms=AIM_DURATION_MS,
+            hold_ms=aim_delay_ms + target_aim_ms,
         )
         bullet.just_fired = False
         bullet.aim_released = False
-        bullet.aim_until = aim_until
-        bullet.life_time = config.bullet_lifetime + AIM_DURATION_MS / 1000
+        bullet.aim_until = target_aim_until
+        bullet.life_time = GOLDEN_SEQUENCE_DURATION_MS / 1000
+        bullet.golden_sequence_started_at = now
         bullet.aim_target_id = target_id
         bullet.aim_target_x = target_x
         bullet.aim_target_y = target_y
@@ -2809,22 +2813,33 @@ def fire_golden_revolver():
             "x": target_x,
             "y": target_y,
             "target_id": target_id,
-            "started_at": now,
-            "duration_ms": AIM_DURATION_MS,
-            "until": aim_until,
+            "started_at": target_aim_started_at,
+            "duration_ms": target_aim_ms,
+            "until": target_aim_until,
         })
 
     weapon_state.consume_round()
     weapon_fire_until = now + WEAPON_FIRE_ANIMATION_MS
     weapon_smoke_until = now + WEAPON_SMOKE_ANIMATION_MS
     break_stealth_on_attack()
+    angle = Weapon_Angle
+    muzzle_x = center_x + math.cos(angle) * 44
+    muzzle_y = center_y + math.sin(angle) * 44
     particles.emit(
-        center_x, center_y, (255, 235, 155), count=42, speed=130,
-        lifetime=650, size=6,
+        muzzle_x, muzzle_y, (126, 91, 65), count=150, speed=115,
+        lifetime=1050, size=8, gravity=105,
+    )
+    particles.emit(
+        muzzle_x, muzzle_y, (255, 173, 68), count=110, speed=235,
+        lifetime=820, size=5, gravity=45,
+    )
+    particles.emit(
+        muzzle_x, muzzle_y, (255, 232, 157), count=64, speed=105,
+        lifetime=560, size=7, gravity=-18,
     )
     particles.ring(
-        center_x, center_y, (255, 225, 125),
-        count=32, radius=70, lifetime=600, size=5,
+        muzzle_x, muzzle_y, (255, 225, 125),
+        count=64, radius=145, lifetime=760, size=4,
     )
     if targets:
         system_message = f"황금 조준 완료! 시야 내 적 {len(targets)}명에게 특수 탄환 발사."
@@ -4262,9 +4277,16 @@ def GameFrame(practice_mode: bool = False):
 
     # 카메라 이동
     player_center_x, player_center_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
-    target_camera_x, target_camera_y = get_camera_target(player_center_x, player_center_y, ScreenX, ScreenY, camera_zoom)
-    CameraPosX += (target_camera_x - CameraPosX) * lerp
-    CameraPosY += (target_camera_y - CameraPosY) * lerp
+    camera_focus = golden_camera_focus(active_aim_locks, now)
+    camera_target_x, camera_target_y = (
+        camera_focus
+        if camera_focus is not None
+        else (player_center_x, player_center_y)
+    )
+    target_camera_x, target_camera_y = get_camera_target(camera_target_x, camera_target_y, ScreenX, ScreenY, camera_zoom)
+    camera_lerp = max(lerp, 0.14) if camera_focus is not None else lerp
+    CameraPosX += (target_camera_x - CameraPosX) * camera_lerp
+    CameraPosY += (target_camera_y - CameraPosY) * camera_lerp
     AimCameraPosX, AimCameraPosY = CameraPosX, CameraPosY
 
     if screen_shake > 0:
@@ -4403,12 +4425,8 @@ def GameFrame(practice_mode: bool = False):
                         )
                     ),
                 )
-            beam_length = math.hypot(
-                end[0] - start[0],
-                end[1] - start[1],
-            )
             lance_size = (
-                max(1, round(beam_length)),
+                max(1, round(lance_frame.get_width() * 1.8 * camera_zoom)),
                 max(1, round(lance_frame.get_height() * 1.8 * camera_zoom)),
             )
             scaled_lance = _scale_cached(lance_frame, lance_size)
@@ -4417,8 +4435,8 @@ def GameFrame(practice_mode: bool = False):
                 rotated_lance,
                 rotated_lance.get_rect(
                     center=(
-                        round((start[0] + end[0]) / 2),
-                        round((start[1] + end[1]) / 2),
+                        round(player_center_screen_x),
+                        round(player_center_screen_y),
                     )
                 ),
             )
@@ -4503,6 +4521,9 @@ def GameFrame(practice_mode: bool = False):
                 target_y,
                 speed=speed,
             )
+            bullet.life_time = (
+                GOLDEN_SEQUENCE_DURATION_MS - AIM_DURATION_MS
+            ) / 1000
             bullet.aim_released = True
             bullet.just_fired = True
             continue
@@ -4541,7 +4562,12 @@ def GameFrame(practice_mode: bool = False):
                 )
                 if clone_rect.colliderect(bullet.rect):
                     if bullet.weapon_id == "Revolver_golden":
-                        _golden_revolver_impact(bullet.x, bullet.y)
+                        _golden_revolver_impact(
+                            bullet.x,
+                            bullet.y,
+                            GOLDEN_SEQUENCE_DURATION_MS
+                            - (now - bullet.golden_sequence_started_at),
+                        )
                     if (
                         is_practice_mode
                         and clone.get("linked_player_id") == "training_dummy"
@@ -4613,7 +4639,12 @@ def GameFrame(practice_mode: bool = False):
                     })
                     _deactivate_bullet(bullet, now)
                     if bullet.weapon_id == "Revolver_golden":
-                        _golden_revolver_impact(bullet.x, bullet.y)
+                        _golden_revolver_impact(
+                            bullet.x,
+                            bullet.y,
+                            GOLDEN_SEQUENCE_DURATION_MS
+                            - (now - bullet.golden_sequence_started_at),
+                        )
                     else:
                         impact_color = (
                             (100, 225, 255)
@@ -4655,7 +4686,12 @@ def GameFrame(practice_mode: bool = False):
                     if bullet.stun_ms:
                         training_dummy.stunned_until = now + bullet.stun_ms
                     if bullet.weapon_id == "Revolver_golden":
-                        _golden_revolver_impact(bullet.x, bullet.y)
+                        _golden_revolver_impact(
+                            bullet.x,
+                            bullet.y,
+                            GOLDEN_SEQUENCE_DURATION_MS
+                            - (now - bullet.golden_sequence_started_at),
+                        )
                     if bullet.weapon_id == "spirit_trial":
                         practice_clones = [
                             clone for clone in linked_clones
@@ -4754,7 +4790,7 @@ def GameFrame(practice_mode: bool = False):
             )
             enemy_bullet.life_time = config.bullet_lifetime
             if weapon_id == "Revolver_golden":
-                enemy_bullet.life_time += enemy_bullet.launch_hold_ms / 1000
+                enemy_bullet.life_time = GOLDEN_SEQUENCE_DURATION_MS / 1000
             enemy_bullet.source_bullet_event_id = event_id
             remote_bullets.append(enemy_bullet)
 
@@ -5490,16 +5526,22 @@ def GameFrame(practice_mode: bool = False):
         BULLET_TARGET_DISTANCE,
     )
 
-    if golden_revolver_effect_started_at <= now < golden_revolver_until:
-        golden_time_overlay.fill((145, 150, 162, 108))
-        display.blit(golden_time_overlay, (0, 0))
-        shatter_frames = IML.GetGoldenRevolverScreenShatterFrames()
-        if shatter_frames:
-            elapsed = now - golden_revolver_effect_started_at
-            frame_index = golden_revolver_shatter_frame_index(
-                elapsed, len(shatter_frames)
-            )
-            display.blit(shatter_frames[frame_index], (0, 0))
+    if golden_revolver_until > now:
+        tint_alpha = golden_revolver_tint_alpha(
+            golden_revolver_effect_started_at,
+            golden_revolver_effect_started_at + AIM_DURATION_MS,
+            now,
+        )
+        if tint_alpha:
+            golden_time_overlay.fill((255, 145, 75, tint_alpha))
+            display.blit(golden_time_overlay, (0, 0))
+    if (
+        golden_sunset_started_at
+        and now - golden_sunset_started_at < GOLDEN_SUNSET_DURATION_MS
+    ):
+        draw_golden_revolver_sunset(
+            display, golden_time_overlay, golden_sunset_started_at, now
+        )
 
     for aim_lock in active_aim_locks:
         lock_x, lock_y = aim_lock_position(aim_lock, now)

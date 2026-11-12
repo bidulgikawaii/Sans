@@ -9,6 +9,7 @@ from Config import (
     DEFAULT_BULLET_SIZE,
     DEFAULT_WEAPON_ID,
 )
+from GoldenRevolverEffects import golden_bullet_speed
 
 
 _BULLET_IMAGE_PATH = os.path.join(
@@ -107,6 +108,7 @@ class Bullet:
         self.flight_start_time = 0.0
         self.launch_hold_ms = 0
         self.reflect_until = 0
+        self.golden_base_speed = 0.0
 
     @property
     def rect(self):
@@ -148,6 +150,8 @@ class Bullet:
         # 🌟 5. 삼각함수를 이용해 매 프레임 이동할 X축, Y축 속도 분할 분배
         self.speed_x = math.cos(angle_rad) * speed
         self.speed_y = math.sin(angle_rad) * speed
+        if self.weapon_id == "Revolver_golden":
+            self.golden_base_speed = speed
 
         # 총알 활성화
         self.is_active = True
@@ -161,14 +165,23 @@ class Bullet:
             self.weapon_id != "Revolver_golden"
             or getattr(self, "aim_released", True)
         ):
-            if time.monotonic() < self.flight_start_time:
+            now = time.monotonic()
+            if now < self.flight_start_time:
                 return
+            if self.weapon_id == "Revolver_golden":
+                speed = golden_bullet_speed(
+                    self.golden_base_speed,
+                    (now - self.flight_start_time) * 1000,
+                )
+                angle_rad = math.radians(self.angle)
+                self.speed_x = math.cos(angle_rad) * speed
+                self.speed_y = math.sin(angle_rad) * speed
             self.previous_x = self.x
             self.previous_y = self.y
             self.x += self.speed_x
             self.y += self.speed_y
 
-            if time.monotonic() - self.spawn_time > self.life_time:
+            if now - self.spawn_time > self.life_time:
                 self.is_active = False
 
     def reflect(self, horizontal=False, vertical=False):

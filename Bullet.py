@@ -49,6 +49,24 @@ def _get_bullet_surface(size):
     return surface
 
 
+@lru_cache(maxsize=16)
+def _get_shotgun_pellet_surface(size):
+    """Create a round, shaded pellet rather than reusing the casing-shaped sprite."""
+    diameter = max(6, round(size * 3))
+    surface = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+    center = diameter // 2
+    radius = max(2, diameter // 2 - 1)
+    pygame.draw.circle(surface, (105, 88, 52), (center, center), radius)
+    pygame.draw.circle(
+        surface,
+        (238, 210, 135),
+        (center - max(1, radius // 3), center - max(1, radius // 3)),
+        max(1, radius // 2),
+    )
+    pygame.draw.circle(surface, (255, 242, 195), (center, center), radius, 1)
+    return surface
+
+
 @lru_cache(maxsize=1)
 def _get_bullet_image():
     image = pygame.image.load(_BULLET_IMAGE_PATH).convert_alpha()
@@ -85,6 +103,8 @@ class Bullet:
                 if _GOLDEN_REVOLVER_BULLET_FRAMES
                 else pygame.Surface((56, 32), pygame.SRCALPHA)
             )
+        elif weapon_id == "shotgun":
+            self.surface = _get_shotgun_pellet_surface(size)
         else:
             self.surface = _get_bullet_surface(size)
         
@@ -103,7 +123,7 @@ class Bullet:
         self.weapon_id = weapon_id
         self.stun_ms = stun_ms
         self.angle = 0.0
-        self.life_time = 2.0
+        self.life_time = 1.8
         self.spawn_time = 0.0
         self.flight_start_time = 0.0
         self.launch_hold_ms = 0

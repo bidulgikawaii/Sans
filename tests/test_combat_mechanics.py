@@ -1,6 +1,10 @@
 import unittest
 
-from CombatMechanics import apply_shield_activation, is_suicide_hit
+from CombatMechanics import (
+    apply_shield_activation,
+    is_suicide_hit,
+    spirit_linked_body_damage,
+)
 
 
 class ShieldActivationTests(unittest.TestCase):
@@ -26,6 +30,13 @@ class ShieldActivationTests(unittest.TestCase):
         self.assertTrue(is_suicide_hit("player", "player", "자폭"))
         self.assertFalse(is_suicide_hit("player", "player", None))
         self.assertFalse(is_suicide_hit("attacker", "victim", "자폭"))
+
+    def test_spirit_clone_transfers_only_thirty_percent_to_linked_body(self):
+        damage, remainder = spirit_linked_body_damage(25)
+        self.assertEqual(damage, 7)
+        damage, remainder = spirit_linked_body_damage(25, remainder)
+        self.assertEqual(damage, 8)
+        self.assertEqual(remainder, 0)
 
 
 if __name__ == "__main__":

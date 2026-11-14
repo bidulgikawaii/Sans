@@ -49,7 +49,11 @@ from Config import (
     SHIELD_HP,
     SUICIDE_RESPAWN_PENALTY_MS,
 )
-from CombatMechanics import apply_shield_activation, is_suicide_hit
+from CombatMechanics import (
+    apply_shield_activation,
+    is_suicide_hit,
+    spirit_linked_body_damage,
+)
 from Weapon import WEAPONS
 from Lobby import LobbyState
 from Zone import MagneticZone
@@ -67,16 +71,11 @@ from LeaderboardAPI import (
 )
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-bind_ip = SERVER_IP
-for candidate_ip in (SERVER_IP, "127.0.0.1"):
-    try:
-        server.bind((candidate_ip, SERVER_PORT))
-        bind_ip = candidate_ip
-        break
-    except OSError:
-        continue
+bind_ip = "0.0.0.0"
+server.bind((bind_ip, SERVER_PORT))
 server.listen()
-print(f"서버 시작: {bind_ip}:{SERVER_PORT}")
+advertised_ip = SERVER_IP
+print(f"서버 시작: {advertised_ip}:{SERVER_PORT} (모든 인터페이스에서 수신)")
 
 # 서버가 총괄하는 플레이어들의 실시간 딕셔너리
 # 클라이언트 이벤트를 검증해 HP와 승리 상태를 갱신하고, 결과를 스냅샷으로 돌려줍니다.
@@ -1121,13 +1120,19 @@ def handle_client(conn, player_id):
                     linked_damage = 0
                     linked_shield_damage = 0
                     if linked_target is not None and linked_target["hp"] > 0:
+                        body_damage, clone["linked_damage_remainder"] = (
+                            spirit_linked_body_damage(
+                                clone_damage,
+                                clone.get("linked_damage_remainder", 0.0),
+                            )
+                        )
                         linked_shield_damage = min(
-                            linked_target.get("shield_hp", 0), clone_damage
+                            linked_target.get("shield_hp", 0), body_damage
                         )
                         linked_target["shield_hp"] -= linked_shield_damage
                         linked_target["shield_active"] = linked_target["shield_hp"] > 0
                         linked_damage = min(
-                            clone_damage - linked_shield_damage,
+                            body_damage - linked_shield_damage,
                             linked_target["hp"],
                         )
                         linked_target["hp"] -= linked_damage
@@ -1760,7 +1765,7 @@ else:
     ).start()
     print(
         f"[랭킹 API] LAN 전용 읽기 전용 주소: "
-        f"http://{bind_ip}:{LEADERBOARD_PORT}/api/leaderboard"
+        f"http://{advertised_ip}:{LEADERBOARD_PORT}/api/leaderboard"
     )
 
 while True:

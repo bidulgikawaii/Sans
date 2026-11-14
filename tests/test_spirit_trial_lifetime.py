@@ -1,9 +1,17 @@
 import unittest
 
-from GameRendering import linked_clone_opacity
+from GameRendering import linked_clone_opacity, smooth_player_position
 
 
 class SpiritTrialLifetimeTests(unittest.TestCase):
+    def test_remote_render_position_smoothly_tracks_server_updates(self):
+        positions = {}
+        self.assertEqual(smooth_player_position(positions, "p1", 10, 20), (10, 20))
+        self.assertEqual(
+            smooth_player_position(positions, "p1", 110, 120),
+            (45, 55),
+        )
+
     def test_clone_is_visible_before_fade_period(self):
         self.assertGreater(linked_clone_opacity(4999, 0), 0)
 

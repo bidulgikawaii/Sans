@@ -3,12 +3,16 @@ import unittest
 from Config import (
     BLACK_HOLE_DAMAGE,
     BLACK_HOLE_RADIUS,
+    PLASMA_CHARGE_DURATION_MS,
     PLASMA_BEAM_DURATION_MS,
     PLASMA_BEAM_WIDTH,
     PLASMA_DAMAGE,
     PLASMA_RANGE,
+    PLAYER_MAX_HP,
+    SHIELD_HP,
 )
 from Weapon import SPECIAL_CRATE_WEAPONS, WEAPONS
+from Bullet import Bullet
 from SkillAndSlot import (
     SKILL_BOOK,
     add_skill_to_inventory,
@@ -24,7 +28,7 @@ class SpecialWeaponFeatureTests(unittest.TestCase):
         self.assertTrue(weapon.projectile)
         self.assertEqual(weapon.magazine_size, 1)
         self.assertEqual(weapon.reserve_ammo, 0)
-        self.assertEqual(weapon.damage, 99)
+        self.assertGreaterEqual(weapon.damage, PLAYER_MAX_HP + SHIELD_HP)
         self.assertLess(weapon.fire_interval, 0.45)
 
     def test_projectile_lifetimes_are_reduced_and_bounded(self):
@@ -35,7 +39,7 @@ class SpecialWeaponFeatureTests(unittest.TestCase):
                 for weapon in WEAPONS.values()
                 if weapon.projectile
             ),
-            2.5,
+            1.8,
         )
 
     def test_spirit_bullet_is_registered_as_an_equipable_skill(self):
@@ -44,7 +48,12 @@ class SpecialWeaponFeatureTests(unittest.TestCase):
         self.assertIn("영혼탄환", owned_skills)
         self.assertTrue(remove_skill_from_inventory("영혼탄환"))
 
+    def test_shotgun_uses_a_round_pellet_sprite(self):
+        pellet = Bullet(4, weapon_id="shotgun")
+        self.assertEqual(pellet.surface.get_width(), pellet.surface.get_height())
+
     def test_ultimate_laser_has_sustained_range_and_damage(self):
+        self.assertGreaterEqual(PLASMA_CHARGE_DURATION_MS, 2000)
         self.assertGreaterEqual(PLASMA_BEAM_DURATION_MS, 2000)
         self.assertGreater(PLASMA_BEAM_WIDTH, 9)
         self.assertGreater(PLASMA_DAMAGE, 17)

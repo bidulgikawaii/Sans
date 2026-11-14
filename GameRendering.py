@@ -16,6 +16,21 @@ _HEALTH_FRAME_COLOR = pygame.Color("gray20")
 _HEALTH_COLORS = (pygame.Color("green"), pygame.Color("yellow"), pygame.Color("red"))
 
 
+def smooth_player_position(position_cache, player_id, target_x, target_y, factor=0.35):
+    """Ease remote render coordinates toward each received server position."""
+    key = str(player_id)
+    previous = position_cache.get(key)
+    if previous is None:
+        position = (target_x, target_y)
+    else:
+        position = (
+            previous[0] + (target_x - previous[0]) * factor,
+            previous[1] + (target_y - previous[1]) * factor,
+        )
+    position_cache[key] = position
+    return position
+
+
 def create_bat_launch(event, map_width, map_height, now):
     launch = event.get("bat_launch")
     if not isinstance(launch, dict):

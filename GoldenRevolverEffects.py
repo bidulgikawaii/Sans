@@ -5,6 +5,7 @@ import pygame
 
 AIM_DURATION_MS = 500
 AIM_APPROACH_DISTANCE = 900
+GOLDEN_BULLET_FIRE_INTERVAL_MS = 55
 GOLDEN_TINT_FADE_MS = 320
 GOLDEN_TINT_MAX_ALPHA = 52
 GOLDEN_SEQUENCE_DURATION_MS = 1400
@@ -32,6 +33,30 @@ def golden_target_timing(target_index, target_count):
     target_index = min(target_count - 1, max(0, target_index))
     interval_ms = max(1, AIM_DURATION_MS // target_count)
     return target_index * interval_ms, interval_ms
+
+
+def golden_bullet_release_delay(target_index):
+    return (
+        AIM_DURATION_MS
+        + max(0, target_index) * GOLDEN_BULLET_FIRE_INTERVAL_MS
+    )
+
+
+def golden_bullet_path_intersects_rect(
+    start_x,
+    start_y,
+    end_x,
+    end_y,
+    projectile_width,
+    projectile_height,
+    target_rect,
+):
+    expanded_rect = target_rect.inflate(projectile_width, projectile_height)
+    start = (round(start_x), round(start_y))
+    end = (round(end_x), round(end_y))
+    return expanded_rect.collidepoint(start) or bool(
+        expanded_rect.clipline(start, end)
+    )
 
 
 def golden_camera_focus(aim_locks, now_ms):

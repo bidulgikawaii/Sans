@@ -6,12 +6,15 @@ from GoldenRevolverEffects import (
     AIM_DURATION_MS,
     GOLDEN_BULLET_ACCELERATION_DURATION_MS,
     GOLDEN_BULLET_ACCELERATION_DELAY_MS,
+    GOLDEN_BULLET_FIRE_INTERVAL_MS,
     GOLDEN_BULLET_MAX_SPEED_MULTIPLIER,
     GOLDEN_SEQUENCE_DURATION_MS,
     GOLDEN_SUNSET_DURATION_MS,
     GOLDEN_SUNSET_FADE_MS,
     GOLDEN_TINT_FADE_MS,
     aim_lock_position,
+    golden_bullet_release_delay,
+    golden_bullet_path_intersects_rect,
     golden_bullet_speed,
     golden_camera_focus,
     golden_revolver_sunset_alpha,
@@ -44,6 +47,34 @@ class GoldenRevolverEffectTests(unittest.TestCase):
 
         self.assertEqual(timings[0], (0, AIM_DURATION_MS // 4))
         self.assertEqual(timings[-1][0] + timings[-1][1], AIM_DURATION_MS)
+
+    def test_bullets_fire_sequentially_after_the_full_aim_window(self):
+        release_delays = [
+            golden_bullet_release_delay(index) for index in range(4)
+        ]
+
+        self.assertEqual(release_delays[0], AIM_DURATION_MS)
+        self.assertEqual(
+            [right - left for left, right in zip(release_delays, release_delays[1:])],
+            [GOLDEN_BULLET_FIRE_INTERVAL_MS] * 3,
+        )
+        self.assertLess(
+            golden_bullet_release_delay(11), GOLDEN_SEQUENCE_DURATION_MS
+        )
+
+    def test_fast_bullet_path_hits_a_target_between_frames(self):
+        target_rect = pygame.Rect(60, 4, 20, 20)
+
+        self.assertTrue(
+            golden_bullet_path_intersects_rect(
+                0, 14, 128, 14, 30, 18, target_rect
+            )
+        )
+        self.assertFalse(
+            golden_bullet_path_intersects_rect(
+                0, 80, 128, 80, 30, 18, target_rect
+            )
+        )
 
     def test_camera_focus_tracks_the_currently_aimed_target(self):
         locks = [

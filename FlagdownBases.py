@@ -30,7 +30,7 @@ def flagdown_base_bounds(
     )
 
 
-def intersects_enemy_flagdown_base(
+def intersects_flagdown_base(
     team_id,
     x,
     y,
@@ -50,13 +50,35 @@ def intersects_enemy_flagdown_base(
     x, y, width, height = values
     if width <= 0 or height <= 0:
         return True
-    enemy_bounds = flagdown_base_bounds(
-        1 - team_id, tile_size, map_width_tiles
-    )
-    base_x, base_y, base_width, base_height = enemy_bounds
+    bounds = flagdown_base_bounds(team_id, tile_size, map_width_tiles)
+    if bounds is None:
+        return False
+    base_x, base_y, base_width, base_height = bounds
     return (
         x < base_x + base_width
         and x + width > base_x
         and y < base_y + base_height
         and y + height > base_y
+    )
+
+
+def intersects_enemy_flagdown_base(
+    team_id,
+    x,
+    y,
+    width,
+    height,
+    tile_size=32,
+    map_width_tiles=FLAGDOWN_MAP_WIDTH_TILES,
+):
+    if team_id not in (0, 1):
+        return False
+    return intersects_flagdown_base(
+        1 - team_id,
+        x,
+        y,
+        width,
+        height,
+        tile_size,
+        map_width_tiles,
     )

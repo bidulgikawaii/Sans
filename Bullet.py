@@ -8,8 +8,13 @@ from Config import (
     DEFAULT_BULLET_DAMAGE,
     DEFAULT_BULLET_SIZE,
     DEFAULT_WEAPON_ID,
+    BULLET_MAX_TRAVEL_DISTANCE,
+    FPS,
 )
-from GoldenRevolverEffects import golden_bullet_speed
+from GoldenRevolverEffects import (
+    GOLDEN_BULLET_MAX_SPEED_MULTIPLIER,
+    golden_bullet_speed,
+)
 
 
 _BULLET_IMAGE_PATH = os.path.join(
@@ -207,7 +212,17 @@ class Bullet:
             self.x += self.speed_x
             self.y += self.speed_y
 
-            if now - self.spawn_time > self.life_time:
+            maximum_speed = (
+                self.golden_base_speed * GOLDEN_BULLET_MAX_SPEED_MULTIPLIER
+                if self.weapon_id == "Revolver_golden"
+                else math.hypot(self.speed_x, self.speed_y)
+            )
+            maximum_lifetime = (
+                BULLET_MAX_TRAVEL_DISTANCE / (maximum_speed * FPS)
+                if maximum_speed > 0
+                else self.life_time
+            )
+            if now - self.spawn_time > min(self.life_time, maximum_lifetime):
                 self.is_active = False
 
     def reflect(self, horizontal=False, vertical=False):

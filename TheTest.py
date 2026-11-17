@@ -66,6 +66,7 @@ from GameRendering import (
 from GameAudio import load_effect_sound, play_effect_sound, set_effect_volume
 from Zone import MagneticZone
 from GameModes import get_game_mode, get_game_modes
+from CombatMechanics import spirit_linked_body_damage
 from FlareSupply import (
     select_deathmatch_supply_batch,
     select_flare_supply_reward_types,
@@ -85,6 +86,8 @@ from GoldenRevolverEffects import (
     aim_lock_position,
     draw_golden_revolver_sunset,
     golden_camera_focus,
+    golden_bullet_path_intersects_rect,
+    golden_bullet_release_delay,
     golden_revolver_tint_alpha,
     golden_target_timing,
 )
@@ -1923,6 +1926,8 @@ def activate_quick_slot(key, reinstall=False):
 
     skill_name = slot.assigned_skill
     now = pygame.time.get_ticks()
+    if skill_name == "지뢰":
+        skill_cooldowns.pop(skill_name, None)
     if skill_name == "플레어건":
         if my_player.Hp <= 0:
             system_message = "사망 또는 리스폰 중에는 플레어건을 사용할 수 없습니다."
@@ -1997,14 +2002,14 @@ def activate_quick_slot(key, reinstall=False):
         system_message = f"텔포 재사용 대기: {remain:.1f}초"
         return
     if (
-        skill_name != "텔포"
+        skill_name not in ("텔포", "지뢰")
         and now < skill_cooldowns.get(skill_name, 0)
     ):
         remain = (skill_cooldowns[skill_name] - now) / 1000
         system_message = f"{skill_name} 재사용 대기: {remain:.1f}초"
         return
 
-    if skill_name != "텔포":
+    if skill_name not in ("텔포", "지뢰"):
         cooldown = (
             STEALTH_COOLDOWN_MS
             if skill_name == "은신"
@@ -2895,6 +2900,7 @@ def fire_golden_revolver():
         )
         target_aim_started_at = now + aim_delay_ms
         target_aim_until = target_aim_started_at + target_aim_ms
+        bullet_release_delay = golden_bullet_release_delay(target_index)
         angle = math.atan2(target_y - center_y, target_x - center_x)
         distance = math.hypot(target_x - center_x, target_y - center_y)
         start_distance = max(0, distance - AIM_APPROACH_DISTANCE)
@@ -2913,11 +2919,11 @@ def fire_golden_revolver():
             target_x,
             target_y,
             speed=config.bullet_speed,
-            hold_ms=aim_delay_ms + target_aim_ms,
+            hold_ms=bullet_release_delay,
         )
         bullet.just_fired = False
         bullet.aim_released = False
-        bullet.aim_until = target_aim_until
+        bullet.aim_until = now + bullet_release_delay
         bullet.life_time = config.bullet_lifetime
         bullet.golden_sequence_started_at = now
         bullet.aim_target_id = target_id
@@ -4601,14 +4607,15 @@ def GameFrame(practice_mode: bool = False):
             )
             scaled_ion = _scale_cached(ion_frame, ion_size)
             rotated_ion = pygame.transform.rotate(scaled_ion, -beam_angle)
+            # The ion sprite's bright muzzle sits 30% of its width left of center.
+            source_offset = scaled_ion.get_width() * 0.3
+            ion_center = (
+                round(start[0] + math.cos(math.radians(beam_angle)) * source_offset),
+                round(start[1] + math.sin(math.radians(beam_angle)) * source_offset),
+            )
             display.blit(
                 rotated_ion,
-                rotated_ion.get_rect(
-                    center=(
-                        round((start[0] + end[0]) / 2),
-                        round((start[1] + end[1]) / 2),
-                    )
-                ),
+                rotated_ion.get_rect(center=ion_center),
             )
 
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
@@ -4745,22 +4752,29 @@ def GameFrame(practice_mode: bool = False):
                             clone["hp"], max(0, int(bullet.damage))
                         )
                         clone["hp"] -= clone_damage
-                        previous_hp = training_dummy.Hp
-                        training_dummy.Hp = max(
-                            0, training_dummy.Hp - clone_damage
-                        )
-                        damage_numbers.append({
-                            "x": training_dummy.rect.centerx,
-                            "y": training_dummy.rect.top,
-                            "damage": previous_hp - training_dummy.Hp,
-                            "color": (255, 255, 255),
-                            "started_at": now,
-                            "lifetime": DAMAGE_TEXT_LIFETIME_MS,
-                        })
-                        if training_dummy.Hp <= 0:
-                            training_dummy.respawn_at = (
-                                now + TRAINING_DUMMY_RESPAWN_MS
+                        linked_damage, clone["linked_damage_remainder"] = (
+                            spirit_linked_body_damage(
+                                clone_damage,
+                                clone.get("linked_damage_remainder", 0),
                             )
+                        )
+                        if linked_damage:
+                            previous_hp = training_dummy.Hp
+                            training_dummy.Hp = max(
+                                0, training_dummy.Hp - linked_damage
+                            )
+                            damage_numbers.append({
+                                "x": training_dummy.rect.centerx,
+                                "y": training_dummy.rect.top,
+                                "damage": previous_hp - training_dummy.Hp,
+                                "color": (255, 255, 255),
+                                "started_at": now,
+                                "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+                            })
+                            if training_dummy.Hp <= 0:
+                                training_dummy.respawn_at = (
+                                    now + TRAINING_DUMMY_RESPAWN_MS
+                                )
                         if clone["hp"] <= 0:
                             linked_clones.remove(clone)
                             known_linked_clone_ids.discard(clone["clone_id"])
@@ -4789,8 +4803,42 @@ def GameFrame(practice_mode: bool = False):
                 head, body = Player.hitboxes_for_position(
                     p_info["posX"], p_info["posY"], IML.Player.get_width(), IML.Player.get_height()
                 )
-                if head.colliderect(bullet.rect) or body.colliderect(bullet.rect):
-                    hit_part = "head" if head.colliderect(bullet.rect) else "body"
+                bullet_rect = bullet.rect
+                golden_bullet_hits_head = (
+                    bullet.weapon_id == "Revolver_golden"
+                    and golden_bullet_path_intersects_rect(
+                        bullet.previous_x,
+                        bullet.previous_y,
+                        bullet.x,
+                        bullet.y,
+                        bullet_rect.width,
+                        bullet_rect.height,
+                        head,
+                    )
+                )
+                golden_bullet_hits_body = (
+                    bullet.weapon_id == "Revolver_golden"
+                    and golden_bullet_path_intersects_rect(
+                        bullet.previous_x,
+                        bullet.previous_y,
+                        bullet.x,
+                        bullet.y,
+                        bullet_rect.width,
+                        bullet_rect.height,
+                        body,
+                    )
+                )
+                if (
+                    head.colliderect(bullet_rect)
+                    or golden_bullet_hits_head
+                    or body.colliderect(bullet_rect)
+                    or golden_bullet_hits_body
+                ):
+                    hit_part = (
+                        "head"
+                        if head.colliderect(bullet_rect) or golden_bullet_hits_head
+                        else "body"
+                    )
                     pending_hit_events.append({
                         "target_id": p_id,
                         "attacker_id": bullet.owner_id,
@@ -4845,6 +4893,40 @@ def GameFrame(practice_mode: bool = False):
                         hit_part = "body"
                     else:
                         hit_part = None
+                elif bullet.weapon_id == "Revolver_golden":
+                    bullet_rect = bullet.rect
+                    if (
+                        training_dummy.head_hitbox.colliderect(bullet_rect)
+                        or golden_bullet_path_intersects_rect(
+                            bullet.previous_x,
+                            bullet.previous_y,
+                            bullet.x,
+                            bullet.y,
+                            bullet_rect.width,
+                            bullet_rect.height,
+                            training_dummy.head_hitbox,
+                        )
+                    ):
+                        hit_part = "head"
+                    elif (
+                        training_dummy.body_hitbox.colliderect(bullet_rect)
+                        or golden_bullet_path_intersects_rect(
+                            bullet.previous_x,
+                            bullet.previous_y,
+                            bullet.x,
+                            bullet.y,
+                            bullet_rect.width,
+                            bullet_rect.height,
+                            training_dummy.body_hitbox,
+                        )
+                    ):
+                        hit_part = "body"
+                    else:
+                        hit_part = None
+                    if hit_part:
+                        training_dummy.Hp = max(
+                            0, training_dummy.Hp - bullet.damage
+                        )
                 else:
                     hit_part = training_dummy.check_bullet_hit(
                         bullet.rect, bullet.damage
@@ -4881,6 +4963,7 @@ def GameFrame(practice_mode: bool = False):
                             "y": bullet.y,
                             "hp": SPIRIT_TRIAL_CLONE_HP,
                             "max_hp": SPIRIT_TRIAL_CLONE_HP,
+                            "linked_damage_remainder": 0,
                             "age_ms": 0,
                             "created_at_ms": now,
                         })

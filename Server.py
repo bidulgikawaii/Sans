@@ -60,7 +60,10 @@ from Lobby import LobbyState
 from Zone import MagneticZone
 from GameModes import get_game_mode, get_game_modes, is_game_mode_registered
 from FlareSupply import supply_spawn_requires_leader
-from FlagdownBases import intersects_enemy_flagdown_base
+from FlagdownBases import (
+    intersects_enemy_flagdown_base,
+    intersects_flagdown_base,
+)
 from NetworkProtocol import FramedSocket
 from FlagdownRewards import (
     acknowledge_flagdown_skill_rewards,
@@ -1135,7 +1138,22 @@ def handle_client(conn, player_id):
                     )
                     linked_damage = 0
                     linked_shield_damage = 0
-                    if linked_target is not None and linked_target["hp"] > 0:
+                    linked_target_is_safe = (
+                        mode == GAME_MODE_FLAGDOWN
+                        and linked_target is not None
+                        and intersects_flagdown_base(
+                            linked_target.get("team_id"),
+                            linked_target.get("posX"),
+                            linked_target.get("posY"),
+                            72,
+                            72,
+                        )
+                    )
+                    if (
+                        linked_target is not None
+                        and linked_target["hp"] > 0
+                        and not linked_target_is_safe
+                    ):
                         body_damage, clone["linked_damage_remainder"] = (
                             spirit_linked_body_damage(
                                 clone_damage,
@@ -1220,6 +1238,14 @@ def handle_client(conn, player_id):
                 if (
                     not target
                     or target["hp"] <= 0
+                ):
+                    continue
+                if mode == GAME_MODE_FLAGDOWN and intersects_flagdown_base(
+                    target.get("team_id"),
+                    target.get("posX"),
+                    target.get("posY"),
+                    72,
+                    72,
                 ):
                     continue
                 attacker_id = hit_event.get("attacker_id", player_id)

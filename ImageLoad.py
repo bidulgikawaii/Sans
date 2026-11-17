@@ -26,7 +26,7 @@ SKILL_ICON_FILES = {
     "와드": "Ward.png",
     "지뢰": "Bomb.png",
     "플레어건": "flaregun.png",
-    #"영혼탄": "SpiritTrialGhost.png"
+    "영혼탄환": "SoulBullet.png",
 }
 PLAYER_FRAME_SIZE = (72, 72)
 PLAYER_VISIBLE_SIZE = (44, 64)
@@ -170,10 +170,6 @@ class Imageload:
         self.PlasmaSkillIcon = pygame.transform.smoothscale(
             self.PlasmaGun, (SKILL_ICON_SIZE, SKILL_ICON_SIZE)
         )
-        if self.SpiritTrialGhost:
-            self.skill_icons["영혼탄"] = pygame.transform.smoothscale(
-                self.SpiritTrialGhost[0], (SKILL_ICON_SIZE, SKILL_ICON_SIZE)
-            )
         self.Protect = self._load_image_file(self.root / "Protect.png")
         self.GrassTile = self._load_scaled_image("GrassTile.png", (64, 64))
 

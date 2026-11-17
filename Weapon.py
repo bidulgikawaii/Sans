@@ -58,7 +58,7 @@ WEAPONS = {
     "sniper": WeaponConfig(
     "저격총", damage=100, magazine_size=10, reserve_ammo=45, fire_interval=1.0,
         reload_time=3.1, bullet_size=3, bullet_speed=80.0, recoil=8.0,
-        bullet_lifetime=float("inf"), vision_shape="cone", vision_radius=WEAPON_VISION_RADIUS, vision_fov=180.0, vision_width=420.0,
+        bullet_lifetime=0.35, vision_shape="cone", vision_radius=WEAPON_VISION_RADIUS, vision_fov=180.0, vision_width=420.0,
     ),
     "smg": WeaponConfig(
         "기관단총", damage=3, magazine_size=45, reserve_ammo=250, fire_interval=0.08,
@@ -100,7 +100,7 @@ SPECIAL_CRATE_WEAPONS = {
         "밀랍칠한 도금벗긴 약간 깍인 도금 리볼버",
         damage=PLAYER_MAX_HP + SHIELD_HP, magazine_size=1, reserve_ammo=0,
         fire_interval=0.4, reload_time=0.0, bullet_size=7, bullet_speed=32.0,
-        recoil=0.0, bullet_lifetime=1.5, vision_radius=WEAPON_VISION_RADIUS,
+        recoil=0.0, bullet_lifetime=0.22, vision_radius=WEAPON_VISION_RADIUS,
         vision_fov=90, vision_width=220,
     ),
 }

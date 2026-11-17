@@ -16,6 +16,15 @@ class Wall:
 
 
 class PlayerCollisionTests(unittest.TestCase):
+    def test_player_collision_respects_enemy_flagdown_base_rectangles(self):
+        player = Player.__new__(Player)
+        player.rect = pygame.Rect(0, 0, 72, 72)
+        player.tile_generator = None
+        player.protected_base_rects = (pygame.Rect(0, 192, 128, 1984),)
+
+        self.assertTrue(player._position_collides(40, 300))
+        self.assertFalse(player._position_collides(200, 300))
+
     def test_player_moves_out_of_wall_overlap(self):
         player = Player.__new__(Player)
         player.X = 95

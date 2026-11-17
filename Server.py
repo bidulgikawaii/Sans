@@ -52,6 +52,7 @@ from Config import (
 from CombatMechanics import (
     apply_shield_activation,
     is_suicide_hit,
+    resolve_hit_weapon_id,
     spirit_linked_body_damage,
 )
 from Weapon import WEAPONS
@@ -59,6 +60,7 @@ from Lobby import LobbyState
 from Zone import MagneticZone
 from GameModes import get_game_mode, get_game_modes, is_game_mode_registered
 from FlareSupply import supply_spawn_requires_leader
+from FlagdownBases import intersects_enemy_flagdown_base
 from NetworkProtocol import FramedSocket
 from FlagdownRewards import (
     acknowledge_flagdown_skill_rewards,
@@ -712,18 +714,31 @@ def handle_client(conn, player_id):
                 mode not in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN)
                 or (players[player_id]["hp"] > 0 and client_reports_alive)
             )
+            position_rejected = False
             if can_accept_client_position:
-                players[player_id]["posX"] = client_data["posX"]
-                players[player_id]["posY"] = client_data["posY"]
-                if (
-                    mode == GAME_MODE_DEATHMATCH
-                    and not players[player_id]["spawn_history_initialized"]
-                ):
-                    players[player_id]["recent_spawn_points"].append((
-                        int(players[player_id]["posX"] // 32),
-                        int(players[player_id]["posY"] // 32),
-                    ))
-                    players[player_id]["spawn_history_initialized"] = True
+                position_rejected = (
+                    mode == GAME_MODE_FLAGDOWN
+                    and intersects_enemy_flagdown_base(
+                        lobby.team_for(player_id),
+                        client_data.get("posX"),
+                        client_data.get("posY"),
+                        72,
+                        72,
+                    )
+                )
+                if not position_rejected:
+                    players[player_id]["posX"] = client_data["posX"]
+                    players[player_id]["posY"] = client_data["posY"]
+                    if (
+                        mode == GAME_MODE_DEATHMATCH
+                        and not players[player_id]["spawn_history_initialized"]
+                    ):
+                        players[player_id]["recent_spawn_points"].append((
+                            int(players[player_id]["posX"] // 32),
+                            int(players[player_id]["posY"] // 32),
+                        ))
+                        players[player_id]["spawn_history_initialized"] = True
+            players[player_id]["position_rejected"] = position_rejected
             players[player_id]["angle"] = client_data["angle"]
             weapon_id = client_data.get("weapon_id", DEFAULT_WEAPON_ID)
             if weapon_id not in WEAPONS:
@@ -804,11 +819,12 @@ def handle_client(conn, player_id):
             heal_token = int(client_data.get("heal_token", 0))
             if heal_token != players[player_id]["heal_token"]:
                 players[player_id]["heal_token"] = heal_token
-                heal_amount = max(0, int(client_data.get("heal_amount", 0)))
-                players[player_id]["hp"] = min(
-                    PLAYER_MAX_HP,
-                    players[player_id]["hp"] + heal_amount,
-                )
+                if players[player_id]["hp"] > 0:
+                    heal_amount = max(0, int(client_data.get("heal_amount", 0)))
+                    players[player_id]["hp"] = min(
+                        PLAYER_MAX_HP,
+                        players[player_id]["hp"] + heal_amount,
+                    )
             rune_ping = client_data.get("rune_ping")
             if isinstance(rune_ping, (list, tuple)) and len(rune_ping) == 2:
                 events["rune_alerts"].append((float(rune_ping[0]), float(rune_ping[1]), time.monotonic() + RUNE_ALERT_DURATION_MS / 1000))
@@ -1231,9 +1247,20 @@ def handle_client(conn, player_id):
                     ):
                         continue
                 damage = max(0, int(hit_event.get("damage", 0)))
-                hit_weapon_id = hit_event.get("weapon_id")
-                if not isinstance(hit_weapon_id, str) or hit_weapon_id not in WEAPONS:
-                    hit_weapon_id = players[attacker_id].get("weapon_id", DEFAULT_WEAPON_ID)
+                verified_weapon_id = (
+                    source_bullet["weapon_id"]
+                    if source_bullet is not None
+                    else token_bullet["weapon_id"]
+                    if token_bullet is not None
+                    else None
+                )
+                hit_weapon_id = resolve_hit_weapon_id(
+                    hit_event.get("weapon_id"),
+                    verified_weapon_id,
+                    players[attacker_id].get("weapon_id"),
+                    WEAPONS,
+                    DEFAULT_WEAPON_ID,
+                )
                 if (
                     hit_event.get("hit_part") == "head"
                     and hit_weapon_id != "Revolver_golden"

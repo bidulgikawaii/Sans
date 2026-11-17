@@ -10,6 +10,8 @@ from Config import (
 )
 from FlagdownRewards import (
     acknowledge_flagdown_skill_rewards,
+    flagdown_supply_x_bounds,
+    trailing_flagdown_team,
     update_flagdown_skill_rewards,
 )
 
@@ -20,6 +22,15 @@ def test_():
 a = 10
 
 class FlagdownRewardTests(unittest.TestCase):
+    def test_trailing_team_is_selected_from_server_progress(self):
+        self.assertEqual(trailing_flagdown_team({0: 20, 1: 65}), 0)
+        self.assertEqual(trailing_flagdown_team({"0": 80, "1": 15}), 1)
+        self.assertIsNone(trailing_flagdown_team({0: 20, 1: 20}))
+        self.assertIsNone(trailing_flagdown_team({0: "bad", 1: 20}))
+        self.assertEqual(flagdown_supply_x_bounds({0: 20, 1: 65}, 96), (50, 93))
+        self.assertEqual(flagdown_supply_x_bounds({0: 80, 1: 15}, 96), (2, 46))
+        self.assertIsNone(flagdown_supply_x_bounds({0: 20, 1: 20}, 96))
+
     def test_rewards_are_scheduled_every_fifteen_seconds(self):
         self.assertEqual(FLAGDOWN_SKILL_REWARD_INTERVAL_MS, 15_000)
         self.assertNotIn("skill", SUPPLY_REWARD_TYPES)

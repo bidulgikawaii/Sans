@@ -1,6 +1,11 @@
 import unittest
 
-from Config import MINE_BLAST_RADIUS, MINE_TRIGGER_DELAY_MS
+from Config import (
+    MINE_ARM_DELAY_MS,
+    MINE_BLAST_RADIUS,
+    MINE_DAMAGE,
+    MINE_TRIGGER_DELAY_MS,
+)
 from MineMechanics import (
     mine_blast_contains,
     mine_is_due_to_detonate,
@@ -12,6 +17,8 @@ from MineMechanics import (
 class MineMechanicsTests(unittest.TestCase):
     def test_mine_detonation_delay_is_shortened(self):
         self.assertEqual(MINE_TRIGGER_DELAY_MS, 600)
+        self.assertEqual(MINE_ARM_DELAY_MS, 0)
+        self.assertGreater(MINE_DAMAGE, 10)
 
     def test_mine_flashes_for_delay_before_detonating(self):
         mine = {"armed_at": 100}

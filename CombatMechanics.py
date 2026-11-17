@@ -18,6 +18,24 @@ def is_suicide_hit(attacker_id, target_id, skill_source):
     return attacker_id == target_id and skill_source == "자폭"
 
 
+def resolve_hit_weapon_id(
+    reported_weapon_id,
+    verified_weapon_id,
+    equipped_weapon_id,
+    weapon_configs,
+    default_weapon_id,
+):
+    """Prefer a verified projectile's weapon over client-reported attribution."""
+    for weapon_id in (
+        verified_weapon_id,
+        reported_weapon_id,
+        equipped_weapon_id,
+    ):
+        if isinstance(weapon_id, str) and weapon_id in weapon_configs:
+            return weapon_id
+    return default_weapon_id
+
+
 def spirit_linked_body_damage(clone_damage, remainder=0):
     """Transfer 30% of clone damage to its linked player's body."""
     precision = 1000

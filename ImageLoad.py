@@ -44,6 +44,7 @@ class Imageload:
         "smg": "Gigwan",
         "sniper": "Sniper",
         "shotgun": "ShotGun",
+        "knife": "HBlade",
         "flaregun": "FlareGun",
         "bat": "BatIcon",
         "blackhole_generator": "BlackHoleGun",
@@ -95,6 +96,9 @@ class Imageload:
         )
         self.ManaLance = self._load_animation(
             "mana-lance_", (256, 136), directory="mana-lance-frames"
+        )
+        self.IonCannon = self._load_animation(
+            "ion-cannon_", directory="ion-cannon-frames"
         )
         self.GoldenRevolverBullet = self._load_animation(
             "pixel-art-blue-fireball_",
@@ -163,6 +167,9 @@ class Imageload:
             name: self._load_scaled_image(filename, (SKILL_ICON_SIZE, SKILL_ICON_SIZE))
             for name, filename in SKILL_ICON_FILES.items()
         }
+        self.PlasmaSkillIcon = pygame.transform.smoothscale(
+            self.PlasmaGun, (SKILL_ICON_SIZE, SKILL_ICON_SIZE)
+        )
         if self.SpiritTrialGhost:
             self.skill_icons["영혼탄"] = pygame.transform.smoothscale(
                 self.SpiritTrialGhost[0], (SKILL_ICON_SIZE, SKILL_ICON_SIZE)
@@ -196,7 +203,7 @@ class Imageload:
 
         # 원본은 캔버스가 매우 크고 장식은 중앙에 있으므로 보이는 부분만 캐싱합니다.
         panel = image.subsurface(visible_rect).copy()
-        panel_width = 520
+        panel_width = 480
         panel_height = round(panel_width * visible_rect.height / visible_rect.width)
         return pygame.transform.smoothscale(panel, (panel_width, panel_height))
 
@@ -386,10 +393,12 @@ class Imageload:
         return self.Sniper
 
     def GetWeaponImage(self, weapon_id):
-        attribute = self._WEAPON_IMAGE_ATTRIBUTES.get(weapon_id, "ShotGun")
-        image = getattr(self, attribute)
-        if attribute == "ShotGun":
-            return image[0] if image else None
+        attribute = self._WEAPON_IMAGE_ATTRIBUTES.get(weapon_id)
+        image = getattr(self, attribute, None) if attribute else None
+        if isinstance(image, (list, tuple)):
+            image = image[0] if image else None
+        if image is None:
+            return self.PlasmaGun
         return image
 
     def GetBladeFrames(self):
@@ -425,6 +434,9 @@ class Imageload:
     def GetManaLanceFrames(self):
         return self.ManaLance
 
+    def GetIonCannonFrames(self):
+        return self.IonCannon
+
     def GetGoldenRevolverBulletFrames(self):
         return self.GoldenRevolverBullet
 
@@ -435,7 +447,10 @@ class Imageload:
         return self.Tile
 
     def GetSkillIcon(self, skill_name):
-        return self.skill_icons.get(skill_name)
+        skill_icon = self.skill_icons.get(skill_name)
+        if skill_icon is not None:
+            return skill_icon
+        return self.PlasmaSkillIcon
 
     def GetProtectImage(self):
         return self.Protect

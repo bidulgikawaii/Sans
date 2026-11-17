@@ -20,7 +20,9 @@ def smooth_player_position(position_cache, player_id, target_x, target_y, factor
     """Ease remote render coordinates toward each received server position."""
     key = str(player_id)
     previous = position_cache.get(key)
-    if previous is None:
+    if previous is None or math.hypot(
+        target_x - previous[0], target_y - previous[1]
+    ) > 160:
         position = (target_x, target_y)
     else:
         position = (
@@ -29,6 +31,17 @@ def smooth_player_position(position_cache, player_id, target_x, target_y, factor
         )
     position_cache[key] = position
     return position
+
+
+def tint_player_image(image, color):
+    """Apply a team hue while preserving the player's shading and transparency."""
+    if color is None:
+        return image
+    tinted = image.copy()
+    overlay = pygame.Surface(image.get_size(), pygame.SRCALPHA)
+    overlay.fill((*color, 255))
+    tinted.blit(overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+    return tinted
 
 
 def create_bat_launch(event, map_width, map_height, now):
@@ -170,7 +183,7 @@ def draw_kill_feed(
         card.blit(separator, separator.get_rect(center=(210, card_height // 2)))
 
         weapon_id = event.get("weapon_id")
-        weapon_image = get_weapon_image(weapon_id) if weapon_id else None
+        weapon_image = get_weapon_image(weapon_id)
         if weapon_image is not None:
             icon = pygame.transform.smoothscale(weapon_image, (34, 34))
             card.blit(icon, icon.get_rect(center=(260, card_height // 2)))
@@ -370,12 +383,23 @@ def draw_ammo_status(
 ):
     config = weapon_state.config
     name_text = font.render(config.name, True, (255, 220, 120))
+    if weapon_state.unlimited_ammo:
+        ammo_label = "탄창 무제한"
+    elif weapon_state.is_reloading_now():
+        ammo_label = "재장전 중..."
+    else:
+        ammo_label = f"탄창 {weapon_state.magazine_ammo}/{config.magazine_size}"
     ammo_text = font.render(
-        "재장전 중..." if weapon_state.is_reloading_now() else f"탄창 {weapon_state.magazine_ammo}/{config.magazine_size}",
+        ammo_label,
         True,
         (255, 180, 120) if weapon_state.is_reloading_now() else (255, 255, 255),
     )
-    reserve_text = font.render(f"예비 탄약 {weapon_state.reserve_ammo}", True, (190, 220, 255))
+    reserve_label = (
+        "예비 탄약 무제한"
+        if weapon_state.unlimited_ammo
+        else f"예비 탄약 {weapon_state.reserve_ammo}"
+    )
+    reserve_text = font.render(reserve_label, True, (190, 220, 255))
     panel_x = screen_width - panel_size[0] - panel_margin[0]
     panel_y = screen_height - panel_size[1] - panel_margin[1]
     panel_center_x = panel_x + panel_size[0] // 2

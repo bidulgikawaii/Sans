@@ -3,6 +3,7 @@ import math
 import pygame
 from Config import *
 from ImageLoad import *
+from GameRendering import tint_player_image
 from Settings import get_key
 
 # 이동을 축별로 충돌 검사하면 벽에 대각선으로 닿아도 벽을 따라 미끄러질 수 있습니다.
@@ -21,6 +22,7 @@ class Player:
         self.rect = self.image.get_rect(topleft=(x, y))
 
         self.tile_generator = tile_Gene
+        self.protected_base_rects = ()
 
         self.normal_speed = PLAYER_NORMAL_SPEED
         self.sprint_speed = PLAYER_SPRINT_SPEED
@@ -137,6 +139,14 @@ class Player:
             self.is_moving = False
 
     def _position_collides(self, x, y):
+        candidate_rect = pygame.Rect(
+            round(x), round(y), self.rect.width, self.rect.height
+        )
+        if any(
+            candidate_rect.colliderect(protected_rect)
+            for protected_rect in getattr(self, "protected_base_rects", ())
+        ):
+            return True
         if not self.tile_generator:
             return False
         next_head_hitbox, next_body_hitbox = self.hitboxes_for_position(
@@ -208,14 +218,14 @@ class Player:
 
     def draw(
         self, surface, camera_x=0, camera_y=0, zoom=1.0,
-        offset_x=0, offset_y=0, alpha=255,
+        offset_x=0, offset_y=0, alpha=255, color_tint=None,
     ):
         # 카메라 위치를 차감하여 화면용 상대 좌표 계산
         screen_x = (self.rect.x - camera_x) * zoom + offset_x
         screen_y = (self.rect.y - camera_y) * zoom + offset_y
         
         # 화면 좌표 기준 캐릭터 렌더링
-        source_image = self.get_display_image()
+        source_image = tint_player_image(self.get_display_image(), color_tint)
         image = source_image if zoom == 1.0 else pygame.transform.scale(
             source_image, (max(1, round(source_image.get_width() * zoom)), max(1, round(source_image.get_height() * zoom)))
         )

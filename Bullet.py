@@ -129,6 +129,12 @@ class Bullet:
         self.launch_hold_ms = 0
         self.reflect_until = 0
         self.golden_base_speed = 0.0
+        self.golden_sequence_started_at = 0
+        self.aim_target_id = None
+        self.aim_target_x = None
+        self.aim_target_y = None
+        self.aim_until = 0
+        self.aim_released = True
 
     @property
     def rect(self):

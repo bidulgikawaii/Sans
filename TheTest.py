@@ -51,7 +51,6 @@ from GameRendering import (
     draw_damage_numbers,
     draw_supply_drop,
     draw_quick_slot_cooldowns,
-    draw_teleport_anchor,
     draw_visibility_geometry,
     draw_visibility_highlight,
     draw_team_marker,
@@ -61,6 +60,7 @@ from GameRendering import (
     draw_skill_range,
     draw_stun_bolt,
     draw_stun_effect,
+    tint_player_image,
     smooth_player_position,
 )
 from GameAudio import load_effect_sound, play_effect_sound, set_effect_volume
@@ -71,6 +71,11 @@ from FlareSupply import (
     select_flare_supply_reward_types,
     supply_spawn_requires_leader,
 )
+from FlagdownBases import (
+    flagdown_base_bounds,
+    intersects_enemy_flagdown_base,
+)
+from FlagdownRewards import flagdown_supply_x_bounds
 from GoldenRevolverEffects import (
     AIM_APPROACH_DISTANCE,
     AIM_DURATION_MS,
@@ -605,9 +610,6 @@ aim_locked_pos = None
 weapon_fire_until = 0
 weapon_smoke_until = 0
 preserve_magazine_after_chest = False
-teleport_anchor = None
-teleport_anchor_expires_at = 0
-teleport_placements_remaining = TELEPORT_MAX_PLACEMENTS
 third_weapon_id = None
 special_weapon_crate = SpecialWeaponCrate()
 next_local_supply_id = -1
@@ -618,6 +620,22 @@ practice_respawn_at = 0
 def is_hidden_player(player_info):
     """사망 또는 서버가 숨김 처리한 플레이어를 판별합니다."""
     return player_info.get("hidden", False) or player_info.get("hp", 1) <= 0
+
+
+def _is_enemy_flagdown_base_position(x, y, width, height):
+    if selected_game_mode != GAME_MODE_FLAGDOWN or local_match:
+        return False
+    own_team = server_players.get(network.player_id, {}).get("team_id")
+    return intersects_enemy_flagdown_base(
+        own_team,
+        x,
+        y,
+        width,
+        height,
+        TileGene.tile_size,
+        TileGene.map_width,
+    )
+
 
 def spawn_supply_drop(now):
     """매치 호스트가 고른 위치와 보상을 서버에 보급품 생성 요청으로 보냅니다."""
@@ -662,9 +680,22 @@ def spawn_unique_supply_drop(now):
     """주기적으로 유니크 보급품의 안전한 위치를 5초 전에 서버에 알립니다."""
     if not server_players or min(server_players, key=str) != str(network.player_id):
         return False
+    x_bounds = (2, TileGene.map_width - 3)
+    if selected_game_mode == GAME_MODE_FLAGDOWN:
+        progress = next(
+            (
+                player.get("flagdown_progress")
+                for player in server_players.values()
+                if isinstance(player.get("flagdown_progress"), dict)
+            ),
+            {},
+        )
+        x_bounds = (
+            flagdown_supply_x_bounds(progress, TileGene.map_width)
+            or x_bounds
+        )
     spawn_tile = TileGene.find_safe_spawn(
-        2,
-        TileGene.map_width - 3,
+        *x_bounds,
         2,
         TileGene.map_height - 3,
         rng=random.SystemRandom(),
@@ -807,20 +838,22 @@ def apply_supply_reward(reward_type):
    
     elif reward_type == "flare_ammo":
         ammo_weapon_id = (
-            main_weapon_id
-            if weapon_state.weapon_id in MELEE_WEAPON_IDS
-            else weapon_state.weapon_id
+            weapon_state.weapon_id
+            if weapon_state.config.projectile
+            else main_weapon_id
         )
         weapon_state.add_reserve_ammo(FLARE_SUPPLY_AMMO_PER_DROP, ammo_weapon_id)
+        weapon_state.refill_magazine(ammo_weapon_id)
         message = f"탄약 보급품 획득: 예비 탄약 +{FLARE_SUPPLY_AMMO_PER_DROP}"
         color = (255, 135, 65)
     elif reward_type == "flare_skill":
         ammo_weapon_id = (
-            main_weapon_id
-            if weapon_state.weapon_id in MELEE_WEAPON_IDS
-            else weapon_state.weapon_id
+            weapon_state.weapon_id
+            if weapon_state.config.projectile
+            else main_weapon_id
         )
         weapon_state.add_reserve_ammo(FLARE_SUPPLY_AMMO_PER_DROP, ammo_weapon_id)
+        weapon_state.refill_magazine(ammo_weapon_id)
         healing_item_count += 1
         message = f"탄약 +{FLARE_SUPPLY_AMMO_PER_DROP}, 회복 아이템 획득"
         color = (100, 255, 130)
@@ -881,6 +914,9 @@ def apply_flagdown_skill_reward(reward):
 
 def use_healing_item():
     global healing_item_count, heal_token, pending_heal_amount, system_message
+    if my_player.Hp <= 0:
+        system_message = "부활할 때까지 회복 아이템을 사용할 수 없습니다."
+        return
     if healing_item_count <= 0:
         system_message = "보유한 회복 아이템이 없습니다."
         return
@@ -984,8 +1020,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     """새 경기에 들어갈 때 이전 경기의 클라이언트 상태를 초기화합니다."""
     global match_result, result_started_at, system_message, heal_token, active_rune_tile, last_effect_tick, easter_egg_found, easter_egg_flash_until
     global pending_heal_amount, vision_skill_until, shield_hp, shield_token, haste_until
-    global stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at
-    global teleport_placements_remaining, third_weapon_id, special_weapon_crate
+    global stealth_until, stealth_token, third_weapon_id, special_weapon_crate
     global training_dummy, preserve_magazine_after_chest
     global local_stun_until, zone_elapsed_ms, next_supply_drop_at
     global CameraPosX, CameraPosY, AimCameraPosX, AimCameraPosY
@@ -1072,9 +1107,6 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     shield_hp = shield_token = 0
     stealth_token = 0
     active_rune_tile = None
-    teleport_anchor = None
-    teleport_anchor_expires_at = 0
-    teleport_placements_remaining = TELEPORT_MAX_PLACEMENTS
     third_weapon_id = None
     next_local_supply_id = -1
     practice_weapon_selection = None
@@ -1136,6 +1168,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     mouse_fire_hold = False
     visibility_polygon_cache.clear()
     my_player.Hp = my_player.MaxHp
+    my_player.protected_base_rects = ()
     my_player.is_dashing = False
     if selected_game_mode == GAME_MODE_FLAGDOWN:
         spawn_tile_x, spawn_tile_y = FLAGDOWN_SPAWN_TILES[
@@ -1751,7 +1784,7 @@ def _draw_result_screen(title_text, color, elapsed):
             ),
             {},
         )
-        rows = []
+        rows_by_team = {0: [], 1: []}
         for player_id, player in server_players.items():
             try:
                 score = int(
@@ -1764,44 +1797,83 @@ def _draw_result_screen(title_text, color, elapsed):
                 )
             except (TypeError, ValueError):
                 score = 0
-            rows.append((
-                player_id,
-                str(player.get("name", "플레이어")),
-                score,
-                player.get("team_id"),
-            ))
-        rows.sort(key=lambda row: (-row[2], str(row[1]), str(row[0])))
-
-        row_height = 28
-        panel_height = 48 + len(rows) * row_height
-        score_panel = pygame.Rect(0, 0, 620, panel_height)
-        score_panel.center = (
-            ScreenX // 2,
-            ScreenY // 2 + 45 + panel_height // 2,
-        )
-        pygame.draw.rect(display, (12, 20, 32), score_panel, border_radius=8)
-        pygame.draw.rect(display, (90, 125, 150), score_panel, 1, border_radius=8)
-        header = KillFeedFont.render("플레이어: 킬 수", True, (255, 235, 160))
-        display.blit(header, (score_panel.left + 14, score_panel.top + 10))
-        row_y = score_panel.top + 42
-        for player_id, name, score, team_id in rows[:MAX_PLAYERS]:
-            color = (
-                (150, 210, 255) if team_id == 0
-                else (255, 165, 175) if team_id == 1
-                else (245, 245, 245)
-            )
-            text = KillFeedFont.render(f"{name}: {score}", True, color)
-            max_width = score_panel.width - 28
-            if text.get_width() > max_width:
-                text = pygame.transform.smoothscale(
-                    text,
-                    (
-                        max_width,
-                        max(1, round(text.get_height() * max_width / text.get_width())),
-                    ),
+            team_id = player.get("team_id")
+            if team_id in rows_by_team:
+                rows_by_team[team_id].append(
+                    (player_id, str(player.get("name", "플레이어")), score)
                 )
-            display.blit(text, (score_panel.left + 14, row_y))
-            row_y += row_height
+
+        panel_width = 590
+        panel_height = 48 + 6 * 34
+        panel_gap = 48
+        first_panel_x = (ScreenX - panel_width * 2 - panel_gap) // 2
+        for team_id, team_name, team_color in (
+            (0, "청팀", FLAGDOWN_TEAM_COLORS[0]),
+            (1, "홍팀", FLAGDOWN_TEAM_COLORS[1]),
+        ):
+            rows = sorted(
+                rows_by_team[team_id],
+                key=lambda row: (-row[2], row[1].casefold(), str(row[0])),
+            )[:6]
+            score_panel = pygame.Rect(
+                first_panel_x + team_id * (panel_width + panel_gap),
+                ScreenY // 2 + 48,
+                panel_width,
+                panel_height,
+            )
+            pygame.draw.rect(
+                display, (12, 20, 32), score_panel, border_radius=8
+            )
+            pygame.draw.rect(
+                display, team_color, score_panel, 2, border_radius=8
+            )
+            header = KillFeedFont.render(
+                f"{team_name} 킬 순위", True, team_color
+            )
+            display.blit(header, (score_panel.left + 16, score_panel.top + 10))
+            for rank, (player_id, name, score) in enumerate(rows, start=1):
+                row_y = score_panel.top + 44 + (rank - 1) * 34
+                local_row = str(player_id) == str(network.player_id)
+                text_color = (255, 245, 190) if local_row else (245, 245, 245)
+                rank_text = KillFeedFont.render(
+                    f"{rank:>2}.", True, text_color
+                )
+                name_text = KillFeedFont.render(name, True, text_color)
+                score_text = KillFeedFont.render(str(score), True, text_color)
+                max_name_width = max(
+                    1,
+                    score_panel.width
+                    - 70
+                    - score_text.get_width()
+                    - 36,
+                )
+                if name_text.get_width() > max_name_width:
+                    name_text = pygame.transform.smoothscale(
+                        name_text,
+                        (
+                            max_name_width,
+                            max(
+                                1,
+                                round(
+                                    name_text.get_height()
+                                    * max_name_width
+                                    / name_text.get_width()
+                                ),
+                            ),
+                        ),
+                    )
+                display.blit(
+                    rank_text,
+                    (score_panel.left + 16, row_y),
+                )
+                display.blit(
+                    name_text,
+                    (score_panel.left + 70, row_y),
+                )
+                display.blit(
+                    score_text,
+                    (score_panel.right - score_text.get_width() - 18, row_y),
+                )
 
     guide_text = "Space: 다시 대기열 참가   ESC: 메인 메뉴"
     guide = result_text_cache.get(guide_text)
@@ -1826,12 +1898,6 @@ def break_stealth_on_attack():
         stealth_until = 0
 
 
-def _finish_teleport_cycle(now):
-    global teleport_placements_remaining
-    skill_cooldowns["텔포"] = now + TELEPORT_COOLDOWN_MS
-    teleport_placements_remaining = 0
-
-
 def _start_teleport_visual(x, y, now):
     frames = IML.GetBlinkFrames()
     if not frames:
@@ -1842,8 +1908,11 @@ def _start_teleport_visual(x, y, now):
 
 
 def activate_quick_slot(key, reinstall=False):
-    global system_message, vision_shape_override, vision_skill_until, shield_hp, shield_token, stealth_until, stealth_token, teleport_anchor, teleport_anchor_expires_at, teleport_placements_remaining, screen_shake, next_mine_request_id
+    global system_message, vision_shape_override, vision_skill_until, shield_hp, shield_token, stealth_until, stealth_token, screen_shake, next_mine_request_id
     global flaregun_used
+    if my_player.Hp <= 0:
+        system_message = "부활할 때까지 스킬을 사용할 수 없습니다."
+        return
     slot_actions = {get_key(f"slot_{name.lower()}"): name for name in ("Q", "E", "T")}
     slot_name = slot_actions.get(key)
     slot = next((slot for slot in quick_slots if slot.key_name == slot_name), None)
@@ -2150,7 +2219,7 @@ def activate_quick_slot(key, reinstall=False):
         )
         system_message = "4.5초 동안 적에게 완전히 보이지 않습니다."
     elif skill_name == "와드":
-        target_x, target_y = screen_to_world(*get_aim_mouse_position(CameraPosX, CameraPosY), CameraPosX, CameraPosY, camera_zoom)
+        target_x, target_y = get_mouse_world_position(CameraPosX, CameraPosY)
         target_rect = pygame.Rect(0, 0, 16, 16)
         target_rect.center = (round(target_x), round(target_y))
         if TileGene.check_collision(target_rect):
@@ -2178,6 +2247,15 @@ def activate_quick_slot(key, reinstall=False):
             system_message = "벽이나 맵 밖을 피해 착지할 위치가 없습니다."
             return
         target_x, target_y = landing
+        landing_x = target_x - my_player.rect.width / 2
+        landing_y = target_y - my_player.rect.height / 2
+        if my_player._position_collides(
+            landing_x, landing_y
+        ) or _is_enemy_flagdown_base_position(
+            landing_x, landing_y, my_player.rect.width, my_player.rect.height
+        ):
+            system_message = "상대팀 기지 안에는 순간이동할 수 없습니다."
+            return
         _start_teleport_visual(old_x, old_y, now)
         _start_teleport_visual(target_x, target_y, now)
         my_player.X = target_x - my_player.rect.width / 2
@@ -2362,13 +2440,13 @@ def handle_key_event(event, _mouse_pos):
         get_key("skill_inventory"): lambda _key: toggle_inventory(),
         get_key("use_healing"): lambda _key: use_healing_item(),
         pygame.K_v: lambda _key: cycle_vision_shape(),
-        pygame.K_q: lambda _key: activate_quick_slot(
+        get_key("slot_q"): lambda _key: activate_quick_slot(
             _key, reinstall=bool(event.mod & pygame.KMOD_SHIFT)
         ),
-        pygame.K_e: lambda _key: activate_quick_slot(
+        get_key("slot_e"): lambda _key: activate_quick_slot(
             _key, reinstall=bool(event.mod & pygame.KMOD_SHIFT)
         ),
-        pygame.K_t: lambda _key: activate_quick_slot(
+        get_key("slot_t"): lambda _key: activate_quick_slot(
             _key, reinstall=bool(event.mod & pygame.KMOD_SHIFT)
         ),
         get_key("reload"): lambda _key: reload_weapon(),
@@ -2640,7 +2718,11 @@ def _line_rect_intersects(x1, y1, x2, y2, rect):
 
 def _golden_revolver_impact(x, y, remaining_ms):
     global screen_shake
-    if remaining_ms <= 0:
+    if (
+        remaining_ms <= 0
+        or not math.isfinite(x)
+        or not math.isfinite(y)
+    ):
         return
     screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 10)
     particles.emit(
@@ -2756,8 +2838,13 @@ def fire_golden_revolver():
             )
         ):
             continue
-        target_x = player_info["posX"] + IML.Player.get_width() / 2
-        target_y = player_info["posY"] + IML.Player.get_height() / 2
+        try:
+            target_x = float(player_info["posX"]) + IML.Player.get_width() / 2
+            target_y = float(player_info["posY"]) + IML.Player.get_height() / 2
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(target_x) or not math.isfinite(target_y):
+            continue
         if math.hypot(target_x - center_x, target_y - center_y) > BULLET_TARGET_DISTANCE:
             continue
         target_visible = TileGene.is_point_visible_from(
@@ -3456,7 +3543,6 @@ def GameFrame(practice_mode: bool = False):
     global active_mines, healing_item_count
     global supply_drops, next_supply_drop_at, pending_heal_amount, active_rune_tile, rune_alerts
     global last_effect_tick, preserve_magazine_after_chest
-    global teleport_anchor, teleport_anchor_expires_at
     global damage_numbers, easter_egg_found, easter_egg_flash_until
     global local_kill_count, match_elapsed_ms, respawn_ms_remaining
     global hurt_flash_started_at, shield_hp
@@ -3473,6 +3559,9 @@ def GameFrame(practice_mode: bool = False):
 
     is_practice_mode = bool(practice_mode or local_match)
     practice_mode_active = is_practice_mode
+    weapon_state.set_unlimited_ammo(
+        selected_game_mode == GAME_MODE_FLAGDOWN and not is_practice_mode
+    )
     MousePos = pygame.mouse.get_pos()
     handle_game_events()
     if spectator_mode.active:
@@ -3482,6 +3571,20 @@ def GameFrame(practice_mode: bool = False):
     deathmatch = selected_game_mode == GAME_MODE_DEATHMATCH and not is_practice_mode
     flagdown = selected_game_mode == GAME_MODE_FLAGDOWN and not is_practice_mode
     respawning_mode = deathmatch or flagdown
+    if flagdown:
+        own_team = server_players.get(network.player_id, {}).get("team_id")
+        enemy_base_bounds = flagdown_base_bounds(
+            None if own_team is None else 1 - own_team,
+            TileGene.tile_size,
+            TileGene.map_width,
+        )
+        my_player.protected_base_rects = (
+            (pygame.Rect(*enemy_base_bounds),)
+            if enemy_base_bounds is not None
+            else ()
+        )
+    else:
+        my_player.protected_base_rects = ()
     if is_practice_mode and my_player.Hp <= 0 and practice_respawn_at:
         respawn_ms_remaining = max(0, practice_respawn_at - now)
         if now >= practice_respawn_at:
@@ -3511,18 +3614,6 @@ def GameFrame(practice_mode: bool = False):
         number for number in damage_numbers
         if now - number["started_at"] < number["lifetime"]
     ]
-    if teleport_anchor is not None and now >= teleport_anchor_expires_at:
-        teleport_anchor = None
-        teleport_anchor_expires_at = 0
-        if teleport_placements_remaining <= 0:
-            _finish_teleport_cycle(now)
-            system_message = (
-                f"텔포석상이 사라졌습니다. {TELEPORT_COOLDOWN_MS / 1000:g}초 후 다시 사용할 수 있습니다."
-            )
-        else:
-            system_message = (
-                f"텔포석상이 사라졌습니다. 남은 설치 횟수: {teleport_placements_remaining}"
-            )
     if my_player.Hp > 0 and mouse_fire_hold and weapon_state.config.automatic and weapon_state.can_fire():
         fire_bullet()
 
@@ -4256,6 +4347,11 @@ def GameFrame(practice_mode: bool = False):
                 )
                 match_elapsed_ms = int(own_snapshot.get("match_elapsed_ms", match_elapsed_ms))
                 respawn_ms_remaining = int(own_snapshot.get("respawn_ms_remaining", 0))
+                if own_snapshot.get("position_rejected"):
+                    my_player.X = own_snapshot.get("posX", my_player.X)
+                    my_player.Y = own_snapshot.get("posY", my_player.Y)
+                    my_player.rect.topleft = (round(my_player.X), round(my_player.Y))
+                    my_player._update_hitboxes()
                 was_dead = my_player.Hp <= 0
                 my_player.Hp = own_snapshot.get("hp", my_player.Hp)
                 shield_hp = int(own_snapshot.get("shield_hp", shield_hp))
@@ -4385,6 +4481,19 @@ def GameFrame(practice_mode: bool = False):
     if current_vision_shape == VISION_RECTANGLE:
         current_vision_radius = max(current_vision_radius, 900)
         current_vision_width = max(current_vision_width, 420)
+    own_team = frame_server_players.get(network.player_id, {}).get("team_id")
+    friendly_base_bounds = (
+        flagdown_base_bounds(
+            own_team, TileGene.tile_size, TileGene.map_width
+        )
+        if flagdown
+        else None
+    )
+    friendly_base_rect = (
+        pygame.Rect(*friendly_base_bounds)
+        if friendly_base_bounds is not None
+        else None
+    )
     # 같은 프레임에서 같은 대상은 한 번만 벽 가림을 계산합니다.
     visibility_cache = {}
 
@@ -4422,8 +4531,15 @@ def GameFrame(practice_mode: bool = False):
                 )
                 for ward_x, ward_y in wards
             )
+            visible_from_flagdown_base = (
+                friendly_base_rect is not None
+                and friendly_base_rect.collidepoint(point_x, point_y)
+            )
             visibility_cache[point] = (
-                visible_from_player or visible_from_base_vision or visible_from_ward
+                visible_from_player
+                or visible_from_base_vision
+                or visible_from_ward
+                or visible_from_flagdown_base
             )
         return visibility_cache[point]
 
@@ -4455,13 +4571,13 @@ def GameFrame(practice_mode: bool = False):
         )
         if charging:
             continue
-        lance_frames = IML.GetManaLanceFrames()
-        if lance_frames:
+        ion_frames = IML.GetIonCannonFrames() or IML.GetManaLanceFrames()
+        if ion_frames:
             beam_angle = math.degrees(
                 math.atan2(end[1] - start[1], end[0] - start[0])
             )
-            frame_index = ((now - beam["started_at"]) // 50) % len(lance_frames)
-            lance_frame = lance_frames[frame_index]
+            frame_index = ((now - beam["fires_at"]) // 50) % len(ion_frames)
+            ion_frame = ion_frames[frame_index]
             emitter_frames = IML.GetLaserGunEffectFrames()
             if emitter_frames:
                 emitter = emitter_frames[frame_index % len(emitter_frames)]
@@ -4479,15 +4595,15 @@ def GameFrame(practice_mode: bool = False):
                         center=tuple(map(round, start))
                     ),
                 )
-            lance_size = (
-                max(1, round(lance_frame.get_width() * 1.8 * camera_zoom)),
-                max(1, round(lance_frame.get_height() * 1.8 * camera_zoom)),
+            ion_size = (
+                max(1, round(ion_frame.get_width() * 1.8 * camera_zoom)),
+                max(1, round(ion_frame.get_height() * 1.8 * camera_zoom)),
             )
-            scaled_lance = _scale_cached(lance_frame, lance_size)
-            rotated_lance = pygame.transform.rotate(scaled_lance, -beam_angle)
+            scaled_ion = _scale_cached(ion_frame, ion_size)
+            rotated_ion = pygame.transform.rotate(scaled_ion, -beam_angle)
             display.blit(
-                rotated_lance,
-                rotated_lance.get_rect(
+                rotated_ion,
+                rotated_ion.get_rect(
                     center=(
                         round((start[0] + end[0]) / 2),
                         round((start[1] + end[1]) / 2),
@@ -4523,7 +4639,7 @@ def GameFrame(practice_mode: bool = False):
             and bullet.weapon_id == "Revolver_golden"
             and not getattr(bullet, "aim_released", True)
         ):
-            target_id = bullet.aim_target_id
+            target_id = getattr(bullet, "aim_target_id", None)
             if target_id == "training_dummy":
                 target = (
                     training_dummy
@@ -4534,18 +4650,25 @@ def GameFrame(practice_mode: bool = False):
                 target_y = target.rect.centery if target else None
             else:
                 target = frame_server_players.get(target_id)
-                target_x = (
-                    target["posX"] + IML.Player.get_width() / 2
-                    if target is not None and not is_hidden_player(target)
-                    else None
-                )
-                target_y = (
-                    target["posY"] + IML.Player.get_height() / 2
-                    if target is not None and not is_hidden_player(target)
-                    else None
-                )
+                if target is None or is_hidden_player(target):
+                    target_x = target_y = None
+                else:
+                    try:
+                        target_x = (
+                            float(target["posX"]) + IML.Player.get_width() / 2
+                        )
+                        target_y = (
+                            float(target["posY"]) + IML.Player.get_height() / 2
+                        )
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        target_x = target_y = None
 
-            if target_x is None or target_y is None:
+            if (
+                target_x is None
+                or target_y is None
+                or not math.isfinite(target_x)
+                or not math.isfinite(target_y)
+            ):
                 bullet.is_active = False
                 continue
 
@@ -4556,7 +4679,7 @@ def GameFrame(practice_mode: bool = False):
                     lock["x"] = target_x
                     lock["y"] = target_y
 
-            if now < bullet.aim_until:
+            if now < getattr(bullet, "aim_until", now):
                 continue
 
             speed = math.hypot(bullet.speed_x, bullet.speed_y)
@@ -4567,7 +4690,7 @@ def GameFrame(practice_mode: bool = False):
                 target_y,
                 speed=speed,
             )
-            bullet.life_time = config.bullet_lifetime
+            bullet.life_time = WEAPONS[bullet.weapon_id].bullet_lifetime
             bullet.aim_released = True
             bullet.just_fired = True
             continue
@@ -5119,8 +5242,14 @@ def GameFrame(practice_mode: bool = False):
             if p_info.get("stun_ms_remaining", 0) > 0
             else (0, 0)
         )
+        team_color = (
+            FLAGDOWN_TEAM_COLORS.get(p_info.get("team_id"))
+            if flagdown else None
+        )
         is_mine_placer = str(p_id) in mine_owner_ids
-        other_image = IML.Player.copy() if is_mine_placer else IML.Player
+        other_image = tint_player_image(IML.Player, team_color)
+        if is_mine_placer and other_image is IML.Player:
+            other_image = other_image.copy()
         if camera_zoom != 1.0:
             other_image = pygame.transform.scale(
                 other_image,
@@ -5139,10 +5268,6 @@ def GameFrame(practice_mode: bool = False):
         other_center_x, other_center_y = get_player_screen_center(other_render_x, other_render_y, IML.Player.get_width(), IML.Player.get_height(), CameraPosX, CameraPosY, camera_zoom)
         other_center_x += stun_offset_x
         other_center_y += stun_offset_y
-        team_color = (
-            FLAGDOWN_TEAM_COLORS.get(p_info.get("team_id"))
-            if flagdown else None
-        )
         server_weapon_id = p_info.get("weapon_id", DEFAULT_WEAPON_ID)
         if server_weapon_id in MELEE_WEAPON_IDS:
             melee_frames = (
@@ -5217,6 +5342,10 @@ def GameFrame(practice_mode: bool = False):
             training_dummy, CameraPosX, CameraPosY, camera_zoom, now
         )
 
+    own_team = server_players.get(network.player_id, {}).get("team_id")
+    local_team_color = (
+        FLAGDOWN_TEAM_COLORS.get(own_team) if flagdown else None
+    )
     # 내 캐릭터 및 무기 그리기
     local_stun_offset_x, local_stun_offset_y = (
         _stun_shake_offset(now)
@@ -5224,7 +5353,9 @@ def GameFrame(practice_mode: bool = False):
         else (0, 0)
     )
     if my_player.Hp > 0 and (now < stealth_until or in_bush):
-        stealth_image = my_player.get_display_image().copy()
+        stealth_image = tint_player_image(
+            my_player.get_display_image(), local_team_color
+        ).copy()
         stealth_image.set_alpha(75 if now < stealth_until else 145)
         display.blit(
             stealth_image,
@@ -5240,6 +5371,7 @@ def GameFrame(practice_mode: bool = False):
             local_stun_offset_x,
             local_stun_offset_y,
             alpha=145 if local_is_mine_placer else 255,
+            color_tint=local_team_color,
         )
         active_melee_weapon_id = (
             melee_attack_weapon_id
@@ -5278,10 +5410,6 @@ def GameFrame(practice_mode: bool = False):
                 Shotgun_rect.move(local_stun_offset_x, local_stun_offset_y),
             )
 
-    own_team = server_players.get(network.player_id, {}).get("team_id")
-    local_team_color = (
-        FLAGDOWN_TEAM_COLORS.get(own_team) if flagdown else None
-    )
     base_overlay = base_vision_overlay
     base_overlay.fill((0, 0, 0, 0))
     base_vision_polygon = _cached_visibility_polygon(
@@ -5366,6 +5494,15 @@ def GameFrame(practice_mode: bool = False):
             CameraPosY,
             camera_zoom,
         )
+    base_screen_rect = None
+    if friendly_base_rect is not None:
+        base_screen_rect = pygame.Rect(
+            round((friendly_base_rect.x - CameraPosX) * camera_zoom),
+            round((friendly_base_rect.y - CameraPosY) * camera_zoom),
+            max(1, round(friendly_base_rect.width * camera_zoom)),
+            max(1, round(friendly_base_rect.height * camera_zoom)),
+        )
+        pygame.draw.rect(dark_overlay, (0, 0, 0, 0), base_screen_rect)
 
     display.blit(dark_overlay, (0, 0))
     base_overlay.fill((0, 0, 0, 0))
@@ -5387,6 +5524,19 @@ def GameFrame(practice_mode: bool = False):
             CameraPosY,
             camera_zoom,
             highlight_color,
+        )
+    if base_screen_rect is not None:
+        base_color = FLAGDOWN_TEAM_COLORS.get(own_team, (135, 205, 255))
+        pygame.draw.rect(
+            base_overlay,
+            (*base_color, 34),
+            base_screen_rect,
+        )
+        pygame.draw.rect(
+            base_overlay,
+            (*base_color, 165),
+            base_screen_rect,
+            max(1, round(2 * camera_zoom)),
         )
     display.blit(base_overlay, (0, 0))
     if flagdown:
@@ -5493,7 +5643,9 @@ def GameFrame(practice_mode: bool = False):
 
     # 시야 오버레이 위에 로컬 플레이어를 다시 그려 기본 시야에서도 항상 보이게 합니다.
     if my_player.Hp > 0 and (now < stealth_until or in_bush):
-        visible_player_image = my_player.get_display_image().copy()
+        visible_player_image = tint_player_image(
+            my_player.get_display_image(), local_team_color
+        ).copy()
         visible_player_image.set_alpha(75 if now < stealth_until else 145)
         if camera_zoom != 1.0:
             visible_player_image = pygame.transform.scale(
@@ -5519,6 +5671,7 @@ def GameFrame(practice_mode: bool = False):
             local_stun_offset_x,
             local_stun_offset_y,
             alpha=145 if local_is_mine_placer else 255,
+            color_tint=local_team_color,
         )
 
     if my_player.Hp > 0 and weapon_state.weapon_id not in MELEE_WEAPON_IDS:
@@ -5897,16 +6050,6 @@ def GameFrame(practice_mode: bool = False):
     if easter_egg_found and now < easter_egg_flash_until:
         egg_text = GuiFont.render("THE SECRET IS WATCHING", True, (120, 230, 255))
         display.blit(egg_text, egg_text.get_rect(center=(ScreenX // 2, 120)))
-
-    if teleport_anchor is not None:
-        draw_teleport_anchor(
-            display,
-            *teleport_anchor,
-            CameraPosX,
-            CameraPosY,
-            camera_zoom,
-            IML.TpStatue,
-        )
 
     for ward_x, ward_y in wards:
         draw_skill_range(

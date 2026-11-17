@@ -3,6 +3,7 @@ import unittest
 from CombatMechanics import (
     apply_shield_activation,
     is_suicide_hit,
+    resolve_hit_weapon_id,
     spirit_linked_body_damage,
 )
 
@@ -37,6 +38,26 @@ class ShieldActivationTests(unittest.TestCase):
         damage, remainder = spirit_linked_body_damage(25, remainder)
         self.assertEqual(damage, 8)
         self.assertEqual(remainder, 0)
+
+    def test_verified_bullet_controls_kill_weapon_attribution(self):
+        weapon_configs = {"rifle": object(), "knife": object()}
+
+        self.assertEqual(
+            resolve_hit_weapon_id(
+                "rifle", "knife", "pistol", weapon_configs, "pistol"
+            ),
+            "knife",
+        )
+
+    def test_unverified_hit_uses_reported_weapon_before_equipped_weapon(self):
+        weapon_configs = {"rifle": object(), "knife": object()}
+
+        self.assertEqual(
+            resolve_hit_weapon_id(
+                "knife", None, "rifle", weapon_configs, "pistol"
+            ),
+            "knife",
+        )
 
 
 if __name__ == "__main__":

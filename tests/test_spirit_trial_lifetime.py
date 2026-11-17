@@ -12,6 +12,14 @@ class SpiritTrialLifetimeTests(unittest.TestCase):
             (45, 55),
         )
 
+    def test_remote_render_position_snaps_after_large_displacement(self):
+        positions = {"p1": (10, 20)}
+
+        self.assertEqual(
+            smooth_player_position(positions, "p1", 500, 600),
+            (500, 600),
+        )
+
     def test_clone_is_visible_before_fade_period(self):
         self.assertGreater(linked_clone_opacity(4999, 0), 0)
 

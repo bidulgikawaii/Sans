@@ -1,8 +1,36 @@
 """Flagdown timed skill reward scheduling."""
 
+import math
 import random
 
 from Config import FLAGDOWN_SKILL_REWARD_INTERVAL_MS
+
+
+def trailing_flagdown_team(progress):
+    """Return the lower-progress team, or None for a tie or invalid snapshot."""
+    if not isinstance(progress, dict):
+        return None
+    try:
+        blue_progress = float(progress.get(0, progress.get("0", 0)))
+        red_progress = float(progress.get(1, progress.get("1", 0)))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(blue_progress) or not math.isfinite(red_progress):
+        return None
+    if blue_progress == red_progress:
+        return None
+    return 0 if blue_progress < red_progress else 1
+
+
+def flagdown_supply_x_bounds(progress, map_width, margin=2):
+    """Prefer the trailing team's half of the map for unique supply drops."""
+    team_id = trailing_flagdown_team(progress)
+    if team_id is None:
+        return None
+    center_tile = map_width // 2
+    if team_id == 1:
+        return margin, center_tile - margin
+    return center_tile + margin, map_width - margin - 1
 
 
 def acknowledge_flagdown_skill_rewards(player_state, acknowledged_event_id):

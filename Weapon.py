@@ -47,7 +47,7 @@ WEAPONS = {
         "라이플", damage=20, magazine_size=24, reserve_ammo=200, fire_interval=0.16,
         automatic=True,
         reload_time=2.1, bullet_size=4, bullet_speed=23.0, recoil=1.6,
-        bullet_lifetime=1.5, vision_radius=WEAPON_VISION_RADIUS, vision_fov=75, vision_width=180,
+        bullet_lifetime=1.3, vision_radius=WEAPON_VISION_RADIUS, vision_fov=75, vision_width=180,
     ),
     "shotgun": WeaponConfig(
         "샷건", damage=7.0, magazine_size=5, reserve_ammo=45,
@@ -56,9 +56,9 @@ WEAPONS = {
         vision_radius=WEAPON_VISION_RADIUS, vision_fov=120, vision_width=300,
     ),
     "sniper": WeaponConfig(
-    "저격총", damage=70, magazine_size=10, reserve_ammo=45, fire_interval=1.0,
-        reload_time=3.1, bullet_size=3, bullet_speed=40.0, recoil=8.0,
-        bullet_lifetime=1.8, vision_shape="cone", vision_radius=WEAPON_VISION_RADIUS, vision_fov=180.0, vision_width=420.0,
+    "저격총", damage=100, magazine_size=10, reserve_ammo=45, fire_interval=1.0,
+        reload_time=3.1, bullet_size=3, bullet_speed=80.0, recoil=8.0,
+        bullet_lifetime=float("inf"), vision_shape="cone", vision_radius=WEAPON_VISION_RADIUS, vision_fov=180.0, vision_width=420.0,
     ),
     "smg": WeaponConfig(
         "기관단총", damage=3, magazine_size=45, reserve_ammo=250, fire_interval=0.08,
@@ -76,7 +76,7 @@ WEAPONS = {
 # 노란 특수상자에서 지급할 무기를 여기에 추가하면 일반 무기 목록에도 등록됩니다.
 SPECIAL_CRATE_WEAPONS = {
     "bat": WeaponConfig(
-        "배트", damage=20, magazine_size=0, reserve_ammo=0,
+        "배트", damage=990, magazine_size=0, reserve_ammo=0,
         fire_interval=0.5, reload_time=0.0, projectile=False, recoil=0.0,
         bullet_lifetime=0.2, vision_radius=WEAPON_VISION_RADIUS,
         vision_fov=180, vision_width=420,
@@ -152,6 +152,7 @@ class WeaponState:
         self.weapon_id = weapon_id
         self.magazine_ammo = WEAPONS[weapon_id].magazine_size
         self.reserve_ammo = WEAPONS[weapon_id].reserve_ammo
+        self.unlimited_ammo = False
         self._ammo_by_weapon = {
             weapon_id: (self.magazine_ammo, self.reserve_ammo),
         }
@@ -189,6 +190,7 @@ class WeaponState:
         if weapon_id in WEAPONS:
             self.weapon_id = weapon_id
         config = self.config
+        self.unlimited_ammo = False
         self.magazine_ammo = config.magazine_size
         self.reserve_ammo = config.reserve_ammo
         self._ammo_by_weapon = {
@@ -198,6 +200,13 @@ class WeaponState:
         self.reloading = False
         self.reload_started_at = 0.0
         self.reload_finished_at = 0.0
+
+    def set_unlimited_ammo(self, enabled):
+        self.unlimited_ammo = bool(enabled)
+        if self.unlimited_ammo:
+            self.reloading = False
+            self.reload_started_at = 0.0
+            self.reload_finished_at = 0.0
 
     def reset_weapon_ammo(self, weapon_id):
         if weapon_id not in WEAPONS:
@@ -252,12 +261,16 @@ class WeaponState:
         now = time.monotonic()
         return (
             not self.reloading
-            and (not self.config.projectile or self.magazine_ammo > 0)
+            and (
+                not self.config.projectile
+                or self.unlimited_ammo
+                or self.magazine_ammo > 0
+            )
             and now - self.last_fired_at >= self.config.fire_interval
         )
 
     def consume_round(self):
-        if self.config.projectile:
+        if self.config.projectile and not self.unlimited_ammo:
             self.magazine_ammo -= 1
         self.last_fired_at = time.monotonic()
 
@@ -265,7 +278,7 @@ class WeaponState:
         return self.reloading
 
     def start_reload(self):
-        if self.reloading:
+        if self.reloading or self.unlimited_ammo:
             return False
         if self.config.magazine_size <= 0:
             return False

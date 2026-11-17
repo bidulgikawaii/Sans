@@ -117,7 +117,7 @@ def draw_golden_revolver_sunset(surface, overlay, started_at, now_ms):
         (sun_x, sun_y),
         round(sun_radius * 1.65),
     )
-    ray_count = 36
+    ray_count = 48
     for ray in range(ray_count):
         angle = math.tau * ray / ray_count + rotation
         ray_width = 0.035 if ray % 3 else 0.055
@@ -141,6 +141,47 @@ def draw_golden_revolver_sunset(surface, overlay, started_at, now_ms):
             overlay,
             (255, 204, 104, round(alpha * (0.18 if ray % 2 else 0.28))),
             points,
+        )
+
+    for ring_index in range(3):
+        ring_radius = round(sun_radius * (1.45 + ring_index * 0.2))
+        ring_rect = pygame.Rect(
+            sun_x - ring_radius,
+            sun_y - ring_radius,
+            ring_radius * 2,
+            ring_radius * 2,
+        )
+        ring_start = rotation * (1 + ring_index * 0.35) + ring_index * 1.8
+        pygame.draw.arc(
+            overlay,
+            (255, 224, 145, round(alpha * (0.62 - ring_index * 0.12))),
+            ring_rect,
+            ring_start,
+            ring_start + math.pi * (1.35 + ring_index * 0.2),
+            max(1, sun_radius // 24),
+        )
+
+    for sparkle in range(12):
+        angle = math.tau * sparkle / 12 - rotation * 1.8
+        sparkle_radius = sun_radius * (
+            1.62 + 0.12 * math.sin(elapsed_ms * 0.012 + sparkle)
+        )
+        sparkle_x = round(sun_x + math.cos(angle) * sparkle_radius)
+        sparkle_y = round(sun_y + math.sin(angle) * sparkle_radius)
+        sparkle_size = max(3, round(sun_radius * 0.09))
+        pygame.draw.line(
+            overlay,
+            (255, 244, 205, round(alpha * 0.85)),
+            (sparkle_x - sparkle_size, sparkle_y),
+            (sparkle_x + sparkle_size, sparkle_y),
+            max(1, sparkle_size // 3),
+        )
+        pygame.draw.line(
+            overlay,
+            (255, 244, 205, round(alpha * 0.85)),
+            (sparkle_x, sparkle_y - sparkle_size),
+            (sparkle_x, sparkle_y + sparkle_size),
+            max(1, sparkle_size // 3),
         )
 
     pygame.draw.circle(

@@ -1,8 +1,10 @@
 import unittest
 
 from Config import (
-    BLACK_HOLE_DAMAGE,
     BLACK_HOLE_RADIUS,
+    BLACK_HOLE_DAMAGE,
+    BOMB_DAMAGE,
+    BOMB_DELAY_MS,
     PLASMA_CHARGE_DURATION_MS,
     PLASMA_BEAM_DURATION_MS,
     PLASMA_BEAM_WIDTH,
@@ -32,12 +34,13 @@ class SpecialWeaponFeatureTests(unittest.TestCase):
         self.assertLess(weapon.fire_interval, 0.45)
 
     def test_projectile_lifetimes_are_reduced_and_bounded(self):
-        self.assertLess(WEAPONS["sniper"].bullet_lifetime, 3.8)
+        self.assertEqual(WEAPONS["sniper"].bullet_lifetime, float("inf"))
+        self.assertGreater(WEAPONS["sniper"].bullet_speed, 40)
         self.assertLessEqual(
             max(
                 weapon.bullet_lifetime
                 for weapon in WEAPONS.values()
-                if weapon.projectile
+                if weapon.projectile and weapon.name != "저격총"
             ),
             1.8,
         )
@@ -60,8 +63,12 @@ class SpecialWeaponFeatureTests(unittest.TestCase):
         self.assertGreater(PLASMA_RANGE, 950)
 
     def test_black_hole_radius_is_larger_than_original_radius(self):
-        self.assertGreater(BLACK_HOLE_RADIUS, 32 * 6)
+        self.assertEqual(BLACK_HOLE_RADIUS, 32 * 16)
         self.assertGreater(BLACK_HOLE_DAMAGE, 35)
+
+    def test_bomb_explodes_faster_and_deals_more_damage(self):
+        self.assertLessEqual(BOMB_DELAY_MS, 300)
+        self.assertGreater(BOMB_DAMAGE, 30)
 
 
 if __name__ == "__main__":

@@ -2738,7 +2738,7 @@ def fire_knife():
         system_message = f"{config.name} 휘둘렀습니다. (데미지: {config.damage})"
         if destroyed_furniture_count:
             system_message += f" 가구 {destroyed_furniture_count}개 파괴"
-    if attack_weapon_id != "bat" or player_hit_count > 0 or dummy_hit:
+    if attack_weapon_id != "bat" or attacked_count > 0 or dummy_hit:
         consume_third_weapon(attack_weapon_id)
 
 
@@ -2759,6 +2759,13 @@ def consume_third_weapon(weapon_id):
     attack_until = knife_attack_until
     attack_weapon_id = melee_attack_weapon_id
     third_weapon_id = None
+    # A one-use gun such as the golden revolver can trigger a virtual
+    # Flagdown reload lock on its final shot. Consuming the crate weapon must
+    # still let us switch back to the primary weapon immediately.
+    if weapon_state.unlimited_ammo and weapon_state.is_reloading_now():
+        weapon_state.reloading = False
+        weapon_state.reload_started_at = 0.0
+        weapon_state.reload_finished_at = 0.0
     select_weapon(main_weapon_id)
     system_message = attack_message
     screen_shake = attack_shake

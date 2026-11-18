@@ -47,6 +47,7 @@ from Config import (
     SPIRIT_TRIAL_CLONE_HP,
     SPIRIT_TRIAL_CLONE_LIFETIME_MS,
     SHIELD_HP,
+    STUN_BULLET_SPEED,
     SUICIDE_RESPAWN_PENALTY_MS,
 )
 from CombatMechanics import (
@@ -1256,6 +1257,29 @@ def handle_client(conn, player_id):
                     continue
                 if is_friendly_fire(mode, attacker_id, target_id, lobby):
                     continue
+                if mode == GAME_MODE_FLAGDOWN:
+                    attacker = players.get(attacker_id)
+                    attacker_team = lobby.team_for(attacker_id)
+                    target_team = lobby.team_for(target_id)
+                    attacker_in_safe_base = (
+                        attacker is not None
+                        and intersects_flagdown_base(
+                            attacker_team,
+                            attacker.get("posX", 0),
+                            attacker.get("posY", 0),
+                            72,
+                            72,
+                        )
+                    )
+                    target_in_safe_base = intersects_flagdown_base(
+                        target_team,
+                        target.get("posX", 0),
+                        target.get("posY", 0),
+                        72,
+                        72,
+                    )
+                    if attacker_in_safe_base or target_in_safe_base:
+                        continue
                 if attacker_id != player_id and not authorized_mine:
                     try:
                         source_bullet_event_id = int(
@@ -1403,6 +1427,16 @@ def handle_client(conn, player_id):
                         bullet_event["weapon_id"] = players[player_id].get(
                             "weapon_id", DEFAULT_WEAPON_ID
                         )
+                    if bullet_event.get("stun_ms", 0):
+                        try:
+                            bullet_event["speed"] = min(
+                                STUN_BULLET_SPEED,
+                                max(1.0, float(bullet_event.get("speed", STUN_BULLET_SPEED))),
+                            )
+                        except (TypeError, ValueError, OverflowError):
+                            bullet_event["speed"] = STUN_BULLET_SPEED
+                    else:
+                        bullet_event.pop("speed", None)
                     events["verified_bullet_events"][bullet_event["event_id"]] = {
                         "owner_id": player_id,
                         "weapon_id": bullet_event["weapon_id"],

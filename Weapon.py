@@ -56,9 +56,9 @@ WEAPONS = {
         vision_radius=WEAPON_VISION_RADIUS, vision_fov=120, vision_width=300,
     ),
     "sniper": WeaponConfig(
-    "저격총", damage=100, magazine_size=10, reserve_ammo=45, fire_interval=1.0,
+    "저격총", damage=70, magazine_size=10, reserve_ammo=45, fire_interval=1.0,
         reload_time=3.1, bullet_size=3, bullet_speed=80.0, recoil=8.0,
-        bullet_lifetime=0.35, vision_shape="cone", vision_radius=WEAPON_VISION_RADIUS, vision_fov=180.0, vision_width=420.0,
+        bullet_lifetime=2.0, vision_shape="cone", vision_radius=WEAPON_VISION_RADIUS, vision_fov=180.0, vision_width=420.0,
     ),
     "smg": WeaponConfig(
         "기관단총", damage=3, magazine_size=45, reserve_ammo=250, fire_interval=0.08,
@@ -107,7 +107,7 @@ SPECIAL_CRATE_WEAPONS = {
 WEAPONS.update(SPECIAL_CRATE_WEAPONS)
 WEAPONS["spirit_trial"] = WeaponConfig(
     "영혼탄환", damage=25, magazine_size=0, reserve_ammo=0,
-    fire_interval=0.0, bullet_size=5, bullet_speed=20.0,
+    fire_interval=0.0, bullet_size=10, bullet_speed=20.0,
     projectile=True, recoil=0.0, bullet_lifetime=1.5,
     vision_radius=WEAPON_VISION_RADIUS, vision_fov=180, vision_width=420,
 )
@@ -160,6 +160,7 @@ class WeaponState:
         self.reloading = False
         self.reload_started_at = 0.0
         self.reload_finished_at = 0.0
+        self._unlimited_rounds_fired = {}
 
     @property
     def config(self):
@@ -169,9 +170,6 @@ class WeaponState:
         if weapon_id not in WEAPONS:
             return False
         if weapon_id == self.weapon_id:
-            self.reloading = False
-            self.reload_started_at = 0.0
-            self.reload_finished_at = 0.0
             return True
         self._ammo_by_weapon[self.weapon_id] = (self.magazine_ammo, self.reserve_ammo)
         self.weapon_id = weapon_id
@@ -184,6 +182,7 @@ class WeaponState:
         self.reloading = False
         self.reload_started_at = 0.0
         self.reload_finished_at = 0.0
+        self._unlimited_rounds_fired.clear()
         return True
 
     def reset(self, weapon_id=None):
@@ -200,10 +199,15 @@ class WeaponState:
         self.reloading = False
         self.reload_started_at = 0.0
         self.reload_finished_at = 0.0
+        self._unlimited_rounds_fired.clear()
 
     def set_unlimited_ammo(self, enabled):
-        self.unlimited_ammo = bool(enabled)
-        if self.unlimited_ammo:
+        enabled = bool(enabled)
+        if enabled == self.unlimited_ammo:
+            return
+        self.unlimited_ammo = enabled
+        self._unlimited_rounds_fired.clear()
+        if not enabled:
             self.reloading = False
             self.reload_started_at = 0.0
             self.reload_finished_at = 0.0
@@ -270,16 +274,46 @@ class WeaponState:
         )
 
     def consume_round(self):
-        if self.config.projectile and not self.unlimited_ammo:
-            self.magazine_ammo -= 1
+        if self.config.projectile:
+            if self.unlimited_ammo:
+                magazine_size = self.config.magazine_size
+                if magazine_size > 0:
+                    rounds_fired = self._unlimited_rounds_fired.get(
+                        self.weapon_id, 0
+                    ) + 1
+                    if rounds_fired >= magazine_size:
+                        self._unlimited_rounds_fired[self.weapon_id] = 0
+                        now = time.monotonic()
+                        self.reloading = True
+                        self.reload_started_at = now
+                        self.reload_finished_at = now + max(
+                            0.1, self.config.reload_time
+                        )
+                    else:
+                        self._unlimited_rounds_fired[self.weapon_id] = rounds_fired
+            else:
+                self.magazine_ammo -= 1
         self.last_fired_at = time.monotonic()
 
     def is_reloading_now(self):
         return self.reloading
 
     def start_reload(self):
-        if self.reloading or self.unlimited_ammo:
+        if self.reloading:
             return False
+        if self.unlimited_ammo:
+            if (
+                not self.config.projectile
+                or self.config.magazine_size <= 0
+                or self.config.reload_time <= 0
+            ):
+                return False
+            now = time.monotonic()
+            self._unlimited_rounds_fired[self.weapon_id] = 0
+            self.reloading = True
+            self.reload_started_at = now
+            self.reload_finished_at = now + self.config.reload_time
+            return True
         if self.config.magazine_size <= 0:
             return False
         if self.magazine_ammo >= self.config.magazine_size:
@@ -298,6 +332,13 @@ class WeaponState:
             return False
         if time.monotonic() < self.reload_finished_at:
             return False
+
+        if self.unlimited_ammo:
+            self.reloading = False
+            self.reload_started_at = 0.0
+            self.reload_finished_at = 0.0
+            self._unlimited_rounds_fired[self.weapon_id] = 0
+            return True
 
         missing = self.config.magazine_size - self.magazine_ammo
         loaded = min(missing, self.reserve_ammo)

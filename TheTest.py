@@ -80,6 +80,7 @@ from FlagdownRewards import flagdown_supply_x_bounds
 from GoldenRevolverEffects import (
     AIM_APPROACH_DISTANCE,
     AIM_DURATION_MS,
+    GOLDEN_BULLET_FIRE_INTERVAL_MS,
     GOLDEN_SEQUENCE_DURATION_MS,
     GOLDEN_SUNSET_DURATION_MS,
     GOLDEN_TINT_FADE_MS,
@@ -87,7 +88,6 @@ from GoldenRevolverEffects import (
     draw_golden_revolver_sunset,
     golden_camera_focus,
     golden_bullet_path_intersects_rect,
-    golden_bullet_release_delay,
     golden_revolver_tint_alpha,
     golden_target_timing,
 )
@@ -863,7 +863,7 @@ def apply_supply_reward(reward_type):
     elif reward_type == "skill":
         available_skills = [
             name for name in SKILL_BOOK
-            if name not in owned_skills and name != "플레어건"
+            if name not in owned_skills and name not in ("플레어건", "텔포")
         ]
         if selected_game_mode == GAME_MODE_DEATHMATCH and available_skills:
             skill_name = random.choice(available_skills)
@@ -965,6 +965,7 @@ def collect_treasure(tile_position, from_bullet=False):
     available = [
         name for name in SKILL_BOOK
         if name not in owned_skills
+        and name != "텔포"
         and not (
             name == "플레어건"
             and (
@@ -1963,7 +1964,7 @@ def activate_quick_slot(key, reinstall=False):
         )
         angle = math.atan2(target_y - center_y, target_x - center_x)
         spirit_bullet = Bullet(
-            6,
+            12,
             damage=WEAPONS["spirit_trial"].damage,
             owner_id=network.player_id,
             weapon_id="spirit_trial",
@@ -2013,6 +2014,8 @@ def activate_quick_slot(key, reinstall=False):
         cooldown = (
             STEALTH_COOLDOWN_MS
             if skill_name == "은신"
+            else SKILL_COOLDOWN_MS + 10000
+            if skill_name == "매의 눈"
             else SHIELD_COOLDOWN_MS
             if skill_name == "보호막"
             else SUICIDE_COOLDOWN_MS
@@ -2240,6 +2243,13 @@ def activate_quick_slot(key, reinstall=False):
         target_x, target_y = get_mouse_world_position(CameraPosX, CameraPosY)
         old_x = my_player.X + my_player.rect.width / 2
         old_y = my_player.Y + my_player.rect.height / 2
+        delta_x = target_x - old_x
+        delta_y = target_y - old_y
+        target_distance = math.hypot(delta_x, delta_y)
+        if target_distance > TELEPORT_MAX_DISTANCE:
+            scale = TELEPORT_MAX_DISTANCE / target_distance
+            target_x = old_x + delta_x * scale
+            target_y = old_y + delta_y * scale
         landing = TileGene.find_teleport_landing(
             target_x,
             target_y,
@@ -2248,6 +2258,10 @@ def activate_quick_slot(key, reinstall=False):
             my_player.rect.width,
             my_player.rect.height,
         )
+        if landing is not None and math.hypot(
+            landing[0] - old_x, landing[1] - old_y
+        ) > TELEPORT_MAX_DISTANCE:
+            landing = None
         if landing is None:
             system_message = "벽이나 맵 밖을 피해 착지할 위치가 없습니다."
             return
@@ -2291,6 +2305,13 @@ def activate_quick_slot(key, reinstall=False):
 def select_weapon(weapon_id):
     global system_message, vision_shape_override, main_weapon_id
     global weapon_fire_until, weapon_smoke_until, knife_attack_until, screen_shake
+    if (
+        weapon_state.unlimited_ammo
+        and weapon_state.is_reloading_now()
+        and weapon_id != weapon_state.weapon_id
+    ):
+        system_message = "재장전 중에는 무기를 변경할 수 없습니다."
+        return
     if ScreenState not in ("GameView", "PracticeView"):
         main_weapon_id = weapon_id
     elif not debug_mode and weapon_id not in (main_weapon_id, "knife", third_weapon_id):
@@ -2330,6 +2351,22 @@ def activate_skill_or_reload(key):
     slot = next((slot for slot in quick_slots if slot.key_name == slot_name), None)
     if slot and slot.assigned_skill:
         activate_quick_slot(key)
+    elif key == pygame.K_f:
+        teleport_slot = next(
+            (slot for slot in quick_slots if slot.assigned_skill == "텔포"),
+            None,
+        )
+        if teleport_slot is not None:
+            teleport_key = get_key(f"slot_{teleport_slot.key_name.lower()}")
+            activate_quick_slot(teleport_key)
+        else:
+            teleport_slot = quick_slots[0]
+            previous_skill = teleport_slot.assigned_skill
+            teleport_slot.assigned_skill = "텔포"
+            try:
+                activate_quick_slot(get_key("slot_q"))
+            finally:
+                teleport_slot.assigned_skill = previous_skill
     else:
         reload_weapon()
 
@@ -2887,9 +2924,15 @@ def fire_golden_revolver():
             target[0] - center_x, target[1] - center_y
         )
     )
+    targets = targets[:6]
     now = pygame.time.get_ticks()
     golden_sunset_started_at = now
-    aim_until = now + AIM_DURATION_MS
+    aim_interval_ms = max(1, AIM_DURATION_MS // max(1, len(targets)))
+    aim_sequence_duration = (
+        len(targets) * aim_interval_ms
+        + max(0, len(targets) - 1) * GOLDEN_BULLET_FIRE_INTERVAL_MS
+    )
+    aim_until = now + aim_sequence_duration
     golden_revolver_effect_started_at = now if targets else 0
     golden_revolver_until = (
         aim_until + GOLDEN_TINT_FADE_MS if targets else 0
@@ -2900,7 +2943,7 @@ def fire_golden_revolver():
         )
         target_aim_started_at = now + aim_delay_ms
         target_aim_until = target_aim_started_at + target_aim_ms
-        bullet_release_delay = golden_bullet_release_delay(target_index)
+        bullet_release_delay = aim_delay_ms + target_aim_ms
         angle = math.atan2(target_y - center_y, target_x - center_x)
         distance = math.hypot(target_x - center_x, target_y - center_y)
         start_distance = max(0, distance - AIM_APPROACH_DISTANCE)
@@ -2938,7 +2981,7 @@ def fire_golden_revolver():
             "target_id": target_id,
             "started_at": target_aim_started_at,
             "duration_ms": target_aim_ms,
-            "until": target_aim_until,
+            "until": target_aim_until + GOLDEN_BULLET_FIRE_INTERVAL_MS,
         })
 
     weapon_state.consume_round()
@@ -3155,7 +3198,7 @@ def fire_stun_bullet():
         center_x, center_y,
         center_x + math.cos(angle) * BULLET_TARGET_DISTANCE,
         center_y + math.sin(angle) * BULLET_TARGET_DISTANCE,
-        speed=weapon_state.config.bullet_speed,
+        speed=STUN_BULLET_SPEED,
         hold_ms=BULLET_MOVE_HOLD_MS if my_player.is_moving else 0,
     )
     bullet.just_fired = True
@@ -3925,6 +3968,7 @@ def GameFrame(practice_mode: bool = False):
             "weapon_id": bullet.weapon_id,
             "damage": bullet.damage,
             "stun_ms": bullet.stun_ms,
+            "speed": STUN_BULLET_SPEED if bullet.stun_ms else weapon_state.config.bullet_speed,
             "hold_ms": bullet.launch_hold_ms,
             "client_bullet_token": getattr(
                 bullet, "client_bullet_token", None
@@ -4430,7 +4474,7 @@ def GameFrame(practice_mode: bool = False):
         else (player_center_x, player_center_y)
     )
     target_camera_x, target_camera_y = get_camera_target(camera_target_x, camera_target_y, ScreenX, ScreenY, camera_zoom)
-    camera_lerp = max(lerp, 0.14) if camera_focus is not None else lerp
+    camera_lerp = max(lerp, 0.32) if camera_focus is not None else lerp
     CameraPosX += (target_camera_x - CameraPosX) * camera_lerp
     CameraPosY += (target_camera_y - CameraPosY) * camera_lerp
     AimCameraPosX, AimCameraPosY = CameraPosX, CameraPosY
@@ -4539,7 +4583,7 @@ def GameFrame(practice_mode: bool = False):
             )
             visible_from_flagdown_base = (
                 friendly_base_rect is not None
-                and friendly_base_rect.collidepoint(point_x, point_y)
+                and friendly_base_rect.collidepoint(player_world_x, player_world_y)
             )
             visibility_cache[point] = (
                 visible_from_player
@@ -4565,25 +4609,38 @@ def GameFrame(practice_mode: bool = False):
         start = world_to_screen(beam["x1"], beam["y1"], CameraPosX, CameraPosY, camera_zoom)
         end = world_to_screen(beam["x2"], beam["y2"], CameraPosX, CameraPosY, camera_zoom)
         charging = now < beam["fires_at"]
-        pygame.draw.line(
-            display,
-            (55, 125, 185) if charging else (45, 165, 255),
-            tuple(map(round, start)),
-            tuple(map(round, end)),
-            max(
-                2 if charging else 8,
-                round((4 if charging else PLASMA_BEAM_WIDTH) * camera_zoom),
-            ),
+        ion_frames = IML.GetIonCannonFrames() or IML.GetManaLanceFrames()
+        beam_angle = math.degrees(
+            math.atan2(end[1] - start[1], end[0] - start[0])
         )
         if charging:
+            if ion_frames:
+                charge_duration = max(1, beam["fires_at"] - beam["started_at"])
+                progress = min(0.999, max(0.0, (now - beam["started_at"]) / charge_duration))
+                frame_index = min(len(ion_frames) - 1, int(progress * len(ion_frames)))
+                ion_frame = ion_frames[frame_index]
+                ion_size = (
+                    max(1, round(ion_frame.get_width() * 1.8 * camera_zoom)),
+                    max(1, round(ion_frame.get_height() * 1.8 * camera_zoom)),
+                )
+                scaled_ion = _scale_cached(ion_frame, ion_size)
+                rotated_ion = pygame.transform.rotate(scaled_ion, -beam_angle)
+                source_offset = scaled_ion.get_width() * 0.3
+                ion_center = (
+                    round(start[0] + math.cos(math.radians(beam_angle)) * source_offset),
+                    round(start[1] + math.sin(math.radians(beam_angle)) * source_offset),
+                )
+                display.blit(rotated_ion, rotated_ion.get_rect(center=ion_center))
             continue
-        ion_frames = IML.GetIonCannonFrames() or IML.GetManaLanceFrames()
+        pygame.draw.line(
+            display,
+            (45, 165, 255),
+            tuple(map(round, start)),
+            tuple(map(round, end)),
+            max(8, round(PLASMA_BEAM_WIDTH * camera_zoom)),
+        )
         if ion_frames:
-            beam_angle = math.degrees(
-                math.atan2(end[1] - start[1], end[0] - start[0])
-            )
             frame_index = ((now - beam["fires_at"]) // 50) % len(ion_frames)
-            ion_frame = ion_frames[frame_index]
             emitter_frames = IML.GetLaserGunEffectFrames()
             if emitter_frames:
                 emitter = emitter_frames[frame_index % len(emitter_frames)]
@@ -4601,22 +4658,6 @@ def GameFrame(practice_mode: bool = False):
                         center=tuple(map(round, start))
                     ),
                 )
-            ion_size = (
-                max(1, round(ion_frame.get_width() * 1.8 * camera_zoom)),
-                max(1, round(ion_frame.get_height() * 1.8 * camera_zoom)),
-            )
-            scaled_ion = _scale_cached(ion_frame, ion_size)
-            rotated_ion = pygame.transform.rotate(scaled_ion, -beam_angle)
-            # The ion sprite's bright muzzle sits 30% of its width left of center.
-            source_offset = scaled_ion.get_width() * 0.3
-            ion_center = (
-                round(start[0] + math.cos(math.radians(beam_angle)) * source_offset),
-                round(start[1] + math.sin(math.radians(beam_angle)) * source_offset),
-            )
-            display.blit(
-                rotated_ion,
-                rotated_ion.get_rect(center=ion_center),
-            )
 
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
     if vision_skill_until > now:
@@ -5041,7 +5082,7 @@ def GameFrame(practice_mode: bool = False):
                 bullet_info["x"], bullet_info["y"],
                 bullet_info["x"] + math.cos(angle) * BULLET_TARGET_DISTANCE,
                 bullet_info["y"] + math.sin(angle) * BULLET_TARGET_DISTANCE,
-                speed=config.bullet_speed,
+                speed=bullet_info.get("speed", config.bullet_speed),
                 hold_ms=bullet_info.get("hold_ms", 45),
             )
             enemy_bullet.life_time = config.bullet_lifetime
@@ -5395,7 +5436,7 @@ def GameFrame(practice_mode: bool = False):
             other_name.get_rect(
                 midbottom=(
                     other_player_rect.centerx,
-                    other_player_rect.top - max(4, round(6 * camera_zoom)),
+                    other_player_rect.top,
                 )
             ),
         )
@@ -5764,12 +5805,18 @@ def GameFrame(practice_mode: bool = False):
         )
     if my_player.Hp > 0:
         local_name = GuiFont.render(player_name or "플레이어", True, (255, 230, 160))
+        local_player_screen_rect = pygame.Rect(
+            round((my_player.rect.x - CameraPosX) * camera_zoom + local_stun_offset_x),
+            round((my_player.rect.y - CameraPosY) * camera_zoom + local_stun_offset_y),
+            max(1, round(my_player.rect.width * camera_zoom)),
+            max(1, round(my_player.rect.height * camera_zoom)),
+        )
         display.blit(
             local_name,
             local_name.get_rect(
                 midbottom=(
-                    round(player_center_screen_x + local_stun_offset_x),
-                    round(player_screen_y + local_stun_offset_y - 6),
+                    local_player_screen_rect.centerx,
+                    local_player_screen_rect.top,
                 )
             ),
         )
@@ -5825,7 +5872,7 @@ def GameFrame(practice_mode: bool = False):
     if golden_revolver_until > now:
         tint_alpha = golden_revolver_tint_alpha(
             golden_revolver_effect_started_at,
-            golden_revolver_effect_started_at + AIM_DURATION_MS,
+            golden_revolver_until - GOLDEN_TINT_FADE_MS,
             now,
         )
         if tint_alpha:

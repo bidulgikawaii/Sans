@@ -263,9 +263,9 @@ def refresh_skill_inventory():
     item_height = SKILL_ICON_SIZE + SKILL_ICON_GAP_Y
 
     visible_skills = (
-        [name for name in SKILL_BOOK if name in owned_skills]
+        [name for name in SKILL_BOOK if name in owned_skills and name != "텔포"]
         if settings["owned_skills_only"]
-        else list(SKILL_BOOK)
+        else [name for name in SKILL_BOOK if name != "텔포"]
     )
     for index, skill_name in enumerate(visible_skills):
         row, column = divmod(index, INVENTORY_ITEM_COLUMNS)

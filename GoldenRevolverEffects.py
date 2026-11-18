@@ -32,7 +32,8 @@ def golden_target_timing(target_index, target_count):
     target_count = max(1, target_count)
     target_index = min(target_count - 1, max(0, target_index))
     interval_ms = max(1, AIM_DURATION_MS // target_count)
-    return target_index * interval_ms, interval_ms
+    sequence_step_ms = interval_ms + GOLDEN_BULLET_FIRE_INTERVAL_MS
+    return target_index * sequence_step_ms, interval_ms
 
 
 def golden_bullet_release_delay(target_index):

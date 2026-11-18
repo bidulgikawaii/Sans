@@ -258,7 +258,7 @@ class Imageload:
         visible_bounds = [
             item[1] for item in bounds if item[1].width and item[1].height
         ]
-        print(f"애니메이션프레임 {len(visible_bounds)}개")
+        #print(f"애니메이션프레임 {len(visible_bounds)}개")
         if not visible_bounds:
             frames = []
             for item in bounds:

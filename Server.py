@@ -46,6 +46,7 @@ from Config import (
     RUNE_ALERT_DURATION_MS,
     SPIRIT_TRIAL_CLONE_HP,
     SPIRIT_TRIAL_CLONE_LIFETIME_MS,
+    SPIRIT_TRIAL_DAMAGE_RATIO,
     SHIELD_HP,
     STUN_BULLET_SPEED,
     SUICIDE_RESPAWN_PENALTY_MS,
@@ -1040,6 +1041,26 @@ def handle_client(conn, player_id):
                     target = players.get(target_id)
                     if target is None or target["hp"] <= 0:
                         continue
+                    if mode == GAME_MODE_FLAGDOWN:
+                        attacker = players.get(attacker_id)
+                        if (
+                            attacker is None
+                            or intersects_flagdown_base(
+                                lobby.team_for(attacker_id),
+                                attacker.get("posX", 0),
+                                attacker.get("posY", 0),
+                                72,
+                                72,
+                            )
+                            or intersects_flagdown_base(
+                                lobby.team_for(target_id),
+                                target.get("posX", 0),
+                                target.get("posY", 0),
+                                72,
+                                72,
+                            )
+                        ):
+                            continue
                     try:
                         clone_x = float(hit_event["impact_x"])
                         clone_y = float(hit_event["impact_y"])
@@ -1076,7 +1097,6 @@ def handle_client(conn, player_id):
                         "created_at": now_monotonic,
                     })
                     events["next_clone_id"] += 1
-                    continue
 
                 if hit_event.get("target_kind") == "clone":
                     try:
@@ -1311,7 +1331,15 @@ def handle_client(conn, player_id):
                     WEAPONS,
                     DEFAULT_WEAPON_ID,
                 )
-                if (
+                if hit_weapon_id == "spirit_trial":
+                    damage = max(
+                        1,
+                        math.ceil(
+                            max(0, target.get("hp", 0))
+                            * SPIRIT_TRIAL_DAMAGE_RATIO
+                        ),
+                    )
+                elif (
                     hit_event.get("hit_part") == "head"
                     and hit_weapon_id != "Revolver_golden"
                 ):

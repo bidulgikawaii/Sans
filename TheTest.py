@@ -238,7 +238,16 @@ def _draw_melee_weapon(surface, image, center, angle, zoom):
     scaled_image = _scale_cached(image, display_size)
     flipped_image = pygame.transform.flip(scaled_image, True, False)
     rotated_image = pygame.transform.rotate(flipped_image, -angle)
-    surface.blit(rotated_image, rotated_image.get_rect(center=tuple(map(round, center))))
+    angle_radians = math.radians(angle)
+    inset = 14 * zoom
+    anchored_center = (
+        center[0] - math.cos(angle_radians) * inset,
+        center[1] - math.sin(angle_radians) * inset,
+    )
+    surface.blit(
+        rotated_image,
+        rotated_image.get_rect(center=tuple(map(round, anchored_center))),
+    )
 
 
 def get_aim_mouse_position(camera_x=None, camera_y=None):
@@ -2073,6 +2082,13 @@ def activate_quick_slot(key, reinstall=False):
         particles.ring(target_x, target_y, (255, 220, 80), radius=35, lifetime=450)
         system_message = "폭탄을 설치했습니다."
     elif skill_name == "지뢰":
+        mine_count = sum(
+            str(mine.get("owner_id")) == str(network.player_id)
+            for mine in active_mines
+        ) + len(pending_mine_placements)
+        if mine_count >= MINE_MAX_COUNT:
+            system_message = f"지뢰 설치 한도에 도달했습니다. ({MINE_MAX_COUNT}/{MINE_MAX_COUNT})"
+            return
         target_x, target_y = get_mouse_world_position(CameraPosX, CameraPosY)
         mine_rect = pygame.Rect(0, 0, 16, 16)
         mine_rect.center = (round(target_x), round(target_y))
@@ -2080,12 +2096,6 @@ def activate_quick_slot(key, reinstall=False):
             skill_cooldowns.pop(skill_name, None)
             system_message = "벽 안에는 지뢰를 설치할 수 없습니다."
             return
-        if (practice_mode_active or debug_mode) and len(active_mines) >= MINE_MAX_COUNT:
-            oldest_mine = active_mines.pop(0)
-            particles.emit(
-                oldest_mine["x"], oldest_mine["y"], (150, 150, 155),
-                count=14, speed=55, lifetime=320, size=4,
-            )
         break_stealth_on_attack()
         if practice_mode_active or debug_mode:
             active_mines.append({
@@ -2109,7 +2119,10 @@ def activate_quick_slot(key, reinstall=False):
             target_x, target_y, (255, 215, 125),
             count=20, radius=30, lifetime=550, size=4,
         )
-        mine_count = len(active_mines) + len(pending_mine_placements)
+        mine_count = sum(
+            str(mine.get("owner_id")) == str(network.player_id)
+            for mine in active_mines
+        ) + len(pending_mine_placements)
         system_message = f"지뢰 설치 완료 ({mine_count}/{MINE_MAX_COUNT})"
     elif skill_name == "자폭":
         center_x, center_y = get_player_world_center(
@@ -4983,6 +4996,24 @@ def GameFrame(practice_mode: bool = False):
                             - (now - bullet.golden_sequence_started_at),
                         )
                     if bullet.weapon_id == "spirit_trial":
+                        spirit_damage = max(
+                            1,
+                            math.ceil(
+                                training_dummy.Hp
+                                * SPIRIT_TRIAL_DAMAGE_RATIO
+                            ),
+                        )
+                        training_dummy.Hp = max(
+                            0, training_dummy.Hp - spirit_damage
+                        )
+                        damage_numbers.append({
+                            "x": training_dummy.rect.centerx,
+                            "y": training_dummy.rect.top,
+                            "damage": previous_hp - training_dummy.Hp,
+                            "color": (105, 220, 255),
+                            "started_at": now,
+                            "lifetime": DAMAGE_TEXT_LIFETIME_MS,
+                        })
                         practice_clones = [
                             clone for clone in linked_clones
                             if clone.get("linked_player_id") == "training_dummy"
@@ -5036,10 +5067,7 @@ def GameFrame(practice_mode: bool = False):
                         size=5 if bullet.weapon_id == "spirit_trial" else 4,
                     )
                     _deactivate_bullet(bullet, now)
-                    if (
-                        bullet.weapon_id != "spirit_trial"
-                        and training_dummy.Hp <= 0
-                    ):
+                    if training_dummy.Hp <= 0:
                         training_dummy.respawn_at = now + TRAINING_DUMMY_RESPAWN_MS
                     break
     bullets = [b for b in bullets if b.is_active]

@@ -45,8 +45,7 @@ def register_mine_placements(
 
         owner_mines = [mine for mine in mines if mine["owner_id"] == owner_id]
         if len(owner_mines) >= max_count:
-            oldest_mine = owner_mines[0]
-            mines.remove(oldest_mine)
+            continue
 
         mine_id = events["next_mine_id"]
         events["next_mine_id"] += 1

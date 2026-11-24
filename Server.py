@@ -8,6 +8,7 @@ import time
 import uuid
 from Config import (
     DEFAULT_WEAPON_ID,
+    HEAL_ITEM_COOLDOWN_MS,
     DEATHMATCH_DURATION_MS,
     DEATHMATCH_RESPAWN_MS,
     DEATHMATCH_RESPAWN_SAFE_DISTANCE_TILES,
@@ -57,7 +58,7 @@ from CombatMechanics import (
     resolve_hit_weapon_id,
     spirit_linked_body_damage,
 )
-from Weapon import WEAPONS
+from Weapon import SPECIAL_CRATE_WEAPONS, WEAPONS
 from Lobby import LobbyState
 from Zone import MagneticZone
 from GameModes import get_game_mode, get_game_modes, is_game_mode_registered
@@ -114,6 +115,7 @@ def new_match_events():
         "next_supply_drop_id": 1,
         "supply_collection_events": [],
         "next_supply_collection_id": 1,
+        "last_special_weapon_id": None,
         "bush_leaf_events": [],
         "next_bush_leaf_event_id": 1,
         "mines": [],
@@ -310,6 +312,7 @@ def handle_client(conn, player_id):
         "name": f"유저_{player_id}",
         "weapon_id": DEFAULT_WEAPON_ID,
         "weapon_name": WEAPONS[DEFAULT_WEAPON_ID].name,
+        "third_weapon_id": None,
         "magazine_ammo": WEAPONS[DEFAULT_WEAPON_ID].magazine_size,
         "reserve_ammo": WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo,
         "stealth": False,
@@ -320,6 +323,7 @@ def handle_client(conn, player_id):
         "stealth_until": 0.0,
         "wards": [],
         "heal_token": 0,
+        "last_heal_at": 0.0,
         "shield_active": False,
         "shield_hp": 0,
         "shield_token": 0,
@@ -464,6 +468,7 @@ def handle_client(conn, player_id):
                                 "hp": PLAYER_MAX_HP,
                                 "weapon_id": DEFAULT_WEAPON_ID,
                                 "weapon_name": WEAPONS[DEFAULT_WEAPON_ID].name,
+                                "third_weapon_id": None,
                                 "magazine_ammo": WEAPONS[DEFAULT_WEAPON_ID].magazine_size,
                                 "reserve_ammo": WEAPONS[DEFAULT_WEAPON_ID].reserve_ammo,
                                 "stealth": False,
@@ -692,12 +697,22 @@ def handle_client(conn, player_id):
                             or abs(player_center_y - drop["y"]) > 36 + 18
                         ):
                             continue
-                        events["supply_collection_events"].append({
+                        collection_event = {
                             "event_id": events["next_supply_collection_id"],
                             "drop_id": drop_id,
                             "player_id": player_id,
                             "type": drop["type"],
-                        })
+                        }
+                        if drop["type"] == "special_weapon":
+                            available_weapons = [
+                                weapon_id for weapon_id in SPECIAL_CRATE_WEAPONS
+                                if weapon_id != events["last_special_weapon_id"]
+                            ] or list(SPECIAL_CRATE_WEAPONS)
+                            weapon_id = random.choice(available_weapons)
+                            events["last_special_weapon_id"] = weapon_id
+                            collection_event["weapon_id"] = weapon_id
+                            players[player_id]["third_weapon_id"] = weapon_id
+                        events["supply_collection_events"].append(collection_event)
                         events["next_supply_collection_id"] += 1
                         events["supply_drops"].pop(drop_id, None)
                 events["supply_collection_events"][:] = events["supply_collection_events"][-64:]
@@ -747,6 +762,11 @@ def handle_client(conn, player_id):
             players[player_id]["angle"] = client_data["angle"]
             weapon_id = client_data.get("weapon_id", DEFAULT_WEAPON_ID)
             if weapon_id not in WEAPONS:
+                weapon_id = DEFAULT_WEAPON_ID
+            if (
+                weapon_id in SPECIAL_CRATE_WEAPONS
+                and weapon_id != players[player_id].get("third_weapon_id")
+            ):
                 weapon_id = DEFAULT_WEAPON_ID
             players[player_id]["weapon_id"] = weapon_id
             players[player_id]["weapon_name"] = WEAPONS[weapon_id].name
@@ -820,10 +840,20 @@ def handle_client(conn, player_id):
                 players[player_id]["hp"],
                 SHIELD_HP,
             )
+            players[player_id]["last_reported_shield_token"] = max(
+                players[player_id].get("last_reported_shield_token", 0),
+                reported_shield_token,
+            )
             players[player_id]["shield_active"] = players[player_id]["shield_hp"] > 0
             heal_token = int(client_data.get("heal_token", 0))
-            if heal_token != players[player_id]["heal_token"]:
+            if (
+                heal_token > players[player_id]["heal_token"]
+                and players[player_id]["hp"] > 0
+                and time.monotonic() - players[player_id]["last_heal_at"]
+                >= HEAL_ITEM_COOLDOWN_MS / 1000
+            ):
                 players[player_id]["heal_token"] = heal_token
+                players[player_id]["last_heal_at"] = time.monotonic()
                 if players[player_id]["hp"] > 0:
                     heal_amount = max(0, int(client_data.get("heal_amount", 0)))
                     players[player_id]["hp"] = min(
@@ -1383,6 +1413,10 @@ def handle_client(conn, player_id):
                     previous_hp > 0
                     and target["hp"] <= 0
                 ):
+                    target["shield_token"] = max(
+                        target.get("shield_token", 0),
+                        int(target.get("last_reported_shield_token", 0)),
+                    ) + 1
                     if mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN):
                         target["deathmatch_respawn_at"] = (
                             now_monotonic
@@ -1441,7 +1475,10 @@ def handle_client(conn, player_id):
             with player_lock:
                 for bullet in (
                     client_data.get("bullets", [])
-                    if players[player_id]["hp"] > 0
+                    if (
+                        players[player_id]["hp"] > 0
+                        and time.monotonic() >= players[player_id].get("stunned_until", 0.0)
+                    )
                     else ()
                 ):
                     bullet_event = dict(bullet)
@@ -1483,7 +1520,8 @@ def handle_client(conn, player_id):
                     events["bullet_events"].append(bullet_event)
                 skill_events = client_data.get("spectator_skill_events", [])
                 if isinstance(skill_events, list) and (
-                    players[player_id]["hp"] > 0 or suicide_detonated
+                    (players[player_id]["hp"] > 0 or suicide_detonated)
+                    and time.monotonic() >= players[player_id].get("stunned_until", 0.0)
                 ):
                     allowed_skills = {
                         "폭탄받아라!", "자폭", "매의 눈", "와드", "영혼탄환",
@@ -1570,6 +1608,10 @@ def handle_client(conn, player_id):
                                 respawning_player["hp"] = PLAYER_MAX_HP
                                 respawning_player["shield_hp"] = 0
                                 respawning_player["shield_active"] = False
+                                respawning_player["shield_token"] = max(
+                                    respawning_player.get("shield_token", 0),
+                                    respawning_player.get("last_reported_shield_token", 0),
+                                ) + 1
                                 respawning_player["deathmatch_respawn_at"] = None
 
                 active_ids = lobby.visible_player_ids(player_id)
@@ -1807,6 +1849,7 @@ def handle_client(conn, player_id):
                 player["stun_ms_remaining"] = max(
                     0, round((player.get("stunned_until", 0.0) - time.monotonic()) * 1000)
                 )
+                player["shield_token"] = player.get("shield_token", 0)
                 player["hidden"] = player.get("hp", 0) <= 0
                 player["weather"] = lobby_state.get("weather")
             conn.sendall(pickle.dumps(snapshot))

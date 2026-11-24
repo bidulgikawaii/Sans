@@ -125,6 +125,15 @@ class Imageload:
             (112, 64),
             directory="Laser_Gun_Effect",
         )
+        self.CooldownReady = self._load_animation(
+            "cooldown-ready_",
+            directory="cooldown-ready-frames (1)",
+        )
+        self.MarkedForDeath = self._load_animation(
+            "marked-for-death_",
+            (112, 112),
+            directory="marked-for-death-frames",
+        )
         flaregun = self._load_scaled_image("flaregun.png", (96, 48))
         self.FlareGun = flaregun if flaregun is not None else self._create_flaregun_image()
         self.PlasmaGun = self._load_scaled_image("plazmaGun.png", (128, 64))
@@ -438,6 +447,12 @@ class Imageload:
 
     def GetLaserGunEffectFrames(self):
         return self.LaserGunEffect
+
+    def GetCooldownReadyFrames(self):
+        return self.CooldownReady
+
+    def GetMarkedForDeathFrames(self):
+        return self.MarkedForDeath
 
     def GetTileTest(self):
         return self.Tile

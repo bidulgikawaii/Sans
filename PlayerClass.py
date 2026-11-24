@@ -78,7 +78,7 @@ class Player:
             self.Hp = max(0,self.Hp - max(0,int(damage)))
         return hit_part
 
-    def handle_input(self, dash_requested=False):
+    def handle_input(self, dash_requested=False, allow_dash=True):
         keys = pygame.key.get_pressed()
         current_time = pygame.time.get_ticks()
 
@@ -91,7 +91,7 @@ class Player:
         if keys[get_key("move_down")]:  dy = 1
 
         # 2. 달리기/대쉬 키(G) 입력 확인 및 대쉬 시작 조건
-        dash_requested = dash_requested or keys[get_key("dash")]
+        dash_requested = dash_requested or (allow_dash and keys[get_key("dash")])
         if dash_requested and not self.is_dashing:
             # 쿨타임이 지났고, 멈춰있지 않고 움직이는 중일 때만 대쉬 발동
             if current_time - self.last_dash_time >= self.dash_cooldown and (dx != 0 or dy != 0):

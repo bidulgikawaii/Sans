@@ -13,6 +13,7 @@ from Tool_Cordinate import *
 from SkillAndSlot import *
 from Weapon import (
     MELEE_WEAPON_IDS,
+    SPECIAL_CRATE_WEAPONS,
     SpecialWeaponCrate,
     WeaponState,
     WEAPONS,
@@ -79,16 +80,11 @@ from FlagdownBases import (
 from FlagdownRewards import flagdown_supply_x_bounds
 from GoldenRevolverEffects import (
     AIM_APPROACH_DISTANCE,
-    AIM_DURATION_MS,
     GOLDEN_BULLET_FIRE_INTERVAL_MS,
     GOLDEN_SEQUENCE_DURATION_MS,
     GOLDEN_SUNSET_DURATION_MS,
-    GOLDEN_TINT_FADE_MS,
-    aim_lock_position,
-    draw_golden_revolver_sunset,
     golden_camera_focus,
     golden_bullet_path_intersects_rect,
-    golden_revolver_tint_alpha,
     golden_target_timing,
 )
 from WorldEffects import RainWeather, register_weather, world_effects
@@ -345,6 +341,8 @@ set_spirit_trial_animations(
 )
 set_black_hole_bullet_frames(IML.GetBlackHoleBulletFrames())
 set_golden_revolver_bullet_frames(IML.GetGoldenRevolverBulletFrames())
+golden_screen_effect_frames = IML.GetCooldownReadyFrames()
+marked_for_death_frames = IML.GetMarkedForDeathFrames()
 blade_animation = FrameAnimation(
     IML.GetBladeFrames(),
     max(1, MELEE_ATTACK_DURATION_MS // max(1, len(IML.GetBladeFrames()))),
@@ -549,8 +547,6 @@ active_plasma_beams = []
 active_aim_locks = []
 remote_player_render_positions = {}
 practice_respawn_at = 0
-golden_revolver_until = 0
-golden_revolver_effect_started_at = 0
 golden_sunset_started_at = 0
 active_mines = []
 pending_mine_placements = []
@@ -615,7 +611,6 @@ SUPPLY_COLORS = {
 }
 # 픽셀 위치와 정확한 방향이 바뀌면 시야 폴리곤을 다시 계산합니다.
 visibility_polygon_cache = {}
-golden_time_overlay = pygame.Surface((ScreenX, ScreenY), pygame.SRCALPHA)
 mouse_fire_hold = False
 aim_lock_until = 0
 aim_locked_pos = None
@@ -835,7 +830,7 @@ def launch_flare_supplies(center_x, center_y, now):
     return True
 
 
-def apply_supply_reward(reward_type):
+def apply_supply_reward(reward_type, server_weapon_id=None):
     """보급품 종류에 따라 회복, 탄약 또는 특수 무기를 지급합니다."""
     # 보급품은 서버에 아이템 자체를 동기화하지 않고,
     # 획득한 클라이언트의 플레이어 상태에만 효과를 적용합니다.
@@ -884,7 +879,11 @@ def apply_supply_reward(reward_type):
             message = "보급 가능한 스킬이 없어 회복 아이템을 획득했습니다."
             color = (100, 255, 130)
     elif reward_type == "special_weapon":
-        weapon_id = special_weapon_crate.open()
+        weapon_id = (
+            server_weapon_id
+            if server_weapon_id in SPECIAL_CRATE_WEAPONS
+            else special_weapon_crate.open()
+        )
         if weapon_id is None:
             raise RuntimeError("특수상자 무기 목록이 비어 있습니다.")
         third_weapon_id = weapon_id
@@ -926,6 +925,12 @@ def apply_flagdown_skill_reward(reward):
 
 def use_healing_item():
     global healing_item_count, heal_token, pending_heal_amount, system_message
+    global last_healing_item_used_at
+    now = pygame.time.get_ticks()
+    cooldown_remaining = HEAL_ITEM_COOLDOWN_MS - (now - last_healing_item_used_at)
+    if cooldown_remaining > 0:
+        system_message = f"회복 아이템 대기 중: {cooldown_remaining / 1000:.1f}초"
+        return
     if my_player.Hp <= 0:
         system_message = "부활할 때까지 회복 아이템을 사용할 수 없습니다."
         return
@@ -938,6 +943,7 @@ def use_healing_item():
         return
     heal_amount = min(SUPPLY_HEAL_AMOUNT, missing_health)
     healing_item_count -= 1
+    last_healing_item_used_at = now
     heal_token += 1
     pending_heal_amount += heal_amount
     system_message = f"회복 아이템 사용: 체력 {heal_amount} 회복"
@@ -1025,6 +1031,7 @@ vision_shape_index = 0
 inventory_open = False
 healing_inventory_open = False
 healing_item_count = 0
+last_healing_item_used_at = -HEAL_ITEM_COOLDOWN_MS
 weapon_state = WeaponState()
 vision_shape_override = None
 
@@ -1040,12 +1047,12 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global camera_fov, camera_zoom
     global Weapon_Angle, vision_angle, Weapon_Pos, screen_shake, knife_attack_until
     global melee_attack_weapon_id
-    global hurt_flash_started_at, shield_hp
+    global hurt_flash_started_at, shield_hp, shield_token
     global bush_entered_at, next_bush_leaf_at
     global weapon_fire_until, weapon_smoke_until, aim_lock_until, aim_locked_pos
     global game_start_banner_until
     global vision_shape_override, vision_shape_index, inventory_open, healing_inventory_open
-    global healing_item_count, mouse_fire_hold
+    global healing_item_count, mouse_fire_hold, last_healing_item_used_at
     global last_processed_flagdown_reward_id
     global settings_overlay_open, settings_key_waiting, settings_dragging
     global match_completed, active_world_weather
@@ -1056,7 +1063,6 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     global next_local_supply_id
     global practice_weapon_selection
     global practice_respawn_at
-    global golden_revolver_until, golden_revolver_effect_started_at
     global golden_sunset_started_at
     global _mine_render_surface
     global flaregun_used, flagdown_reward_notice, flagdown_reward_notice_until
@@ -1116,6 +1122,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     refresh_skill_inventory()
     heal_token = pending_heal_amount = 0
     healing_item_count = 0
+    last_healing_item_used_at = -HEAL_ITEM_COOLDOWN_MS
     vision_skill_until = haste_until = stealth_until = 0
     shield_hp = shield_token = 0
     stealth_token = 0
@@ -1169,8 +1176,6 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     weapon_smoke_until = 0
     aim_lock_until = 0
     aim_locked_pos = None
-    golden_revolver_until = 0
-    golden_revolver_effect_started_at = 0
     golden_sunset_started_at = 0
     easter_egg_found = False
     easter_egg_flash_until = 0
@@ -1936,6 +1941,9 @@ def activate_quick_slot(key, reinstall=False):
 
     skill_name = slot.assigned_skill
     now = pygame.time.get_ticks()
+    if now < local_stun_until:
+        system_message = "기절 중에는 스킬을 사용할 수 없습니다."
+        return
     if skill_name == "지뢰":
         skill_cooldowns.pop(skill_name, None)
     if skill_name == "플레어건":
@@ -2878,7 +2886,6 @@ def _ray_endpoint(start_x, start_y, angle, max_distance):
 
 def fire_golden_revolver():
     global weapon_fire_until, weapon_smoke_until, system_message
-    global golden_revolver_until, golden_revolver_effect_started_at
     global golden_sunset_started_at
     config = weapon_state.config
     if not weapon_state.can_fire():
@@ -2947,16 +2954,6 @@ def fire_golden_revolver():
     targets = targets[:6]
     now = pygame.time.get_ticks()
     golden_sunset_started_at = now
-    aim_interval_ms = max(1, AIM_DURATION_MS // max(1, len(targets)))
-    aim_sequence_duration = (
-        len(targets) * aim_interval_ms
-        + max(0, len(targets) - 1) * GOLDEN_BULLET_FIRE_INTERVAL_MS
-    )
-    aim_until = now + aim_sequence_duration
-    golden_revolver_effect_started_at = now if targets else 0
-    golden_revolver_until = (
-        aim_until + GOLDEN_TINT_FADE_MS if targets else 0
-    )
     for target_index, (target_x, target_y, target_id) in enumerate(targets):
         aim_delay_ms, target_aim_ms = golden_target_timing(
             target_index, len(targets)
@@ -3253,6 +3250,9 @@ def fire_bullet():
     global system_message
     global weapon_fire_until, weapon_smoke_until
     if my_player.Hp <= 0:
+        return
+    if pygame.time.get_ticks() < local_stun_until:
+        system_message = "기절 중에는 총을 사용할 수 없습니다."
         return
     config = weapon_state.config
 
@@ -3625,7 +3625,9 @@ def GameFrame(practice_mode: bool = False):
     global active_world_weather, match_completed
     global last_processed_flagdown_reward_id
     global practice_respawn_at
+    global shield_token
 
+    
     is_practice_mode = bool(practice_mode or local_match)
     practice_mode_active = is_practice_mode
     weapon_state.set_unlimited_ammo(
@@ -3720,7 +3722,10 @@ def GameFrame(practice_mode: bool = False):
             weapon_state.weapon_id in MELEE_WEAPON_IDS
             and pygame.mouse.get_pressed(3)[2]
         )
-        my_player.handle_input(dash_requested)
+        my_player.handle_input(
+            dash_requested,
+            allow_dash=weapon_state.weapon_id in MELEE_WEAPON_IDS,
+        )
     elif self_destruct_arming:
         my_player.is_dashing = False
         my_player.is_moving = False
@@ -4388,7 +4393,8 @@ def GameFrame(practice_mode: bool = False):
                     processed_supply_collection_ids.add(event_id)
                     if str(collection_event.get("player_id")) == str(network.player_id):
                         system_message = apply_supply_reward(
-                            collection_event.get("type")
+                            collection_event.get("type"),
+                            collection_event.get("weapon_id"),
                         )
             for tile_x, tile_y in synchronized_treasures:
                 TileGene.destroy_treasure(tile_x, tile_y)
@@ -4425,6 +4431,7 @@ def GameFrame(practice_mode: bool = False):
                 was_dead = my_player.Hp <= 0
                 my_player.Hp = own_snapshot.get("hp", my_player.Hp)
                 shield_hp = int(own_snapshot.get("shield_hp", shield_hp))
+                shield_token = int(own_snapshot.get("shield_token", shield_token))
                 if respawning_mode and was_dead and my_player.Hp > 0:
                     my_player.X = own_snapshot.get("posX", my_player.X)
                     my_player.Y = own_snapshot.get("posY", my_player.Y)
@@ -4667,8 +4674,8 @@ def GameFrame(practice_mode: bool = False):
                 emitter_image = _scale_cached(
                     emitter,
                     (
-                        max(1, round(emitter.get_width() * camera_zoom)),
-                        max(1, round(emitter.get_height() * camera_zoom)),
+                        max(1, round(emitter.get_width() * 4 * camera_zoom)),
+                        max(1, round(emitter.get_height() * 4 * camera_zoom)),
                     ),
                 )
                 emitter_image = pygame.transform.rotate(emitter_image, -beam_angle)
@@ -4889,11 +4896,17 @@ def GameFrame(practice_mode: bool = False):
                         body,
                     )
                 )
+                golden_target_lock = (
+                    bullet.weapon_id == "Revolver_golden"
+                    and str(getattr(bullet, "aim_target_id", "")) == str(p_id)
+                    and bullet.aim_released
+                )
                 if (
                     head.colliderect(bullet_rect)
                     or golden_bullet_hits_head
                     or body.colliderect(bullet_rect)
                     or golden_bullet_hits_body
+                    or golden_target_lock
                 ):
                     hit_part = (
                         "head"
@@ -5904,83 +5917,46 @@ def GameFrame(practice_mode: bool = False):
         BULLET_TARGET_DISTANCE,
     )
 
-    if golden_revolver_until > now:
-        tint_alpha = golden_revolver_tint_alpha(
-            golden_revolver_effect_started_at,
-            golden_revolver_until - GOLDEN_TINT_FADE_MS,
-            now,
-        )
-        if tint_alpha:
-            golden_time_overlay.fill((255, 145, 75, tint_alpha))
-            display.blit(golden_time_overlay, (0, 0))
+    golden_effect_elapsed = now - golden_sunset_started_at
     if (
-        golden_sunset_started_at
-        and now - golden_sunset_started_at < GOLDEN_SUNSET_DURATION_MS
+        golden_sunset_started_at > 0
+        and golden_screen_effect_frames
+        and 0 <= golden_effect_elapsed < GOLDEN_SUNSET_DURATION_MS
     ):
-        draw_golden_revolver_sunset(
-            display, golden_time_overlay, golden_sunset_started_at, now
+        frame_index = min(
+            len(golden_screen_effect_frames) - 1,
+            golden_effect_elapsed * len(golden_screen_effect_frames)
+            // GOLDEN_SUNSET_DURATION_MS,
         )
+        frame = golden_screen_effect_frames[frame_index]
+        fullscreen_frame = _scale_cached(frame, (ScreenX, ScreenY))
+        display.blit(fullscreen_frame, (0, 0))
 
     for aim_lock in active_aim_locks:
-        lock_x, lock_y = aim_lock_position(aim_lock, now)
+        if now < aim_lock["started_at"]:
+            continue
+        lock_x, lock_y = aim_lock["x"], aim_lock["y"]
         lock_screen = world_to_screen(
-            lock_x, lock_y, CameraPosX, CameraPosY, camera_zoom
+            lock_x,
+            lock_y - IML.Player.get_height() * 0.72,
+            CameraPosX,
+            CameraPosY,
+            camera_zoom,
         )
-        player_screen = world_to_screen(
-            player_world_x, player_world_y, CameraPosX, CameraPosY, camera_zoom
-        )
-        pulse = 1.0 + 0.15 * math.sin(now * 0.035)
-        pygame.draw.line(
-            display,
-            (255, 205, 70),
-            tuple(map(round, player_screen)),
-            tuple(map(round, lock_screen)),
-            max(1, round(2 * camera_zoom)),
-        )
-        pygame.draw.circle(
-            display,
-            (255, 230, 115),
-            tuple(map(round, lock_screen)),
-            max(8, round(22 * camera_zoom * pulse)),
-            max(1, round(3 * camera_zoom)),
-        )
-        pygame.draw.line(
-            display,
-            (255, 245, 200),
-            (round(lock_screen[0] - 12 * camera_zoom), round(lock_screen[1])),
-            (round(lock_screen[0] + 12 * camera_zoom), round(lock_screen[1])),
-            max(1, round(2 * camera_zoom)),
-        )
-        pygame.draw.line(
-            display,
-            (255, 245, 200),
-            (round(lock_screen[0]), round(lock_screen[1] - 12 * camera_zoom)),
-            (round(lock_screen[0]), round(lock_screen[1] + 12 * camera_zoom)),
-            max(1, round(2 * camera_zoom)),
-        )
-        crackle = 1.0 + 0.2 * math.sin(now * 0.045)
-        radius = max(10, round(24 * camera_zoom * crackle))
-        pygame.draw.circle(
-            display,
-            (255, 235, 155),
-            tuple(map(round, lock_screen)),
-            radius,
-            max(1, round(3 * camera_zoom)),
-        )
-        for direction in (-1, 1):
-            pygame.draw.line(
-                display,
-                (255, 250, 220),
-                (
-                    round(lock_screen[0] - radius * 1.5),
-                    round(lock_screen[1] + direction * radius),
-                ),
-                (
-                    round(lock_screen[0] + radius * 1.5),
-                    round(lock_screen[1] - direction * radius),
-                ),
-                max(1, round(2 * camera_zoom)),
+        elapsed = max(0, now - aim_lock["started_at"])
+        frame_index = min(
+            len(marked_for_death_frames) - 1,
+            elapsed * len(marked_for_death_frames)
+            // max(1, aim_lock["duration_ms"]),
+        ) if marked_for_death_frames else None
+        if frame_index is not None:
+            frame = marked_for_death_frames[frame_index]
+            mark_size = (
+                max(1, round(frame.get_width() * camera_zoom)),
+                max(1, round(frame.get_height() * camera_zoom)),
             )
+            mark = _scale_cached(frame, mark_size)
+            display.blit(mark, mark.get_rect(center=tuple(map(round, lock_screen))))
 
     # 시야 밖에 있어도 총알은 항상 보이도록 최종 레이어에서 다시 그립니다.
     for bullet in bullets:

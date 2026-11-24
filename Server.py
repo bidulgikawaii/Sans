@@ -48,6 +48,7 @@ from Config import (
     SPIRIT_TRIAL_CLONE_HP,
     SPIRIT_TRIAL_CLONE_LIFETIME_MS,
     SPIRIT_TRIAL_DAMAGE_RATIO,
+    SCYTHE_MARK_DURATION_MS,
     SHIELD_HP,
     STUN_BULLET_SPEED,
     SUICIDE_RESPAWN_PENALTY_MS,
@@ -110,6 +111,7 @@ def new_match_events():
         "next_kill_event_id": 1,
         "kill_scores": {},
         "damage_events": [],
+        "scythe_marks": {},
         "next_damage_event_id": 1,
         "supply_drops": {},
         "next_supply_drop_id": 1,
@@ -770,6 +772,14 @@ def handle_client(conn, player_id):
                 weapon_id = DEFAULT_WEAPON_ID
             players[player_id]["weapon_id"] = weapon_id
             players[player_id]["weapon_name"] = WEAPONS[weapon_id].name
+            try:
+                attack_remaining = max(
+                    0,
+                    min(300, int(client_data.get("melee_attack_remaining_ms", 0))),
+                )
+            except (TypeError, ValueError):
+                attack_remaining = 0
+            players[player_id]["melee_attack_ms_remaining"] = attack_remaining
             players[player_id]["magazine_ammo"] = max(
                 0, client_data.get("magazine_ammo", players[player_id]["magazine_ammo"])
             )
@@ -1361,6 +1371,25 @@ def handle_client(conn, player_id):
                     WEAPONS,
                     DEFAULT_WEAPON_ID,
                 )
+                if hit_weapon_id == "scythe" and (
+                    players.get(attacker_id, {}).get("weapon_id") != "scythe"
+                    or players.get(attacker_id, {}).get("third_weapon_id") != "scythe"
+                ):
+                    continue
+                scythe_explosion = False
+                existing_mark = events["scythe_marks"].get(target_id)
+                if existing_mark and existing_mark["expires_at"] <= now_monotonic:
+                    events["scythe_marks"].pop(target_id, None)
+                    existing_mark = None
+                if existing_mark:
+                    damage += 55
+                    events["scythe_marks"].pop(target_id, None)
+                    scythe_explosion = True
+                elif hit_weapon_id == "scythe":
+                    events["scythe_marks"][target_id] = {
+                        "owner_id": attacker_id,
+                        "expires_at": now_monotonic + SCYTHE_MARK_DURATION_MS / 1000,
+                    }
                 if hit_weapon_id == "spirit_trial":
                     damage = max(
                         1,
@@ -1407,6 +1436,7 @@ def handle_client(conn, player_id):
                     "hit_part": hit_event.get("hit_part", "body"),
                     "stun_ms": stun_ms,
                     "weapon_id": hit_weapon_id,
+                    "scythe_explosion": scythe_explosion,
                 })
                 events["next_damage_event_id"] += 1
                 if (
@@ -1830,6 +1860,14 @@ def handle_client(conn, player_id):
                 player["zone_elapsed_ms"] = lobby_state.get("elapsed_ms", 0)
                 player["kill_events"] = list(events["kill_events"][-12:])
                 player["damage_events"] = list(events["damage_events"][-32:])
+                scythe_mark = events["scythe_marks"].get(snapshot_player_id)
+                if scythe_mark and scythe_mark["expires_at"] <= now_monotonic:
+                    events["scythe_marks"].pop(snapshot_player_id, None)
+                    scythe_mark = None
+                player["scythe_mark_ms_remaining"] = (
+                    max(0, round((scythe_mark["expires_at"] - now_monotonic) * 1000))
+                    if scythe_mark else 0
+                )
                 player["supply_drops"] = [
                     {
                         **drop,

@@ -260,7 +260,7 @@ def _draw_golden_fullscreen_effect(surface, now, started_at):
             visible_frame = frame.subsurface(visible_bounds).copy()
             golden_screen_effect_cache["surface"] = pygame.transform.smoothscale(
                 visible_frame,
-                (1920, 1080),
+                (1766, 994),
             )
         else:
             golden_screen_effect_cache["surface"] = None
@@ -268,7 +268,7 @@ def _draw_golden_fullscreen_effect(surface, now, started_at):
 
     fullscreen_frame = golden_screen_effect_cache["surface"]
     if fullscreen_frame is not None:
-        surface.blit(fullscreen_frame, (0, 0))
+        surface.blit(fullscreen_frame, ((surface.get_width() - fullscreen_frame.get_width()) // 2, (surface.get_height() - fullscreen_frame.get_height()) // 2))
 
 
 def get_aim_mouse_position(camera_x=None, camera_y=None):
@@ -475,6 +475,7 @@ my_player.image = IML.Player
 print(f"🎮 플레이어가 ({spawn_tile_x}, {spawn_tile_y}) 타일에 스폰되었습니다.")
 
 training_dummy = None
+training_dummy_marked_until = 0
 damage_numbers = []
 easter_egg_found = False
 easter_egg_flash_until = 0
@@ -2611,7 +2612,7 @@ def cycle_vision_shape():
     system_message = f"시야 모양: {shape_name}" 
 
 
-def _queue_melee_hit_events(center_x, center_y, attack_range, damage, weapon_id):
+def _queue_melee_hit_events(center_x, center_y, attack_range, damage, weapon_id, angle=None):
     """Queue authoritative hit events for nearby players and linked clones."""
     player_hit_count = 0
     clone_hit_count = 0
@@ -2629,7 +2630,14 @@ def _queue_melee_hit_events(center_x, center_y, attack_range, damage, weapon_id)
             continue
         enemy_center_x = player_info["posX"] + player_width / 2
         enemy_center_y = player_info["posY"] + player_height / 2
-        if (
+        dx = enemy_center_x - center_x
+        dy = enemy_center_y - center_y
+        in_sweep = (
+            angle is None
+            or dx * math.cos(math.radians(angle))
+            + dy * math.sin(math.radians(angle)) >= 0
+        )
+        if in_sweep and (
             (center_x - enemy_center_x) ** 2 + (center_y - enemy_center_y) ** 2
             <= attack_range ** 2
         ):
@@ -2664,13 +2672,15 @@ def fire_knife():
     """칼과 배트로 근거리 범위 내의 적과 보물상자를 공격합니다."""
     global screen_shake, system_message, knife_attack_until
     global melee_attack_weapon_id
+    global training_dummy_marked_until
     config = weapon_state.config
     attack_weapon_id = weapon_state.weapon_id
     attack_started_at = pygame.time.get_ticks()
     knife_attack_until = attack_started_at + MELEE_ATTACK_DURATION_MS
     melee_attack_weapon_id = attack_weapon_id
     animation = bat_animation if attack_weapon_id == "bat" else blade_animation
-    animation.start(attack_started_at)
+    if attack_weapon_id != "scythe":
+        animation.start(attack_started_at)
 
     center_x, center_y = get_player_world_center(
         my_player.X,
@@ -2679,7 +2689,11 @@ def fire_knife():
         IML.Player.get_height(),
     )
 
-    knife_range = 125 if attack_weapon_id == "bat" else MELEE_RANGE
+    knife_range = (
+        125 if attack_weapon_id == "bat"
+        else SCYTHE_RANGE if attack_weapon_id == "scythe"
+        else MELEE_RANGE
+    )
 
     treasure_rect = pygame.Rect(
         center_x - knife_range,
@@ -2697,6 +2711,7 @@ def fire_knife():
         knife_range,
         config.damage,
         attack_weapon_id,
+        Weapon_Angle if attack_weapon_id == "scythe" else None,
     )
     attacked_count = player_hit_count + clone_hit_count
 
@@ -2723,9 +2738,26 @@ def fire_knife():
     if (practice_mode_active or debug_mode) and training_dummy is not None and training_dummy.Hp > 0:
         dummy_center_x = training_dummy.rect.centerx
         dummy_center_y = training_dummy.rect.centery
-        if (center_x - dummy_center_x) ** 2 + (center_y - dummy_center_y) ** 2 <= knife_range ** 2:
+        dummy_dx = dummy_center_x - center_x
+        dummy_dy = dummy_center_y - center_y
+        dummy_in_sweep = (
+            attack_weapon_id != "scythe"
+            or dummy_dx * math.cos(math.radians(Weapon_Angle))
+            + dummy_dy * math.sin(math.radians(Weapon_Angle)) >= 0
+        )
+        if (
+            dummy_in_sweep
+            and dummy_dx ** 2 + dummy_dy ** 2 <= knife_range ** 2
+        ):
             previous_hp = training_dummy.Hp
-            training_dummy.Hp = max(0, training_dummy.Hp - int(config.damage))
+            dummy_explosion = attack_weapon_id == "scythe" and attack_started_at < training_dummy_marked_until
+            dummy_damage = int(config.damage) + (55 if dummy_explosion else 0)
+            training_dummy.Hp = max(0, training_dummy.Hp - dummy_damage)
+            if attack_weapon_id == "scythe":
+                training_dummy_marked_until = 0 if dummy_explosion else attack_started_at + SCYTHE_MARK_DURATION_MS
+                if dummy_explosion:
+                    particles.ring(dummy_center_x, dummy_center_y, (255, 100, 35), count=30, radius=60, lifetime=650, size=5)
+                    particles.emit(dummy_center_x, dummy_center_y, (255, 180, 55), count=36, speed=150, lifetime=700, size=6)
             dealt_damage = previous_hp - training_dummy.Hp
             damage_numbers.append({
                 "x": dummy_center_x,
@@ -2772,7 +2804,7 @@ def fire_knife():
         system_message = f"{config.name} 휘둘렀습니다. (데미지: {config.damage})"
         if destroyed_furniture_count:
             system_message += f" 가구 {destroyed_furniture_count}개 파괴"
-    if attack_weapon_id != "bat" or attacked_count > 0 or dummy_hit:
+    if attack_weapon_id not in ("bat", "scythe") or attacked_count > 0 or dummy_hit:
         consume_third_weapon(attack_weapon_id)
 
 
@@ -3187,6 +3219,13 @@ def fire_blackhole_generator():
 
 def fire_plasma_cannon():
     global system_message, weapon_fire_until, weapon_smoke_until
+    now = pygame.time.get_ticks()
+    if any(
+        str(beam.get("owner_id")) == str(network.player_id)
+        and now < beam["until"]
+        for beam in active_plasma_beams
+    ):
+        return
     if not weapon_state.can_fire():
         return
     break_stealth_on_attack()
@@ -3196,7 +3235,6 @@ def fire_plasma_cannon():
     muzzle_x = center_x + math.cos(angle) * 48
     muzzle_y = center_y + math.sin(angle) * 48
     end_x, end_y = _ray_endpoint(muzzle_x, muzzle_y, angle, PLASMA_RANGE)
-    now = pygame.time.get_ticks()
     fires_at = now + PLASMA_CHARGE_DURATION_MS
     active_plasma_beams.append({
         "x1": muzzle_x,
@@ -3213,7 +3251,6 @@ def fire_plasma_cannon():
     animation_started_at = pygame.time.get_ticks()
     weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
     weapon_smoke_until = animation_started_at + WEAPON_SMOKE_ANIMATION_MS
-    particles.emit(muzzle_x, muzzle_y, (100, 225, 255), count=6, speed=45, lifetime=160, size=3)
     consume_third_weapon("plasma_cannon")
 
 
@@ -3949,7 +3986,6 @@ def GameFrame(practice_mode: bool = False):
         if now >= beam["next_damage_at"]:
             _damage_plasma_beam(beam, frame_server_players, now)
             beam["next_damage_at"] = now + PLASMA_DAMAGE_INTERVAL_MS
-        screen_shake = min(SCREEN_SHAKE_MAX, screen_shake + 2)
 
     # ★ [정리] 서버 데이터 동기화 - 필요한 움직임 데이터만 전송
     send_data["posX"] = my_player.X
@@ -3961,6 +3997,9 @@ def GameFrame(practice_mode: bool = False):
         melee_attack_weapon_id
         if now < knife_attack_until and melee_attack_weapon_id
         else weapon_state.weapon_id
+    )
+    send_data["melee_attack_remaining_ms"] = max(
+        0, min(MELEE_ATTACK_DURATION_MS, knife_attack_until - now)
     )
     send_data["magazine_ammo"] = weapon_state.magazine_ammo
     send_data["reserve_ammo"] = weapon_state.reserve_ammo
@@ -4306,6 +4345,15 @@ def GameFrame(practice_mode: bool = False):
                             radius=52,
                             lifetime=650,
                             size=4,
+                        )
+                    if damage_event.get("scythe_explosion"):
+                        particles.emit(
+                            damage_x, damage_y, (255, 115, 35),
+                            count=42, speed=175, lifetime=720, size=7,
+                        )
+                        particles.ring(
+                            damage_x, damage_y, (255, 220, 95),
+                            count=36, radius=64, lifetime=680, size=5,
                         )
                     if damage_event.get("clone_id") is not None:
                         clone_x = damage_event.get("clone_x", damage_x)
@@ -4661,37 +4709,30 @@ def GameFrame(practice_mode: bool = False):
     for beam in active_plasma_beams:
         start = world_to_screen(beam["x1"], beam["y1"], CameraPosX, CameraPosY, camera_zoom)
         end = world_to_screen(beam["x2"], beam["y2"], CameraPosX, CameraPosY, camera_zoom)
-        charging = now < beam["fires_at"]
         ion_frames = IML.GetIonCannonFrames() or IML.GetManaLanceFrames()
         beam_angle = math.degrees(
             math.atan2(end[1] - start[1], end[0] - start[0])
         )
-        if charging:
-            if ion_frames:
-                charge_duration = max(1, beam["fires_at"] - beam["started_at"])
-                progress = min(0.999, max(0.0, (now - beam["started_at"]) / charge_duration))
-                frame_index = min(len(ion_frames) - 1, int(progress * len(ion_frames)))
-                ion_frame = ion_frames[frame_index]
-                ion_size = (
-                    max(1, round(ion_frame.get_width() * 5.6 * camera_zoom)),
-                    max(1, round(ion_frame.get_height() * 5.6 * camera_zoom)),
-                )
-                scaled_ion = _scale_cached(ion_frame, ion_size)
-                rotated_ion = pygame.transform.rotate(scaled_ion, -beam_angle)
-                source_offset = scaled_ion.get_width() * 0.3
-                ion_center = (
-                    round(start[0] + math.cos(math.radians(beam_angle)) * source_offset),
-                    round(start[1] + math.sin(math.radians(beam_angle)) * source_offset),
-                )
-                display.blit(rotated_ion, rotated_ion.get_rect(center=ion_center))
-            continue
-        pygame.draw.line(
-            display,
-            (45, 165, 255),
-            tuple(map(round, start)),
-            tuple(map(round, end)),
-            max(8, round(PLASMA_BEAM_WIDTH * camera_zoom)),
-        )
+        if ion_frames:
+            effect_duration = max(1, beam["until"] - beam["started_at"])
+            progress = min(
+                0.999,
+                max(0.0, (now - beam["started_at"]) / effect_duration),
+            )
+            frame_index = min(len(ion_frames) - 1, int(progress * len(ion_frames)))
+            ion_frame = ion_frames[frame_index]
+            ion_size = (
+                max(1, round(ion_frame.get_width() * 5.6 * camera_zoom)),
+                max(1, round(ion_frame.get_height() * 5.6 * camera_zoom)),
+            )
+            scaled_ion = _scale_cached(ion_frame, ion_size)
+            rotated_ion = pygame.transform.rotate(scaled_ion, -beam_angle)
+            source_offset = scaled_ion.get_width() * 0.3
+            ion_center = (
+                round(start[0] + math.cos(math.radians(beam_angle)) * source_offset),
+                round(start[1] + math.sin(math.radians(beam_angle)) * source_offset),
+            )
+            display.blit(rotated_ion, rotated_ion.get_rect(center=ion_center))
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
     if vision_skill_until > now:
         vision_screen_x, vision_screen_y = world_to_screen(
@@ -5448,13 +5489,18 @@ def GameFrame(practice_mode: bool = False):
         other_center_y += stun_offset_y
         server_weapon_id = p_info.get("weapon_id", DEFAULT_WEAPON_ID)
         if server_weapon_id in MELEE_WEAPON_IDS:
-            melee_frames = (
+            is_scythe = server_weapon_id == "scythe"
+            melee_frames = IML.GetScytheFrames() if is_scythe else (
                 IML.GetBatFrames()
                 if server_weapon_id == "bat"
                 else IML.GetBladeFrames()
             )
+            remote_attack_remaining = p_info.get("melee_attack_ms_remaining", 0)
+            remote_sweep_progress = 1 - max(0, remote_attack_remaining) / max(1, MELEE_ATTACK_DURATION_MS)
             other_weapon_image = (
-                melee_frames[0]
+                melee_frames[min(len(melee_frames) - 1, int(remote_sweep_progress * len(melee_frames)))]
+                if is_scythe and remote_attack_remaining > 0 and melee_frames
+                else melee_frames[0]
                 if melee_frames
                 else IML.GetWeaponImage(server_weapon_id)
             )
@@ -5463,7 +5509,12 @@ def GameFrame(practice_mode: bool = False):
                     display,
                     other_weapon_image,
                     (other_center_x, other_center_y),
-                    p_info["angle"],
+                    p_info["angle"] + (
+                        -SCYTHE_SWEEP_DEGREES / 2
+                        + SCYTHE_SWEEP_DEGREES * remote_sweep_progress
+                        if is_scythe and p_info.get("melee_attack_ms_remaining", 0) > 0
+                        else 0
+                    ),
                     camera_zoom,
                 )
         else:
@@ -5530,6 +5581,31 @@ def GameFrame(practice_mode: bool = False):
         if now < local_stun_until
         else (0, 0)
     )
+    for marked_id, marked_player in frame_server_players.items():
+        if marked_player.get("scythe_mark_ms_remaining", 0) <= 0:
+            continue
+        if str(marked_id) != str(network.player_id) and marked_id not in visible_player_ids:
+            continue
+        marked_center = get_player_screen_center(
+            marked_player["posX"], marked_player["posY"],
+            IML.Player.get_width(), IML.Player.get_height(),
+            CameraPosX, CameraPosY, camera_zoom,
+        )
+        mark_radius = max(8, round(16 * camera_zoom))
+        mark_y = round(marked_center[1] - 38 * camera_zoom)
+        mark_center = (round(marked_center[0]), mark_y)
+        mark_width = max(2, round(3 * camera_zoom))
+        pygame.draw.circle(
+            display, (255, 90, 40), mark_center, mark_radius, mark_width
+        )
+        pygame.draw.line(
+            display,
+            (255, 225, 95),
+            (mark_center[0] - mark_radius // 2, mark_y),
+            (mark_center[0] + mark_radius // 2, mark_y),
+            mark_width,
+        )
+
     if my_player.Hp > 0 and (now < stealth_until or in_bush):
         stealth_image = tint_player_image(
             my_player.get_display_image(), local_team_color
@@ -5560,9 +5636,25 @@ def GameFrame(practice_mode: bool = False):
         )
         if active_melee_weapon_id in MELEE_WEAPON_IDS:
             is_bat = active_melee_weapon_id == "bat"
-            melee_frames = IML.GetBatFrames() if is_bat else IML.GetBladeFrames()
+            is_scythe = active_melee_weapon_id == "scythe"
+            melee_frames = (
+                IML.GetScytheFrames() if is_scythe
+                else IML.GetBatFrames() if is_bat
+                else IML.GetBladeFrames()
+            )
             melee_animation = bat_animation if is_bat else blade_animation
+            attack_progress = min(
+                1.0,
+                max(
+                    0.0,
+                    (MELEE_ATTACK_DURATION_MS - max(0, knife_attack_until - now))
+                    / max(1, MELEE_ATTACK_DURATION_MS),
+                ),
+            )
             melee_image = (
+                melee_frames[min(len(melee_frames) - 1, int(attack_progress * len(melee_frames)))]
+                if is_scythe and knife_attack_until > now and melee_frames
+                else
                 melee_animation.frame_at(now)
                 if knife_attack_until > now and melee_frames
                 else (
@@ -5579,7 +5671,11 @@ def GameFrame(practice_mode: bool = False):
                         player_center_screen_x + local_stun_offset_x,
                         player_center_screen_y + local_stun_offset_y,
                     ),
-                    Weapon_Angle,
+                    Weapon_Angle + (
+                        -SCYTHE_SWEEP_DEGREES / 2
+                        + SCYTHE_SWEEP_DEGREES * attack_progress
+                        if is_scythe and knife_attack_until > now else 0
+                    ),
                     camera_zoom,
                 )
         else:

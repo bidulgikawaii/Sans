@@ -189,6 +189,7 @@ class Bullet:
         self.spawn_time = time.monotonic()
         self.launch_hold_ms = max(0, round(hold_ms))
         self.flight_start_time = self.spawn_time + self.launch_hold_ms / 1000
+        self.last_update_time = self.flight_start_time
 
     def update(self):
         # 활성화 상태일 때만 매 프레임 위치 이동
@@ -199,6 +200,11 @@ class Bullet:
             now = time.monotonic()
             if now < self.flight_start_time:
                 return
+            elapsed_frames = max(
+                0.0,
+                now - max(self.last_update_time, self.flight_start_time),
+            ) * FPS
+            self.last_update_time = now
             if self.weapon_id == "Revolver_golden":
                 speed = golden_bullet_speed(
                     self.golden_base_speed,
@@ -209,8 +215,8 @@ class Bullet:
                 self.speed_y = math.sin(angle_rad) * speed
             self.previous_x = self.x
             self.previous_y = self.y
-            self.x += self.speed_x
-            self.y += self.speed_y
+            self.x += self.speed_x * elapsed_frames
+            self.y += self.speed_y * elapsed_frames
 
             maximum_speed = (
                 self.golden_base_speed * GOLDEN_BULLET_MAX_SPEED_MULTIPLIER

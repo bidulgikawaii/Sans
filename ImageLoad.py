@@ -50,6 +50,7 @@ class Imageload:
         "blackhole_generator": "BlackHoleGun",
         "plasma_cannon": "PlasmaGun",
         "Revolver_golden": "GoldenRevolver",
+        "scythe": "Scythe",
 
     }
 
@@ -68,6 +69,7 @@ class Imageload:
         self.Gigwan = self._load_scaled_image("Gigwan.png", (128, 64))
         self.HBlade = self._load_animation("karambit", (128, 128))
         self.Bat = self._load_animation("hyeonminbat", (128, 128))
+        self.Scythe = self._load_animation("nat_", (192, 192))
         self.Blink = self._load_animation(
             "blink_", (256, 144), directory="blink-frames"
         )
@@ -411,6 +413,9 @@ class Imageload:
 
     def GetBatFrames(self):
         return self.Bat
+
+    def GetScytheFrames(self):
+        return self.Scythe
 
     def GetBlinkFrames(self):
         return self.Blink

@@ -9,6 +9,7 @@ from Config import (
     PLASMA_RANGE,
     PLAYER_MAX_HP,
     SHIELD_HP,
+    SCYTHE_RANGE,
     WEAPON_VISION_RADIUS,
 )
 
@@ -103,6 +104,12 @@ SPECIAL_CRATE_WEAPONS = {
         recoil=0.0, bullet_lifetime=0.22, vision_radius=WEAPON_VISION_RADIUS,
         vision_fov=90, vision_width=220,
     ),
+    "scythe": WeaponConfig(
+        "낫", damage=38, magazine_size=0, reserve_ammo=0,
+        fire_interval=0.9, reload_time=0.0, projectile=False, recoil=0.0,
+        bullet_lifetime=0.2, vision_radius=SCYTHE_RANGE,
+        vision_fov=180, vision_width=420,
+    ),
 }
 WEAPONS.update(SPECIAL_CRATE_WEAPONS)
 WEAPONS["spirit_trial"] = WeaponConfig(
@@ -113,7 +120,7 @@ WEAPONS["spirit_trial"] = WeaponConfig(
 )
 
 WEAPON_KEYS = ("pistol", "rifle", "shotgun", "sniper", "smg", "knife")
-MELEE_WEAPON_IDS = frozenset(("knife", "bat"))
+MELEE_WEAPON_IDS = frozenset(("knife", "bat", "scythe"))
 
 
 class SpecialWeaponCrate:

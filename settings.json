@@ -1,6 +1,6 @@
 {
-  "mouse_sensitivity": 4.0,
-  "sound_volume": 1.0,
+  "mouse_sensitivity": 5.81,
+  "sound_volume": 0.0,
   "owned_skills_only": true,
   "key_bindings": {
     "move_up": 119,

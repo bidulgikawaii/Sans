@@ -127,7 +127,7 @@ class Imageload:
         )
         self.CooldownReady = self._load_animation(
             "cooldown-ready_",
-            directory="cooldown-ready-frames (1)",
+            directory="cooldown-ready-frames",
         )
         self.MarkedForDeath = self._load_animation(
             "marked-for-death_",

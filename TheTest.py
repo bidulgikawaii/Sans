@@ -234,16 +234,41 @@ def _draw_melee_weapon(surface, image, center, angle, zoom):
     scaled_image = _scale_cached(image, display_size)
     flipped_image = pygame.transform.flip(scaled_image, True, False)
     rotated_image = pygame.transform.rotate(flipped_image, -angle)
-    angle_radians = math.radians(angle)
-    inset = 14 * zoom
-    anchored_center = (
-        center[0] - math.cos(angle_radians) * inset,
-        center[1] - math.sin(angle_radians) * inset,
-    )
     surface.blit(
         rotated_image,
-        rotated_image.get_rect(center=tuple(map(round, anchored_center))),
+        rotated_image.get_rect(center=tuple(map(round, center))),
     )
+
+
+def _draw_golden_fullscreen_effect(surface, now, started_at):
+    elapsed = now - started_at
+    if (
+        started_at <= 0
+        or not golden_screen_effect_frames
+        or not 0 <= elapsed < GOLDEN_SUNSET_DURATION_MS
+    ):
+        return
+
+    frame_index = min(
+        len(golden_screen_effect_frames) - 1,
+        elapsed * len(golden_screen_effect_frames) // GOLDEN_SUNSET_DURATION_MS,
+    )
+    if golden_screen_effect_cache["frame_index"] != frame_index:
+        frame = golden_screen_effect_frames[frame_index]
+        visible_bounds = frame.get_bounding_rect(min_alpha=8)
+        if visible_bounds.width and visible_bounds.height:
+            visible_frame = frame.subsurface(visible_bounds).copy()
+            golden_screen_effect_cache["surface"] = pygame.transform.smoothscale(
+                visible_frame,
+                (1920, 1080),
+            )
+        else:
+            golden_screen_effect_cache["surface"] = None
+        golden_screen_effect_cache["frame_index"] = frame_index
+
+    fullscreen_frame = golden_screen_effect_cache["surface"]
+    if fullscreen_frame is not None:
+        surface.blit(fullscreen_frame, (0, 0))
 
 
 def get_aim_mouse_position(camera_x=None, camera_y=None):
@@ -342,6 +367,7 @@ set_spirit_trial_animations(
 set_black_hole_bullet_frames(IML.GetBlackHoleBulletFrames())
 set_golden_revolver_bullet_frames(IML.GetGoldenRevolverBulletFrames())
 golden_screen_effect_frames = IML.GetCooldownReadyFrames()
+golden_screen_effect_cache = {"frame_index": None, "surface": None}
 marked_for_death_frames = IML.GetMarkedForDeathFrames()
 blade_animation = FrameAnimation(
     IML.GetBladeFrames(),
@@ -4647,8 +4673,8 @@ def GameFrame(practice_mode: bool = False):
                 frame_index = min(len(ion_frames) - 1, int(progress * len(ion_frames)))
                 ion_frame = ion_frames[frame_index]
                 ion_size = (
-                    max(1, round(ion_frame.get_width() * 1.8 * camera_zoom)),
-                    max(1, round(ion_frame.get_height() * 1.8 * camera_zoom)),
+                    max(1, round(ion_frame.get_width() * 5.6 * camera_zoom)),
+                    max(1, round(ion_frame.get_height() * 5.6 * camera_zoom)),
                 )
                 scaled_ion = _scale_cached(ion_frame, ion_size)
                 rotated_ion = pygame.transform.rotate(scaled_ion, -beam_angle)
@@ -4666,26 +4692,6 @@ def GameFrame(practice_mode: bool = False):
             tuple(map(round, end)),
             max(8, round(PLASMA_BEAM_WIDTH * camera_zoom)),
         )
-        if ion_frames:
-            frame_index = ((now - beam["fires_at"]) // 50) % len(ion_frames)
-            emitter_frames = IML.GetLaserGunEffectFrames()
-            if emitter_frames:
-                emitter = emitter_frames[frame_index % len(emitter_frames)]
-                emitter_image = _scale_cached(
-                    emitter,
-                    (
-                        max(1, round(emitter.get_width() * 4 * camera_zoom)),
-                        max(1, round(emitter.get_height() * 4 * camera_zoom)),
-                    ),
-                )
-                emitter_image = pygame.transform.rotate(emitter_image, -beam_angle)
-                display.blit(
-                    emitter_image,
-                    emitter_image.get_rect(
-                        center=tuple(map(round, start))
-                    ),
-                )
-
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
     if vision_skill_until > now:
         vision_screen_x, vision_screen_y = world_to_screen(
@@ -5917,28 +5923,13 @@ def GameFrame(practice_mode: bool = False):
         BULLET_TARGET_DISTANCE,
     )
 
-    golden_effect_elapsed = now - golden_sunset_started_at
-    if (
-        golden_sunset_started_at > 0
-        and golden_screen_effect_frames
-        and 0 <= golden_effect_elapsed < GOLDEN_SUNSET_DURATION_MS
-    ):
-        frame_index = min(
-            len(golden_screen_effect_frames) - 1,
-            golden_effect_elapsed * len(golden_screen_effect_frames)
-            // GOLDEN_SUNSET_DURATION_MS,
-        )
-        frame = golden_screen_effect_frames[frame_index]
-        fullscreen_frame = _scale_cached(frame, (ScreenX, ScreenY))
-        display.blit(fullscreen_frame, (0, 0))
-
     for aim_lock in active_aim_locks:
         if now < aim_lock["started_at"]:
             continue
         lock_x, lock_y = aim_lock["x"], aim_lock["y"]
         lock_screen = world_to_screen(
             lock_x,
-            lock_y - IML.Player.get_height() * 0.72,
+            lock_y,
             CameraPosX,
             CameraPosY,
             camera_zoom,
@@ -6632,6 +6623,7 @@ def GameFrame(practice_mode: bool = False):
             settings, key_bindings, settings_key_waiting, overlay=True
         )
     # ------------------ [그리기 끝] ------------------
+    _draw_golden_fullscreen_effect(display, now, golden_sunset_started_at)
 
 
 def GameView():

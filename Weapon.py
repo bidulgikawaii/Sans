@@ -91,7 +91,7 @@ SPECIAL_CRATE_WEAPONS = {
     "plasma_cannon": WeaponConfig(
         "찌리찌리짜라짜라", damage=PLASMA_DAMAGE,
         magazine_size=0, reserve_ammo=0,
-        fire_interval=PLASMA_FIRE_INTERVAL, automatic=True,
+        fire_interval=PLASMA_FIRE_INTERVAL, automatic=False,
         reload_time=0.0, projectile=False, recoil=0.0,
         bullet_lifetime=0.12, vision_radius=PLASMA_RANGE,
         vision_fov=180, vision_width=420,

@@ -22,9 +22,9 @@ SKILL_ICON_FILES = {
     "은신": "Invis.png",
     "텔포": "Tp.png",
     "기절탄": "Stun_Icon.png",
-    "자폭": "Bomb.png",
+    "자폭": "SelfBoom.png",
     "와드": "Ward.png",
-    "지뢰": "Bomb.png",
+    "지뢰": "Mine.png",
     "플레어건": "flaregun.png",
     "영혼탄환": "SoulBullet.png",
 }
@@ -106,6 +106,11 @@ class Imageload:
             "pixel-art-blue-fireball_",
             (56, 32),
             directory="Golden_Revolver_Bullet",
+        )
+        self.GoldenSun = self._load_animation(
+            "lens-flare_",
+            (1200, 675),
+            directory="the sun",
         )
         golden_revolver = self._load_image_file(
             self.root / "GoldenRevolver.png"
@@ -449,6 +454,9 @@ class Imageload:
 
     def GetGoldenRevolverBulletFrames(self):
         return self.GoldenRevolverBullet
+
+    def GetGoldenSunFrames(self):
+        return self.GoldenSun
 
     def GetLaserGunEffectFrames(self):
         return self.LaserGunEffect

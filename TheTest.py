@@ -244,31 +244,53 @@ def _draw_golden_fullscreen_effect(surface, now, started_at):
     elapsed = now - started_at
     if (
         started_at <= 0
-        or not golden_screen_effect_frames
         or not 0 <= elapsed < GOLDEN_SUNSET_DURATION_MS
     ):
         return
 
-    frame_index = min(
-        len(golden_screen_effect_frames) - 1,
-        elapsed * len(golden_screen_effect_frames) // GOLDEN_SUNSET_DURATION_MS,
-    )
-    if golden_screen_effect_cache["frame_index"] != frame_index:
-        frame = golden_screen_effect_frames[frame_index]
-        visible_bounds = frame.get_bounding_rect(min_alpha=8)
-        if visible_bounds.width and visible_bounds.height:
-            visible_frame = frame.subsurface(visible_bounds).copy()
-            golden_screen_effect_cache["surface"] = pygame.transform.smoothscale(
-                visible_frame,
-                (1766, 994),
-            )
-        else:
-            golden_screen_effect_cache["surface"] = None
-        golden_screen_effect_cache["frame_index"] = frame_index
+    gray_overlay = golden_screen_effect_cache.get("gray_overlay")
+    if gray_overlay is None or gray_overlay.get_size() != surface.get_size():
+        gray_overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        gray_overlay.fill((112, 116, 122, 145))
+        golden_screen_effect_cache["gray_overlay"] = gray_overlay
+    surface.blit(gray_overlay, (0, 0))
 
-    fullscreen_frame = golden_screen_effect_cache["surface"]
-    if fullscreen_frame is not None:
-        surface.blit(fullscreen_frame, ((surface.get_width() - fullscreen_frame.get_width()) // 2, (surface.get_height() - fullscreen_frame.get_height()) // 2))
+    if golden_screen_effect_frames:
+        frame_index = min(
+            len(golden_screen_effect_frames) - 1,
+            elapsed * len(golden_screen_effect_frames) // GOLDEN_SUNSET_DURATION_MS,
+        )
+        if golden_screen_effect_cache["frame_index"] != frame_index:
+            frame = golden_screen_effect_frames[frame_index]
+            visible_bounds = frame.get_bounding_rect(min_alpha=8)
+            if visible_bounds.width and visible_bounds.height:
+                visible_frame = frame.subsurface(visible_bounds).copy()
+                golden_screen_effect_cache["surface"] = pygame.transform.smoothscale(
+                    visible_frame,
+                    (1766, 994),
+                )
+            else:
+                golden_screen_effect_cache["surface"] = None
+            golden_screen_effect_cache["frame_index"] = frame_index
+
+        fullscreen_frame = golden_screen_effect_cache["surface"]
+        if fullscreen_frame is not None:
+            surface.blit(
+                fullscreen_frame,
+                (
+                    (surface.get_width() - fullscreen_frame.get_width()) // 2,
+                    (surface.get_height() - fullscreen_frame.get_height()) // 2,
+                ),
+            )
+
+    if golden_sun_frames:
+        sun_frame_index = min(
+            len(golden_sun_frames) - 1,
+            elapsed * len(golden_sun_frames) // GOLDEN_SUNSET_DURATION_MS,
+        )
+        sun_frame = golden_sun_frames[sun_frame_index]
+        sun_rect = sun_frame.get_rect(center=surface.get_rect().center)
+        surface.blit(sun_frame, sun_rect)
 
 
 def get_aim_mouse_position(camera_x=None, camera_y=None):
@@ -368,6 +390,7 @@ set_black_hole_bullet_frames(IML.GetBlackHoleBulletFrames())
 set_golden_revolver_bullet_frames(IML.GetGoldenRevolverBulletFrames())
 golden_screen_effect_frames = IML.GetCooldownReadyFrames()
 golden_screen_effect_cache = {"frame_index": None, "surface": None}
+golden_sun_frames = IML.GetGoldenSunFrames()
 marked_for_death_frames = IML.GetMarkedForDeathFrames()
 blade_animation = FrameAnimation(
     IML.GetBladeFrames(),
@@ -3241,11 +3264,17 @@ def fire_plasma_cannon():
         "y1": muzzle_y,
         "x2": end_x,
         "y2": end_y,
+        "angle": angle,
+        "direction_x": math.cos(angle),
+        "direction_y": math.sin(angle),
         "owner_id": network.player_id,
         "started_at": now,
         "fires_at": fires_at,
         "next_damage_at": fires_at,
         "until": fires_at + PLASMA_BEAM_DURATION_MS,
+        "rendered_frame_index": None,
+        "rendered_zoom": None,
+        "rendered_surface": None,
     })
     weapon_state.consume_round()
     animation_started_at = pygame.time.get_ticks()
@@ -4706,13 +4735,9 @@ def GameFrame(practice_mode: bool = False):
         MagneticZoneState.draw(display, CameraPosX, CameraPosY, camera_zoom, zone_elapsed_ms)
     world_effects.update(effect_delta, (TileGene.map_width * TileGene.tile_size, TileGene.map_height * TileGene.tile_size))
     world_effects.draw(display, CameraPosX, CameraPosY, camera_zoom)
+    ion_frames = IML.GetIonCannonFrames() or IML.GetManaLanceFrames()
     for beam in active_plasma_beams:
         start = world_to_screen(beam["x1"], beam["y1"], CameraPosX, CameraPosY, camera_zoom)
-        end = world_to_screen(beam["x2"], beam["y2"], CameraPosX, CameraPosY, camera_zoom)
-        ion_frames = IML.GetIonCannonFrames() or IML.GetManaLanceFrames()
-        beam_angle = math.degrees(
-            math.atan2(end[1] - start[1], end[0] - start[0])
-        )
         if ion_frames:
             effect_duration = max(1, beam["until"] - beam["started_at"])
             progress = min(
@@ -4720,17 +4745,27 @@ def GameFrame(practice_mode: bool = False):
                 max(0.0, (now - beam["started_at"]) / effect_duration),
             )
             frame_index = min(len(ion_frames) - 1, int(progress * len(ion_frames)))
-            ion_frame = ion_frames[frame_index]
-            ion_size = (
-                max(1, round(ion_frame.get_width() * 5.6 * camera_zoom)),
-                max(1, round(ion_frame.get_height() * 5.6 * camera_zoom)),
-            )
-            scaled_ion = _scale_cached(ion_frame, ion_size)
-            rotated_ion = pygame.transform.rotate(scaled_ion, -beam_angle)
-            source_offset = scaled_ion.get_width() * 0.3
+            if (
+                beam["rendered_frame_index"] != frame_index
+                or beam["rendered_zoom"] != camera_zoom
+            ):
+                ion_frame = ion_frames[frame_index]
+                ion_size = (
+                    max(1, round(ion_frame.get_width() * 5.6 * camera_zoom)),
+                    max(1, round(ion_frame.get_height() * 5.6 * camera_zoom)),
+                )
+                scaled_ion = _scale_cached(ion_frame, ion_size)
+                beam["rendered_surface"] = pygame.transform.rotate(
+                    scaled_ion, -math.degrees(beam["angle"])
+                )
+                beam["rendered_frame_index"] = frame_index
+                beam["rendered_zoom"] = camera_zoom
+                beam["rendered_source_offset"] = scaled_ion.get_width() * 0.3
+            rotated_ion = beam["rendered_surface"]
+            source_offset = beam["rendered_source_offset"]
             ion_center = (
-                round(start[0] + math.cos(math.radians(beam_angle)) * source_offset),
-                round(start[1] + math.sin(math.radians(beam_angle)) * source_offset),
+                round(start[0] + beam["direction_x"] * source_offset),
+                round(start[1] + beam["direction_y"] * source_offset),
             )
             display.blit(rotated_ion, rotated_ion.get_rect(center=ion_center))
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())

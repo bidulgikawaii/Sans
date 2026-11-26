@@ -227,9 +227,11 @@ def _draw_deathmatch_leaderboard(surface, scores, players, local_player_id, font
 
 
 def _draw_melee_weapon(surface, image, center, angle, zoom):
+    source_size = max(image.get_width(), image.get_height())
+    display_scale = min(0.55, 58 / max(1, source_size))
     display_size = (
-        max(1, round(image.get_width() * zoom * 1.3)),
-        max(1, round(image.get_height() * zoom * 1.3)),
+        max(1, round(image.get_width() * zoom * display_scale)),
+        max(1, round(image.get_height() * zoom * display_scale)),
     )
     scaled_image = _scale_cached(image, display_size)
     flipped_image = pygame.transform.flip(scaled_image, True, False)
@@ -3180,7 +3182,7 @@ def _spawn_black_hole(
     if (
         replicate
         and owner_id == network.player_id
-        and not is_practice_mode
+        and not practice_mode_active
         and not debug_mode
         and isinstance(source_bullet_token, int)
     ):
@@ -3337,6 +3339,7 @@ def fire_blackhole_generator():
 
 def fire_plasma_cannon():
     global system_message, weapon_fire_until, weapon_smoke_until
+    global practice_mode_active, debug_mode
     now = pygame.time.get_ticks()
     if any(
         str(beam.get("owner_id")) == str(network.player_id)
@@ -3372,7 +3375,7 @@ def fire_plasma_cannon():
         "rendered_surface": None,
     }
     active_plasma_beams.append(beam)
-    if not is_practice_mode and not debug_mode:
+    if not practice_mode_active and not debug_mode:
         pending_weapon_effect_requests.append({
             "type": "plasma_beam",
             "x1": muzzle_x,
@@ -4808,8 +4811,13 @@ def GameFrame(practice_mode: bool = False):
     weapon_image = weapon_image or IML.GetShotGun()
     if weapon_state.weapon_id == "pistol":
         weapon_image = pygame.transform.flip(weapon_image, True, False)
-    shotgun_image = weapon_image if camera_zoom == 1.0 else pygame.transform.smoothscale(
-        weapon_image, (round(weapon_image.get_width() * camera_zoom), round(weapon_image.get_height() * camera_zoom))
+    weapon_display_zoom = camera_zoom * 0.82
+    shotgun_image = pygame.transform.smoothscale(
+        weapon_image,
+        (
+            max(1, round(weapon_image.get_width() * weapon_display_zoom)),
+            max(1, round(weapon_image.get_height() * weapon_display_zoom)),
+        ),
     )
     rotated_shotgun = pygame.transform.rotate(shotgun_image, -Weapon_Angle)
     Shotgun_rect = rotated_shotgun.get_rect()
@@ -5803,8 +5811,13 @@ def GameFrame(practice_mode: bool = False):
                     other_weapon_image = pygame.transform.flip(
                         other_weapon_image, True, False
                     )
-                other_gun = other_weapon_image if camera_zoom == 1.0 else pygame.transform.scale(
-                    other_weapon_image, (round(other_weapon_image.get_width() * camera_zoom), round(other_weapon_image.get_height() * camera_zoom))
+                weapon_display_zoom = camera_zoom * 0.82
+                other_gun = pygame.transform.smoothscale(
+                    other_weapon_image,
+                    (
+                        max(1, round(other_weapon_image.get_width() * weapon_display_zoom)),
+                        max(1, round(other_weapon_image.get_height() * weapon_display_zoom)),
+                    ),
                 )
                 other_rotated_gun = pygame.transform.rotate(other_gun, -p_info["angle"])
                 other_gun_rect = other_rotated_gun.get_rect()

@@ -567,6 +567,7 @@ running = True
 bullets = []
 remote_bullets = []
 processed_bullet_events = set()
+processed_weapon_effect_event_ids = set()
 linked_clones = []
 known_linked_clone_ids = set()
 pending_spectator_skill_events = []
@@ -626,6 +627,7 @@ next_bush_leaf_at = 0
 pending_treasure_destroys = []
 pending_furniture_destroys = []
 pending_hit_events = []
+pending_weapon_effect_requests = []
 screen_shake = 0
 server_players = {}
 kill_feed = []
@@ -1139,7 +1141,8 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
         active_mines,
         active_black_holes, active_plasma_beams, active_aim_locks,
         supply_drops, pending_treasure_destroys, pending_furniture_destroys,
-        pending_hit_events, wards, rune_alerts, damage_numbers,
+        pending_hit_events, pending_weapon_effect_requests,
+        wards, rune_alerts, damage_numbers,
     ):
         collection.clear()
     pending_supply_spawn_requests.clear()
@@ -1151,6 +1154,7 @@ def reset_match_state(regenerate_world=False, independent_world=False, world_see
     processed_bush_leaf_event_ids.clear()
     bush_leaf_request_token = 0
     processed_bullet_events.clear()
+    processed_weapon_effect_event_ids.clear()
     remote_player_render_positions.clear()
     last_processed_flagdown_reward_id = 0
     linked_clones.clear()
@@ -1498,7 +1502,10 @@ def NameInputView():
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.TEXTINPUT:
-            player_name = (player_name + event.text)[:16]
+            printable_text = "".join(
+                character for character in event.text if character.isprintable()
+            )
+            player_name = (player_name + printable_text)[:16]
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 pygame.key.stop_text_input()
@@ -1813,11 +1820,16 @@ def _draw_result_screen(title_text, color, elapsed):
             (info.get("winner_ids", []) for info in server_players.values() if info.get("winner_ids")),
             [],
         )
-        table_left = ScreenX // 2 - 310
+        table_left = ScreenX // 2 - 360
         header_y = ScreenY // 2 + 16
         for label, x in (("순위", table_left + 34), ("닉네임", table_left + 150), ("킬", table_left + 545)):
             header = KillFeedFont.render(label, True, (255, 235, 160))
             display.blit(header, (x, header_y - header.get_height() // 2))
+        death_header = KillFeedFont.render("사망", True, (255, 235, 160))
+        display.blit(
+            death_header,
+            (table_left + 638, header_y - death_header.get_height() // 2),
+        )
         previous_score = None
         displayed_rank = 0
         for index, (player_id, score, name) in enumerate(rows[:MAX_PLAYERS]):
@@ -1825,7 +1837,7 @@ def _draw_result_screen(title_text, color, elapsed):
                 displayed_rank = index + 1
                 previous_score = score
             row_y = ScreenY // 2 + 48 + index * 31
-            row_rect = pygame.Rect(table_left, row_y - 13, 620, 28)
+            row_rect = pygame.Rect(table_left, row_y - 13, 720, 28)
             local_row = str(player_id) == str(network.player_id)
             winner_row = str(player_id) in {str(winner_id) for winner_id in winner_ids}
             row_color = (
@@ -1840,9 +1852,12 @@ def _draw_result_screen(title_text, color, elapsed):
             rank_text = KillFeedFont.render(f"{displayed_rank:>2}", True, text_color)
             name_text = KillFeedFont.render(str(name), True, text_color)
             score_text = KillFeedFont.render(str(score), True, text_color)
+            deaths = int(server_players.get(player_id, {}).get("death_count", 0))
+            deaths_text = KillFeedFont.render(str(deaths), True, text_color)
             display.blit(rank_text, (row_rect.left + 34, row_y - rank_text.get_height() // 2))
             display.blit(name_text, (row_rect.left + 150, row_y - name_text.get_height() // 2))
-            display.blit(score_text, (row_rect.right - 75, row_y - score_text.get_height() // 2))
+            display.blit(score_text, (row_rect.right - 185, row_y - score_text.get_height() // 2))
+            display.blit(deaths_text, (row_rect.right - 82, row_y - deaths_text.get_height() // 2))
     elif is_flagdown_result:
         score_table = next(
             (
@@ -1899,6 +1914,11 @@ def _draw_result_screen(title_text, color, elapsed):
                 f"{team_name} 킬 순위", True, team_color
             )
             display.blit(header, (score_panel.left + 16, score_panel.top + 10))
+            stat_header = KillFeedFont.render("처치 / 사망", True, team_color)
+            display.blit(
+                stat_header,
+                (score_panel.right - stat_header.get_width() - 16, score_panel.top + 10),
+            )
             for rank, (player_id, name, score) in enumerate(rows, start=1):
                 row_y = score_panel.top + 44 + (rank - 1) * 34
                 local_row = str(player_id) == str(network.player_id)
@@ -1908,12 +1928,15 @@ def _draw_result_screen(title_text, color, elapsed):
                 )
                 name_text = KillFeedFont.render(name, True, text_color)
                 score_text = KillFeedFont.render(str(score), True, text_color)
+                deaths = int(server_players.get(player_id, {}).get("death_count", 0))
+                deaths_text = KillFeedFont.render(str(deaths), True, text_color)
                 max_name_width = max(
                     1,
                     score_panel.width
                     - 70
                     - score_text.get_width()
-                    - 36,
+                    - deaths_text.get_width()
+                    - 58,
                 )
                 if name_text.get_width() > max_name_width:
                     name_text = pygame.transform.smoothscale(
@@ -1940,10 +1963,33 @@ def _draw_result_screen(title_text, color, elapsed):
                 )
                 display.blit(
                     score_text,
-                    (score_panel.right - score_text.get_width() - 18, row_y),
+                    (
+                        score_panel.right
+                        - score_text.get_width()
+                        - deaths_text.get_width()
+                        - 34,
+                        row_y,
+                    ),
+                )
+                display.blit(
+                    deaths_text,
+                    (score_panel.right - deaths_text.get_width() - 18, row_y),
                 )
 
     guide_text = "Space: 다시 대기열 참가   ESC: 메인 메뉴"
+    if not is_deathmatch_result and not is_flagdown_result:
+        local_stats = server_players.get(network.player_id, {})
+        local_kills = int(local_stats.get("kill_count", 0))
+        local_deaths = int(local_stats.get("death_count", 0))
+        stats_text = GuiFont.render(
+            f"처치 {local_kills}  ·  사망 {local_deaths}",
+            True,
+            (255, 245, 210),
+        )
+        display.blit(
+            stats_text,
+            stats_text.get_rect(center=(ScreenX // 2, ScreenY // 2 + 28)),
+        )
     guide = result_text_cache.get(guide_text)
     if guide is None:
         guide = GuiFont.render(guide_text, True, (255, 255, 255))
@@ -2895,6 +2941,8 @@ def _golden_revolver_impact(x, y, remaining_ms):
 
 
 def _damage_plasma_beam(beam, frame_server_players, now):
+    if beam.get("visual_only"):
+        return
     if now < beam["fires_at"]:
         return
     beam_hitbox_padding = PLASMA_BEAM_WIDTH
@@ -3072,6 +3120,7 @@ def fire_golden_revolver():
         bullet.aim_target_y = target_y
         bullets.append(bullet)
         active_aim_locks.append({
+            "owner_id": network.player_id,
             "start_x": center_x + math.cos(angle) * start_distance,
             "start_y": center_y + math.sin(angle) * start_distance,
             "x": target_x,
@@ -3081,6 +3130,9 @@ def fire_golden_revolver():
             "duration_ms": target_aim_ms,
             "until": target_aim_until + GOLDEN_BULLET_FIRE_INTERVAL_MS,
         })
+        bullet.aim_lock_start_delay_ms = aim_delay_ms
+        bullet.aim_lock_duration_ms = target_aim_ms
+        bullet.just_fired = True
 
     weapon_state.consume_round()
     weapon_fire_until = now + WEAPON_FIRE_ANIMATION_MS
@@ -3112,18 +3164,45 @@ def fire_golden_revolver():
     consume_third_weapon("Revolver_golden")
 
 
-def _spawn_black_hole(x, y, owner_id, now):
+def _spawn_black_hole(
+    x, y, owner_id, now, source_bullet_token=None, replicate=True, age_ms=0
+):
+    started_at = now - max(0, age_ms)
     active_black_holes.append({
         "x": x,
         "y": y,
         "owner_id": owner_id,
-        "started_at": now,
-        "until": now + BLACK_HOLE_DURATION_MS,
+        "started_at": started_at,
+        "until": started_at + BLACK_HOLE_DURATION_MS,
         "next_damage_at": now,
+        "last_bullet_pull_at": now,
     })
+    if (
+        replicate
+        and owner_id == network.player_id
+        and not is_practice_mode
+        and not debug_mode
+        and isinstance(source_bullet_token, int)
+    ):
+        pending_weapon_effect_requests.append({
+            "type": "blackhole_spawn",
+            "source_bullet_token": source_bullet_token,
+            "x": x,
+            "y": y,
+        })
+
+
 def _deactivate_bullet(bullet, now):
     if bullet.is_active and bullet.weapon_id == "blackhole_generator":
-        _spawn_black_hole(bullet.x, bullet.y, bullet.owner_id, now)
+        if bullet.owner_id == network.player_id:
+            _spawn_black_hole(
+                bullet.x,
+                bullet.y,
+                bullet.owner_id,
+                now,
+                getattr(bullet, "client_bullet_token", None),
+            )
+        bullet.blackhole_spawned = True
     bullet.is_active = False
 
 
@@ -3160,6 +3239,10 @@ def _update_black_holes(now, frame_server_players, is_practice_mode):
     active_black_holes = [hole for hole in active_black_holes if now < hole["until"]]
     for hole in active_black_holes:
         hole_x, hole_y = hole["x"], hole["y"]
+        delta_frames = min(
+            2.0,
+            max(0.0, (now - hole.get("last_bullet_pull_at", now)) * FPS / 1000),
+        )
         for bullet in bullets + remote_bullets:
             if not bullet.is_active:
                 continue
@@ -3167,9 +3250,21 @@ def _update_black_holes(now, frame_server_players, is_practice_mode):
             dy = hole_y - bullet.y
             distance = max(1.0, math.hypot(dx, dy))
             if distance <= BLACK_HOLE_RADIUS:
-                force = BLACK_HOLE_PULL_STRENGTH * (1.0 - distance / BLACK_HOLE_RADIUS)
+                force = (
+                    BLACK_HOLE_PULL_STRENGTH
+                    * (1.0 - distance / BLACK_HOLE_RADIUS)
+                    * delta_frames
+                    * 0.12
+                )
                 bullet.speed_x += dx / distance * force
                 bullet.speed_y += dy / distance * force
+                bullet_speed = math.hypot(bullet.speed_x, bullet.speed_y)
+                max_speed = max(0.1, getattr(bullet, "base_speed", bullet_speed) * 1.2)
+                if bullet_speed > max_speed:
+                    speed_scale = max_speed / bullet_speed
+                    bullet.speed_x *= speed_scale
+                    bullet.speed_y *= speed_scale
+        hole["last_bullet_pull_at"] = now
         if str(hole.get("owner_id")) != str(network.player_id) and my_player.Hp > 0:
             _apply_pull_to_player(my_player, hole_x, hole_y, BLACK_HOLE_PULL_STRENGTH)
         if (is_practice_mode or debug_mode) and training_dummy is not None and training_dummy.Hp > 0:
@@ -3259,7 +3354,7 @@ def fire_plasma_cannon():
     muzzle_y = center_y + math.sin(angle) * 48
     end_x, end_y = _ray_endpoint(muzzle_x, muzzle_y, angle, PLASMA_RANGE)
     fires_at = now + PLASMA_CHARGE_DURATION_MS
-    active_plasma_beams.append({
+    beam = {
         "x1": muzzle_x,
         "y1": muzzle_y,
         "x2": end_x,
@@ -3275,7 +3370,17 @@ def fire_plasma_cannon():
         "rendered_frame_index": None,
         "rendered_zoom": None,
         "rendered_surface": None,
-    })
+    }
+    active_plasma_beams.append(beam)
+    if not is_practice_mode and not debug_mode:
+        pending_weapon_effect_requests.append({
+            "type": "plasma_beam",
+            "x1": muzzle_x,
+            "y1": muzzle_y,
+            "x2": end_x,
+            "y2": end_y,
+            "angle": angle,
+        })
     weapon_state.consume_round()
     animation_started_at = pygame.time.get_ticks()
     weapon_fire_until = animation_started_at + WEAPON_FIRE_ANIMATION_MS
@@ -4077,6 +4182,7 @@ def GameFrame(practice_mode: bool = False):
     send_data["supply_collect_ids"] = list(pending_supply_collect_ids)
     send_data["bush_leaf_requests"] = list(pending_bush_leaf_requests)
     send_data["spectator_skill_events"] = list(pending_spectator_skill_events)
+    send_data["weapon_effect_requests"] = list(pending_weapon_effect_requests)
     
     # ★ [정리] 총알 정보 - 이번 프레임에서 새로 발사된 총알만 전송
     send_data["bullets"] = [
@@ -4091,6 +4197,20 @@ def GameFrame(practice_mode: bool = False):
             "hold_ms": bullet.launch_hold_ms,
             "client_bullet_token": getattr(
                 bullet, "client_bullet_token", None
+            ),
+            **(
+                {
+                    "golden_aim": {
+                        "target_id": bullet.aim_target_id,
+                        "target_x": bullet.aim_target_x,
+                        "target_y": bullet.aim_target_y,
+                        "start_delay_ms": bullet.aim_lock_start_delay_ms,
+                        "duration_ms": bullet.aim_lock_duration_ms,
+                    }
+                }
+                if bullet.weapon_id == "Revolver_golden"
+                and hasattr(bullet, "aim_target_id")
+                else {}
             ),
         }
         for bullet in bullets
@@ -4152,6 +4272,50 @@ def GameFrame(practice_mode: bool = False):
                     )
                     active_world_weather = server_weather
             event_snapshot = own_snapshot or {}
+            for effect_event in _snapshot_events(
+                event_snapshot, "weapon_effect_events"
+            ):
+                event_id = effect_event.get("event_id")
+                if event_id is None or event_id in processed_weapon_effect_event_ids:
+                    continue
+                processed_weapon_effect_event_ids.add(event_id)
+                if str(effect_event.get("owner_id")) == str(network.player_id):
+                    continue
+                effect_age_ms = max(0, int(effect_event.get("age_ms", 0)))
+                if effect_event.get("type") == "blackhole_spawn":
+                    _spawn_black_hole(
+                        effect_event["x"],
+                        effect_event["y"],
+                        effect_event.get("owner_id"),
+                        now,
+                        replicate=False,
+                        age_ms=effect_age_ms,
+                    )
+                elif effect_event.get("type") == "plasma_beam":
+                    started_at = now - effect_age_ms
+                    charge_ms = max(1, int(effect_event.get("charge_ms", PLASMA_CHARGE_DURATION_MS)))
+                    duration_ms = max(1, int(effect_event.get("duration_ms", PLASMA_BEAM_DURATION_MS)))
+                    fires_at = started_at + charge_ms
+                    until = fires_at + duration_ms
+                    if now < until:
+                        active_plasma_beams.append({
+                            "x1": effect_event["x1"],
+                            "y1": effect_event["y1"],
+                            "x2": effect_event["x2"],
+                            "y2": effect_event["y2"],
+                            "angle": effect_event["angle"],
+                            "direction_x": math.cos(effect_event["angle"]),
+                            "direction_y": math.sin(effect_event["angle"]),
+                            "owner_id": effect_event.get("owner_id"),
+                            "started_at": started_at,
+                            "fires_at": fires_at,
+                            "next_damage_at": until,
+                            "until": until,
+                            "visual_only": True,
+                            "rendered_frame_index": None,
+                            "rendered_zoom": None,
+                            "rendered_surface": None,
+                        })
             if own_snapshot:
                 active_mines[:] = [
                     {
@@ -4511,6 +4675,7 @@ def GameFrame(practice_mode: bool = False):
             pending_treasure_destroys.clear()
             pending_furniture_destroys.clear()
             pending_hit_events.clear()
+            pending_weapon_effect_requests.clear()
             pending_heal_amount = 0
             zone_elapsed_ms = max(
                 zone_elapsed_ms,
@@ -4597,7 +4762,7 @@ def GameFrame(practice_mode: bool = False):
 
     # 카메라 이동
     player_center_x, player_center_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
-    camera_focus = golden_camera_focus(active_aim_locks, now)
+    camera_focus = golden_camera_focus(active_aim_locks, now, network.player_id)
     camera_target_x, camera_target_y = (
         camera_focus
         if camera_focus is not None
@@ -4674,6 +4839,16 @@ def GameFrame(practice_mode: bool = False):
         if friendly_base_bounds is not None
         else None
     )
+    enemy_base_bounds = (
+        flagdown_base_bounds(1 - own_team, TileGene.tile_size, TileGene.map_width)
+        if flagdown and own_team in (0, 1)
+        else None
+    )
+    enemy_base_rect = (
+        pygame.Rect(*enemy_base_bounds)
+        if enemy_base_bounds is not None
+        else None
+    )
     # 같은 프레임에서 같은 대상은 한 번만 벽 가림을 계산합니다.
     visibility_cache = {}
 
@@ -4735,39 +4910,37 @@ def GameFrame(practice_mode: bool = False):
         MagneticZoneState.draw(display, CameraPosX, CameraPosY, camera_zoom, zone_elapsed_ms)
     world_effects.update(effect_delta, (TileGene.map_width * TileGene.tile_size, TileGene.map_height * TileGene.tile_size))
     world_effects.draw(display, CameraPosX, CameraPosY, camera_zoom)
-    ion_frames = IML.GetIonCannonFrames() or IML.GetManaLanceFrames()
     for beam in active_plasma_beams:
         start = world_to_screen(beam["x1"], beam["y1"], CameraPosX, CameraPosY, camera_zoom)
-        if ion_frames:
-            effect_duration = max(1, beam["until"] - beam["started_at"])
+        end = world_to_screen(beam["x2"], beam["y2"], CameraPosX, CameraPosY, camera_zoom)
+        charging = now < beam["fires_at"]
+        pulse = 1.0 + 0.12 * math.sin(now * 0.018)
+        outer_width = max(2, round((8 if charging else 24) * camera_zoom * pulse))
+        middle_width = max(1, round((4 if charging else 13) * camera_zoom * pulse))
+        core_width = max(1, round((2 if charging else 5) * camera_zoom))
+        pygame.draw.line(display, (95, 35, 225), start, end, outer_width)
+        pygame.draw.line(display, (40, 190, 255), start, end, middle_width)
+        pygame.draw.line(display, (225, 250, 255), start, end, core_width)
+        if not charging:
             progress = min(
-                0.999,
-                max(0.0, (now - beam["started_at"]) / effect_duration),
+                1.0,
+                max(0.0, (now - beam["fires_at"]) / max(1, beam["until"] - beam["fires_at"])),
             )
-            frame_index = min(len(ion_frames) - 1, int(progress * len(ion_frames)))
-            if (
-                beam["rendered_frame_index"] != frame_index
-                or beam["rendered_zoom"] != camera_zoom
-            ):
-                ion_frame = ion_frames[frame_index]
-                ion_size = (
-                    max(1, round(ion_frame.get_width() * 5.6 * camera_zoom)),
-                    max(1, round(ion_frame.get_height() * 5.6 * camera_zoom)),
-                )
-                scaled_ion = _scale_cached(ion_frame, ion_size)
-                beam["rendered_surface"] = pygame.transform.rotate(
-                    scaled_ion, -math.degrees(beam["angle"])
-                )
-                beam["rendered_frame_index"] = frame_index
-                beam["rendered_zoom"] = camera_zoom
-                beam["rendered_source_offset"] = scaled_ion.get_width() * 0.3
-            rotated_ion = beam["rendered_surface"]
-            source_offset = beam["rendered_source_offset"]
-            ion_center = (
-                round(start[0] + beam["direction_x"] * source_offset),
-                round(start[1] + beam["direction_y"] * source_offset),
+            travel = (progress * 2.2) % 1.0
+            glow_x = round(start[0] + (end[0] - start[0]) * travel)
+            glow_y = round(start[1] + (end[1] - start[1]) * travel)
+            pygame.draw.circle(
+                display,
+                (120, 220, 255),
+                (glow_x, glow_y),
+                max(2, round(12 * camera_zoom * pulse)),
             )
-            display.blit(rotated_ion, rotated_ion.get_rect(center=ion_center))
+            pygame.draw.circle(
+                display,
+                (245, 255, 255),
+                (glow_x, glow_y),
+                max(1, round(5 * camera_zoom)),
+            )
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
     if vision_skill_until > now:
         vision_screen_x, vision_screen_y = world_to_screen(
@@ -4853,8 +5026,19 @@ def GameFrame(practice_mode: bool = False):
             continue
         bullet.update()
         if not bullet.is_active:
-            if bullet.weapon_id == "blackhole_generator":
-                _spawn_black_hole(bullet.x, bullet.y, bullet.owner_id, now)
+            if (
+                bullet.weapon_id == "blackhole_generator"
+                and bullet.owner_id == network.player_id
+                and not getattr(bullet, "blackhole_spawned", False)
+            ):
+                _spawn_black_hole(
+                    bullet.x,
+                    bullet.y,
+                    bullet.owner_id,
+                    now,
+                    getattr(bullet, "client_bullet_token", None),
+                )
+                bullet.blackhole_spawned = True
             continue
 
         if bullet.is_active:
@@ -5217,13 +5401,73 @@ def GameFrame(practice_mode: bool = False):
             )
             enemy_bullet.life_time = config.bullet_lifetime
             enemy_bullet.source_bullet_event_id = event_id
+            golden_aim = bullet_info.get("golden_aim")
+            if weapon_id == "Revolver_golden" and isinstance(golden_aim, dict):
+                try:
+                    aim_target_x = float(golden_aim["target_x"])
+                    aim_target_y = float(golden_aim["target_y"])
+                    aim_duration = max(1, min(1000, int(golden_aim["duration_ms"])))
+                    aim_delay = max(0, min(1000, int(golden_aim["start_delay_ms"])))
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    pass
+                else:
+                    if (
+                        math.isfinite(aim_target_x)
+                        and math.isfinite(aim_target_y)
+                        and 0 <= aim_target_x < TileGene.map_width * TileGene.tile_size
+                        and 0 <= aim_target_y < TileGene.map_height * TileGene.tile_size
+                    ):
+                        aim_started_at = now + aim_delay
+                        enemy_bullet.aim_released = False
+                        enemy_bullet.aim_until = aim_started_at + aim_duration
+                        aim_target_id = golden_aim.get("target_id")
+                        enemy_bullet.aim_target_id = (
+                            aim_target_id
+                            if isinstance(aim_target_id, (str, int))
+                            and not isinstance(aim_target_id, bool)
+                            else None
+                        )
+                        enemy_bullet.aim_target_x = aim_target_x
+                        enemy_bullet.aim_target_y = aim_target_y
+                        active_aim_locks.append({
+                            "owner_id": bullet_info.get("owner_id"),
+                            "start_x": enemy_bullet.x,
+                            "start_y": enemy_bullet.y,
+                            "x": aim_target_x,
+                            "y": aim_target_y,
+                            "target_id": enemy_bullet.aim_target_id,
+                            "started_at": aim_started_at,
+                            "duration_ms": aim_duration,
+                            "until": enemy_bullet.aim_until + GOLDEN_BULLET_FIRE_INTERVAL_MS,
+                        })
             remote_bullets.append(enemy_bullet)
 
     for bullet in remote_bullets:
+        if (
+            bullet.weapon_id == "Revolver_golden"
+            and not bullet.aim_released
+            and now >= bullet.aim_until
+        ):
+            target = frame_server_players.get(bullet.aim_target_id)
+            if target is not None and not is_hidden_player(target):
+                try:
+                    bullet.aim_target_x = float(target["posX"]) + IML.Player.get_width() / 2
+                    bullet.aim_target_y = float(target["posY"]) + IML.Player.get_height() / 2
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    pass
+            target_x = bullet.aim_target_x
+            target_y = bullet.aim_target_y
+            if target_x is not None and target_y is not None:
+                bullet.launch(
+                    bullet.x,
+                    bullet.y,
+                    target_x,
+                    target_y,
+                    speed=WEAPONS["Revolver_golden"].bullet_speed,
+                )
+                bullet.aim_released = True
         bullet.update()
         if not bullet.is_active:
-            if bullet.weapon_id == "blackhole_generator":
-                _spawn_black_hole(bullet.x, bullet.y, bullet.owner_id, now)
             continue
         if bullet.is_active:
             destructible = TileGene.destructible_collision(bullet.collision_rect)
@@ -5534,7 +5778,7 @@ def GameFrame(practice_mode: bool = False):
             remote_sweep_progress = 1 - max(0, remote_attack_remaining) / max(1, MELEE_ATTACK_DURATION_MS)
             other_weapon_image = (
                 melee_frames[min(len(melee_frames) - 1, int(remote_sweep_progress * len(melee_frames)))]
-                if is_scythe and remote_attack_remaining > 0 and melee_frames
+                if remote_attack_remaining > 0 and melee_frames
                 else melee_frames[0]
                 if melee_frames
                 else IML.GetWeaponImage(server_weapon_id)
@@ -5547,7 +5791,7 @@ def GameFrame(practice_mode: bool = False):
                     p_info["angle"] + (
                         -SCYTHE_SWEEP_DEGREES / 2
                         + SCYTHE_SWEEP_DEGREES * remote_sweep_progress
-                        if is_scythe and p_info.get("melee_attack_ms_remaining", 0) > 0
+                        if is_scythe and remote_attack_remaining > 0
                         else 0
                     ),
                     camera_zoom,
@@ -5846,6 +6090,25 @@ def GameFrame(practice_mode: bool = False):
             (*base_color, 165),
             base_screen_rect,
             max(1, round(2 * camera_zoom)),
+        )
+    if enemy_base_rect is not None:
+        enemy_base_screen_rect = pygame.Rect(
+            round((enemy_base_rect.x - CameraPosX) * camera_zoom),
+            round((enemy_base_rect.y - CameraPosY) * camera_zoom),
+            max(1, round(enemy_base_rect.width * camera_zoom)),
+            max(1, round(enemy_base_rect.height * camera_zoom)),
+        )
+        enemy_color = FLAGDOWN_TEAM_COLORS.get(1 - own_team, (255, 105, 115))
+        pygame.draw.rect(
+            base_overlay,
+            (*enemy_color, 55),
+            enemy_base_screen_rect,
+        )
+        pygame.draw.rect(
+            base_overlay,
+            (*enemy_color, 220),
+            enemy_base_screen_rect,
+            max(1, round(3 * camera_zoom)),
         )
     display.blit(base_overlay, (0, 0))
     if flagdown:
@@ -6390,6 +6653,11 @@ def GameFrame(practice_mode: bool = False):
             if not is_practice_mode and selected_game_mode != GAME_MODE_DEBUG
             else None
         ),
+        (
+            server_players.get(network.player_id, {}).get("team_id")
+            if selected_game_mode == GAME_MODE_FLAGDOWN and not is_practice_mode
+            else None
+        ),
     )
     kill_feed = [
         event for event in kill_feed
@@ -6536,6 +6804,42 @@ def GameFrame(practice_mode: bool = False):
         ),
         None,
     )
+    end_countdown_remaining_ms = None
+    if not is_practice_mode:
+        if selected_game_mode == GAME_MODE_DEATHMATCH:
+            end_countdown_remaining_ms = max(
+                0, DEATHMATCH_DURATION_MS - match_elapsed_ms
+            )
+        elif selected_game_mode == GAME_MODE_FLAGDOWN:
+            end_countdown_remaining_ms = max(
+                0,
+                int(
+                    server_players.get(network.player_id, {}).get(
+                        "flagdown_remaining_ms",
+                        FLAGDOWN_DURATION_MS - match_elapsed_ms,
+                    )
+                ),
+            )
+    if end_countdown_remaining_ms is not None and end_countdown_remaining_ms <= 10_000:
+        seconds_left = (end_countdown_remaining_ms + 999) // 1000
+        countdown_label = (
+            f"게임 종료까지 {seconds_left}초"
+            if seconds_left
+            else "게임 종료"
+        )
+        countdown_surface = KillFeedFont.render(
+            countdown_label, True, (255, 145, 135)
+        )
+        countdown_shadow = KillFeedFont.render(
+            countdown_label, True, (35, 12, 12)
+        )
+        countdown_rect = countdown_surface.get_rect(
+            center=(ScreenX // 2, ScreenY // 2 - 174)
+        )
+        for offset in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+            display.blit(countdown_shadow, countdown_rect.move(*offset))
+        display.blit(countdown_surface, countdown_rect)
+
     unique_message = ""
     if unique_warning is not None:
         remaining_seconds = max(

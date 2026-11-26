@@ -2,6 +2,7 @@ import math
 
 import pygame
 from FontAssets import get_game_font
+from FlagdownBases import flagdown_base_bounds
 
 
 class MiniMap:
@@ -84,6 +85,7 @@ class MiniMap:
         zone_elapsed_ms=0,
         supply_drops=None,
         unique_supply_seconds=None,
+        flagdown_team_id=None,
     ):
         if self._map_surface is None or self._map_signature != self._get_map_signature():
             self._build_map_surface()
@@ -128,6 +130,26 @@ class MiniMap:
 
         marker_surface = self._marker_surface
         marker_surface.fill((0, 0, 0, 0))
+        if flagdown_team_id in (0, 1):
+            for team_id, color in ((0, (70, 165, 255)), (1, (255, 85, 105))):
+                base_bounds = flagdown_base_bounds(
+                    team_id,
+                    self.tile_generator.tile_size,
+                    self.tile_generator.map_width,
+                )
+                base_x, base_y = self._world_to_map(base_bounds[0], base_bounds[1])
+                base_right, base_bottom = self._world_to_map(
+                    base_bounds[0] + base_bounds[2],
+                    base_bounds[1] + base_bounds[3],
+                )
+                base_rect = (
+                    base_x,
+                    base_y,
+                    max(1, base_right - base_x),
+                    max(1, base_bottom - base_y),
+                )
+                pygame.draw.rect(marker_surface, (*color, 80), base_rect)
+                pygame.draw.rect(marker_surface, color, base_rect, 2)
         if magnetic_zone is not None:
             zone_rect = magnetic_zone.bounds_at(zone_elapsed_ms)
             zone_left, zone_top = self._world_to_map(zone_rect.left, zone_rect.top)

@@ -60,11 +60,12 @@ def golden_bullet_path_intersects_rect(
     )
 
 
-def golden_camera_focus(aim_locks, now_ms):
+def golden_camera_focus(aim_locks, now_ms, owner_id=None):
     active_locks = [
         lock
         for lock in aim_locks
         if lock["started_at"] <= now_ms < lock["until"]
+        and (owner_id is None or lock.get("owner_id", owner_id) == owner_id)
     ]
     if not active_locks:
         return None

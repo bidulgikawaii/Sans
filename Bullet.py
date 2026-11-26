@@ -181,6 +181,7 @@ class Bullet:
         # 🌟 5. 삼각함수를 이용해 매 프레임 이동할 X축, Y축 속도 분할 분배
         self.speed_x = math.cos(angle_rad) * speed
         self.speed_y = math.sin(angle_rad) * speed
+        self.base_speed = max(0.0, float(speed))
         if self.weapon_id == "Revolver_golden":
             self.golden_base_speed = speed
 

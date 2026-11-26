@@ -52,6 +52,9 @@ from Config import (
     SHIELD_HP,
     STUN_BULLET_SPEED,
     SUICIDE_RESPAWN_PENALTY_MS,
+    BLACK_HOLE_DURATION_MS,
+    PLASMA_BEAM_DURATION_MS,
+    PLASMA_CHARGE_DURATION_MS,
 )
 from CombatMechanics import (
     apply_shield_activation,
@@ -96,6 +99,8 @@ def new_match_events():
     return {
         "bullet_events": [],
         "next_bullet_event_id": 1,
+        "weapon_effect_events": [],
+        "next_weapon_effect_event_id": 1,
         "spectator_skill_events": [],
         "next_spectator_skill_event_id": 1,
         "verified_bullet_events": {},
@@ -301,6 +306,10 @@ def handle_client(conn, player_id):
             mode: events["next_spectator_skill_event_id"] - 1
             for mode, events in match_events.items()
         }
+        last_sent_weapon_effect_event_ids = {
+            mode: events["next_weapon_effect_event_id"] - 1
+            for mode, events in match_events.items()
+        }
 
     # 1. 접속한 클라이언트에게 고유 아이디 부여
     conn.send(pickle.dumps({"init_id": player_id, "seed": SERVER_SEED}))
@@ -341,6 +350,7 @@ def handle_client(conn, player_id):
         "recent_spawn_points": [],
         "spawn_history_initialized": False,
         "kill_count": 0,
+        "death_count": 0,
         "flagdown_skill_rewards": [],
         "flagdown_awarded_skills": [],
         "next_flagdown_skill_reward_id": 1,
@@ -379,10 +389,16 @@ def handle_client(conn, player_id):
                             event for event in events["spectator_skill_events"]
                             if event["event_id"] > last_sent_skill_event_ids[mode]
                         ]
+                        pending_weapon_effects = [
+                            event for event in events["weapon_effect_events"]
+                            if event["event_id"] > last_sent_weapon_effect_event_ids[mode]
+                        ]
                         if pending_bullets:
                             last_sent_bullet_event_ids[mode] = pending_bullets[-1]["event_id"]
                         if pending_skills:
                             last_sent_skill_event_ids[mode] = pending_skills[-1]["event_id"]
+                        if pending_weapon_effects:
+                            last_sent_weapon_effect_event_ids[mode] = pending_weapon_effects[-1]["event_id"]
                         lobby_state = lobby.status(player_id, mode)
                         winner_ids = list(completed_match_winner_ids.get(mode, []))
                         scores = dict(events["kill_scores"])
@@ -390,6 +406,15 @@ def handle_client(conn, player_id):
                             player["bullets"] = list(pending_bullets)
                             player["flagdown_skill_rewards"] = []
                             player["spectator_skill_events"] = list(pending_skills)
+                            player["weapon_effect_events"] = [
+                                {
+                                    **event,
+                                    "age_ms": max(
+                                        0, round((time.monotonic() - event["created_at"]) * 1000)
+                                    ),
+                                }
+                                for event in pending_weapon_effects
+                            ]
                             player["linked_clones"] = serialize_linked_clones(
                                 events["linked_clones"], time.monotonic()
                             )
@@ -460,6 +485,9 @@ def handle_client(conn, player_id):
                         last_sent_skill_event_ids[requested_mode] = (
                             match_events[requested_mode]["next_spectator_skill_event_id"] - 1
                         )
+                        last_sent_weapon_effect_event_ids[requested_mode] = (
+                            match_events[requested_mode]["next_weapon_effect_event_id"] - 1
+                        )
                         requested_name = str(client_data.get("name", "")).strip()
                         player = players[player_id]
                         player["name"] = (
@@ -494,6 +522,7 @@ def handle_client(conn, player_id):
                                 "recent_spawn_points": [],
                                 "spawn_history_initialized": False,
                                 "kill_count": 0,
+                                "death_count": 0,
                                 "flagdown_skill_rewards": [],
                                 "flagdown_awarded_skills": [],
                                 "next_flagdown_skill_reward_id": 1,
@@ -938,6 +967,9 @@ def handle_client(conn, player_id):
                     players[player_id]["hp"] = max(0, players[player_id]["hp"] - damage)
                     players[player_id]["zone_damage_credit"] -= damage
                     if previous_hp > 0 and players[player_id]["hp"] <= 0:
+                        players[player_id]["death_count"] = (
+                            players[player_id].get("death_count", 0) + 1
+                        )
                         append_kill_event(
                             events,
                             None,
@@ -1259,6 +1291,9 @@ def handle_client(conn, player_id):
                         and previous_linked_hp > 0
                         and linked_target["hp"] <= 0
                     ):
+                        linked_target["death_count"] = (
+                            linked_target.get("death_count", 0) + 1
+                        )
                         if mode in (GAME_MODE_DEATHMATCH, GAME_MODE_FLAGDOWN):
                             linked_target["deathmatch_respawn_at"] = (
                                 now_monotonic
@@ -1443,6 +1478,7 @@ def handle_client(conn, player_id):
                     previous_hp > 0
                     and target["hp"] <= 0
                 ):
+                    target["death_count"] = target.get("death_count", 0) + 1
                     target["shield_token"] = max(
                         target.get("shield_token", 0),
                         int(target.get("last_reported_shield_token", 0)),
@@ -1548,6 +1584,83 @@ def handle_client(conn, player_id):
                         }
                     events["next_bullet_event_id"] += 1
                     events["bullet_events"].append(bullet_event)
+                effect_requests = client_data.get("weapon_effect_requests", [])
+                if (
+                    isinstance(effect_requests, list)
+                    and players[player_id]["hp"] > 0
+                    and time.monotonic() >= players[player_id].get("stunned_until", 0.0)
+                ):
+                    map_width, map_height = mode_map_dimensions(mode)
+                    for request in effect_requests[:8]:
+                        if not isinstance(request, dict):
+                            continue
+                        effect_type = request.get("type")
+                        effect = None
+                        if effect_type == "blackhole_spawn":
+                            token = request.get("source_bullet_token")
+                            verified_bullet = events["client_bullet_tokens"].get(
+                                (player_id, token)
+                            ) if isinstance(token, int) and not isinstance(token, bool) else None
+                            try:
+                                effect_x = float(request.get("x"))
+                                effect_y = float(request.get("y"))
+                            except (TypeError, ValueError, OverflowError):
+                                continue
+                            if (
+                                verified_bullet is None
+                                or verified_bullet.get("weapon_id") != "blackhole_generator"
+                                or not math.isfinite(effect_x)
+                                or not math.isfinite(effect_y)
+                                or not 0 <= effect_x < map_width * 32
+                                or not 0 <= effect_y < map_height * 32
+                            ):
+                                continue
+                            effect = {
+                                "type": effect_type,
+                                "x": effect_x,
+                                "y": effect_y,
+                                "duration_ms": BLACK_HOLE_DURATION_MS,
+                            }
+                        elif (
+                            effect_type == "plasma_beam"
+                            and players[player_id].get("third_weapon_id") == "plasma_cannon"
+                        ):
+                            try:
+                                x1, y1, x2, y2 = (
+                                    float(request[key]) for key in ("x1", "y1", "x2", "y2")
+                                )
+                                angle = float(request["angle"])
+                            except (KeyError, TypeError, ValueError, OverflowError):
+                                continue
+                            if not all(math.isfinite(value) for value in (x1, y1, x2, y2, angle)):
+                                continue
+                            if not all(
+                                0 <= x < map_width * 32 and 0 <= y < map_height * 32
+                                for x, y in ((x1, y1), (x2, y2))
+                            ):
+                                continue
+                            effect = {
+                                "type": effect_type,
+                                "x1": x1,
+                                "y1": y1,
+                                "x2": x2,
+                                "y2": y2,
+                                "angle": angle,
+                                "charge_ms": PLASMA_CHARGE_DURATION_MS,
+                                "duration_ms": PLASMA_BEAM_DURATION_MS,
+                            }
+                        if effect is None:
+                            continue
+                        effect.update({
+                            "event_id": events["next_weapon_effect_event_id"],
+                            "owner_id": player_id,
+                            "created_at": now_monotonic,
+                        })
+                        events["weapon_effect_events"].append(effect)
+                        events["next_weapon_effect_event_id"] += 1
+                    events["weapon_effect_events"][:] = events[
+                        "weapon_effect_events"
+                    ][-128:]
                 skill_events = client_data.get("spectator_skill_events", [])
                 if isinstance(skill_events, list) and (
                     (players[player_id]["hp"] > 0 or suicide_detonated)
@@ -1809,8 +1922,14 @@ def handle_client(conn, player_id):
                 event for event in events["spectator_skill_events"]
                 if event["event_id"] > last_sent_skill_event_ids[mode]
             ]
+            pending_weapon_effects = [
+                event for event in events["weapon_effect_events"]
+                if event["event_id"] > last_sent_weapon_effect_event_ids[mode]
+            ]
             if pending_skill_events:
                 last_sent_skill_event_ids[mode] = pending_skill_events[-1]["event_id"]
+            if pending_weapon_effects:
+                last_sent_weapon_effect_event_ids[mode] = pending_weapon_effects[-1]["event_id"]
             for snapshot_player_id, player in snapshot.items():
                 player["bullets"] = list(pending_bullets)
                 player["flagdown_skill_rewards"] = (
@@ -1819,6 +1938,15 @@ def handle_client(conn, player_id):
                     else []
                 )
                 player["spectator_skill_events"] = list(pending_skill_events)
+                player["weapon_effect_events"] = [
+                    {
+                        **event,
+                        "age_ms": max(
+                            0, round((now_monotonic - event["created_at"]) * 1000)
+                        ),
+                    }
+                    for event in pending_weapon_effects
+                ]
                 player["linked_clones"] = serialize_linked_clones(
                     events["linked_clones"], now_monotonic
                 )

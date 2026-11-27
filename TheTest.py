@@ -52,6 +52,7 @@ from GameRendering import (
     draw_damage_numbers,
     draw_supply_drop,
     draw_quick_slot_cooldowns,
+    draw_cooldown_indicator,
     draw_visibility_geometry,
     draw_visibility_highlight,
     draw_team_marker,
@@ -95,6 +96,10 @@ from NetworkClient import (
     network,
     reconnect_to_server,
 )
+
+WEAPON_DISPLAY_WORLD_SIZE = 54
+ION_CANNON_HEIGHT = 220
+ION_CANNON_SOURCE_RATIO = 0.20
 
 
 def _load_network_dict(payload):
@@ -172,7 +177,15 @@ def _scale_cached(image, size, smooth=True):
 
 def _draw_deathmatch_leaderboard(surface, scores, players, local_player_id, font, position):
     ranked_players = sorted(
-        scores.items(), key=lambda item: (-item[1], str(item[0]))
+        (
+            (
+                player_id,
+                int(scores.get(player_id, scores.get(str(player_id), player.get("kill_count", 0)))),
+                int(player.get("death_count", 0)),
+            )
+            for player_id, player in players.items()
+        ),
+        key=lambda item: (-item[1], item[2], str(item[0])),
     )[:MAX_PLAYERS]
     panel_rect = pygame.Rect(
         position[0],
@@ -183,25 +196,25 @@ def _draw_deathmatch_leaderboard(surface, scores, players, local_player_id, font
     pygame.draw.rect(surface, (12, 20, 32), panel_rect, border_radius=8)
     pygame.draw.rect(surface, (90, 125, 150), panel_rect, 1, border_radius=8)
 
-    title_key = ("title",)
+    title_key = ("title", "kills_deaths")
     title = _deathmatch_leaderboard_text_cache.get(title_key)
     if title is None:
-        title = font.render("킬 순위", True, (255, 235, 160))
+        title = font.render("킬 / 사망 순위", True, (255, 235, 160))
         _deathmatch_leaderboard_text_cache[title_key] = title
     surface.blit(title, (panel_rect.left + 12, panel_rect.top + 6))
     row_y = panel_rect.top + 31
-    for rank, (player_id, score) in enumerate(ranked_players, start=1):
+    for rank, (player_id, score, deaths) in enumerate(ranked_players, start=1):
         player = players.get(player_id, {})
         player_name = player.get("name", str(player_id)[:8])
         is_local_player = str(player_id) == str(local_player_id)
         text_color = (
             (255, 235, 160) if is_local_player else (240, 240, 240)
         )
-        cache_key = (rank, player_name, score, is_local_player)
+        cache_key = (rank, player_name, score, deaths, is_local_player)
         score_text = _deathmatch_leaderboard_text_cache.get(cache_key)
         if score_text is None:
             score_text = font.render(
-                f"{rank}. {player_name}: {score}", True, text_color
+                f"{rank}. {player_name}: {score}킬 / {deaths}사망", True, text_color
             )
             score_text = pygame.transform.smoothscale(
                 score_text,
@@ -228,7 +241,7 @@ def _draw_deathmatch_leaderboard(surface, scores, players, local_player_id, font
 
 def _draw_melee_weapon(surface, image, center, angle, zoom):
     source_size = max(image.get_width(), image.get_height())
-    display_scale = min(0.55, 58 / max(1, source_size))
+    display_scale = min(0.55, WEAPON_DISPLAY_WORLD_SIZE / max(1, source_size))
     display_size = (
         max(1, round(image.get_width() * zoom * display_scale)),
         max(1, round(image.get_height() * zoom * display_scale)),
@@ -1020,6 +1033,18 @@ def draw_healing_inventory(surface):
     surface.blit(title, (HEAL_ITEM_RECT.right + 12, HEAL_ITEM_RECT.y - 2))
     surface.blit(count, (HEAL_ITEM_RECT.right + 12, HEAL_ITEM_RECT.y + 28))
     surface.blit(hint, (HEAL_ITEM_RECT.right + 12, HEAL_ITEM_RECT.y + 54))
+    now = pygame.time.get_ticks()
+    heal_cooldown_remaining = max(
+        0, HEAL_ITEM_COOLDOWN_MS - (now - last_healing_item_used_at)
+    )
+    draw_cooldown_indicator(
+        surface,
+        HEAL_ITEM_RECT,
+        heal_cooldown_remaining,
+        HEAL_ITEM_COOLDOWN_MS,
+        GuiFont,
+        (160, 255, 180),
+    )
 
 
 def collect_treasure(tile_position, from_bullet=False):
@@ -2456,7 +2481,11 @@ def reload_weapon():
     if weapon_state.config.projectile and weapon_state.magazine_ammo >= weapon_state.config.magazine_size:
         system_message = "탄창이 이미 가득 찼습니다."
         return
-    if weapon_state.config.projectile and weapon_state.reserve_ammo <= 0:
+    if (
+        weapon_state.config.projectile
+        and not weapon_state.infinite_reserve
+        and weapon_state.reserve_ammo <= 0
+    ):
         system_message = "예비 탄약이 없습니다."
         return
 
@@ -3832,7 +3861,8 @@ def GameFrame(practice_mode: bool = False):
     
     is_practice_mode = bool(practice_mode or local_match)
     practice_mode_active = is_practice_mode
-    weapon_state.set_unlimited_ammo(
+    weapon_state.set_unlimited_ammo(False)
+    weapon_state.set_infinite_reserve(
         selected_game_mode == GAME_MODE_FLAGDOWN and not is_practice_mode
     )
     MousePos = pygame.mouse.get_pos()
@@ -4813,7 +4843,9 @@ def GameFrame(practice_mode: bool = False):
     weapon_image = weapon_image or IML.GetShotGun()
     if weapon_state.weapon_id == "pistol":
         weapon_image = pygame.transform.flip(weapon_image, True, False)
-    weapon_display_zoom = camera_zoom * 0.82
+    weapon_display_zoom = camera_zoom * WEAPON_DISPLAY_WORLD_SIZE / max(
+        1, weapon_image.get_width(), weapon_image.get_height()
+    )
     shotgun_image = pygame.transform.smoothscale(
         weapon_image,
         (
@@ -4924,13 +4956,6 @@ def GameFrame(practice_mode: bool = False):
         start = world_to_screen(beam["x1"], beam["y1"], CameraPosX, CameraPosY, camera_zoom)
         end = world_to_screen(beam["x2"], beam["y2"], CameraPosX, CameraPosY, camera_zoom)
         charging = now < beam["fires_at"]
-        pulse = 1.0 + 0.12 * math.sin(now * 0.018)
-        outer_width = max(2, round((8 if charging else 24) * camera_zoom * pulse))
-        middle_width = max(1, round((4 if charging else 13) * camera_zoom * pulse))
-        core_width = max(1, round((2 if charging else 5) * camera_zoom))
-        pygame.draw.line(display, (95, 35, 225), start, end, outer_width)
-        pygame.draw.line(display, (40, 190, 255), start, end, middle_width)
-        pygame.draw.line(display, (225, 250, 255), start, end, core_width)
         if not charging:
             ion_frames = IML.GetIonCannonFrames()
             if ion_frames:
@@ -4940,40 +4965,23 @@ def GameFrame(practice_mode: bool = False):
                     frame,
                     (
                         max(1, round(beam_length)),
-                        max(1, round(180 * camera_zoom * pulse)),
+                        max(1, round(ION_CANNON_HEIGHT * camera_zoom)),
                     ),
                 )
                 frame = pygame.transform.rotate(
                     frame, -math.degrees(beam["angle"])
                 )
+                source_offset = beam_length * (0.5 - ION_CANNON_SOURCE_RATIO)
+                cannon_center = (
+                    start[0] + math.cos(beam["angle"]) * source_offset,
+                    start[1] + math.sin(beam["angle"]) * source_offset,
+                )
                 display.blit(
                     frame,
                     frame.get_rect(
-                        center=(
-                            round((start[0] + end[0]) / 2),
-                            round((start[1] + end[1]) / 2),
-                        )
+                        center=tuple(map(round, cannon_center))
                     ),
                 )
-            progress = min(
-                1.0,
-                max(0.0, (now - beam["fires_at"]) / max(1, beam["until"] - beam["fires_at"])),
-            )
-            travel = (progress * 2.2) % 1.0
-            glow_x = round(start[0] + (end[0] - start[0]) * travel)
-            glow_y = round(start[1] + (end[1] - start[1]) * travel)
-            pygame.draw.circle(
-                display,
-                (120, 220, 255),
-                (glow_x, glow_y),
-                max(2, round(12 * camera_zoom * pulse)),
-            )
-            pygame.draw.circle(
-                display,
-                (245, 255, 255),
-                (glow_x, glow_y),
-                max(1, round(5 * camera_zoom)),
-            )
     player_world_x, player_world_y = get_player_world_center(my_player.X, my_player.Y, IML.Player.get_width(), IML.Player.get_height())
     if vision_skill_until > now:
         vision_screen_x, vision_screen_y = world_to_screen(
@@ -5836,7 +5844,9 @@ def GameFrame(practice_mode: bool = False):
                     other_weapon_image = pygame.transform.flip(
                         other_weapon_image, True, False
                     )
-                weapon_display_zoom = camera_zoom * 0.82
+                weapon_display_zoom = camera_zoom * WEAPON_DISPLAY_WORLD_SIZE / max(
+                    1, other_weapon_image.get_width(), other_weapon_image.get_height()
+                )
                 other_gun = pygame.transform.smoothscale(
                     other_weapon_image,
                     (
@@ -6917,10 +6927,23 @@ def GameFrame(practice_mode: bool = False):
         HP_FRAME_SIZE,
         (HEALTH_GREEN_THRESHOLD, HEALTH_YELLOW_THRESHOLD),
     )
+    own_player_stats = server_players.get(
+        network.player_id,
+        server_players.get(str(network.player_id), {}),
+    )
+    death_count_text = GuiFont.render(
+        f"처치 {own_player_stats.get('kill_count', local_kill_count)}  ·  사망 {own_player_stats.get('death_count', 0)}",
+        True,
+        (235, 235, 235),
+    )
+    display.blit(
+        death_count_text,
+        (ui_x + HP_FRAME_SIZE[0] + 15, ui_y + 84),
+    )
     if deathmatch:
         _draw_deathmatch_leaderboard(
             display,
-            server_players.get(network.player_id, {}).get("kill_scores", {}),
+            own_player_stats.get("kill_scores", {}),
             server_players,
             network.player_id,
             KillFeedFont,
@@ -6962,7 +6985,7 @@ def GameFrame(practice_mode: bool = False):
         - healing_key_text.get_height()
         - 124,
         max(265, healing_count_text.get_width(), healing_key_text.get_width()) + 24,
-        healing_count_text.get_height() + healing_key_text.get_height() + 22,
+        healing_count_text.get_height() + healing_key_text.get_height() + 32,
     )
     pygame.draw.rect(display, (12, 24, 20), healing_panel, border_radius=8)
     pygame.draw.rect(display, (100, 220, 145), healing_panel, 2, border_radius=8)
@@ -6974,6 +6997,41 @@ def GameFrame(practice_mode: bool = False):
             healing_panel.y + 11 + healing_count_text.get_height(),
         ),
     )
+    heal_cooldown_remaining = max(
+        0,
+        HEAL_ITEM_COOLDOWN_MS
+        - (pygame.time.get_ticks() - last_healing_item_used_at),
+    )
+    if heal_cooldown_remaining > 0:
+        progress_rect = pygame.Rect(
+            healing_panel.x + 12,
+            healing_panel.bottom - 10,
+            healing_panel.width - 24,
+            4,
+        )
+        pygame.draw.rect(display, (30, 55, 42), progress_rect, border_radius=2)
+        filled_width = round(
+            progress_rect.width
+            * (1 - heal_cooldown_remaining / HEAL_ITEM_COOLDOWN_MS)
+        )
+        if filled_width > 0:
+            pygame.draw.rect(
+                display,
+                (125, 240, 155),
+                (progress_rect.x, progress_rect.y, filled_width, progress_rect.height),
+                border_radius=2,
+            )
+        cooldown_text = KillFeedFont.render(
+            f"회복 대기 {heal_cooldown_remaining / 1000:.1f}초",
+            True,
+            (255, 205, 135),
+        )
+        display.blit(
+            cooldown_text,
+            cooldown_text.get_rect(
+                midright=(healing_panel.right - 10, healing_panel.y - 13)
+            ),
+        )
 
     if coordinate_overlay_enabled:
         player_world_x, player_world_y = get_player_world_center(

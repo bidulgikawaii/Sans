@@ -1,7 +1,9 @@
 import math
+import time
 import pygame
 from FontAssets import get_game_font
 from Config import (
+    TELEPORT_COOLDOWN_MS,
     SPIRIT_TRIAL_CLONE_BLINK_START_MS,
     SPIRIT_TRIAL_CLONE_LIFETIME_MS,
     WARD_DISPLAY_RADIUS,
@@ -383,10 +385,9 @@ def draw_ammo_status(
 ):
     config = weapon_state.config
     name_text = font.render(config.name, True, (255, 220, 120))
-    if weapon_state.unlimited_ammo:
-        ammo_label = "탄창 무제한"
-    elif weapon_state.is_reloading_now():
-        ammo_label = "재장전 중..."
+    if weapon_state.is_reloading_now():
+        remaining_seconds = max(0, weapon_state.reload_finished_at - time.monotonic())
+        ammo_label = f"재장전 중... {remaining_seconds:.1f}초"
     else:
         ammo_label = f"탄창 {weapon_state.magazine_ammo}/{config.magazine_size}"
     ammo_text = font.render(
@@ -395,8 +396,8 @@ def draw_ammo_status(
         (255, 180, 120) if weapon_state.is_reloading_now() else (255, 255, 255),
     )
     reserve_label = (
-        "예비 탄약 무제한"
-        if weapon_state.unlimited_ammo
+        "예비 탄약 ∞"
+        if weapon_state.infinite_reserve or weapon_state.unlimited_ammo
         else f"예비 탄약 {weapon_state.reserve_ammo}"
     )
     reserve_text = font.render(reserve_label, True, (190, 220, 255))
@@ -418,6 +419,19 @@ def draw_ammo_status(
     surface.blit(name_text, name_rect)
     surface.blit(ammo_text, ammo_rect)
     surface.blit(reserve_text, reserve_rect)
+    if weapon_state.is_reloading_now():
+        progress_rect = pygame.Rect(panel_x + 12, panel_y + panel_size[1] - 6, panel_size[0] - 24, 4)
+        pygame.draw.rect(surface, (45, 40, 35), progress_rect, border_radius=2)
+        duration = max(0.1, weapon_state.reload_finished_at - weapon_state.reload_started_at)
+        progress = 1 - max(0, weapon_state.reload_finished_at - time.monotonic()) / duration
+        fill_width = max(0, min(progress_rect.width, round(progress_rect.width * progress)))
+        if fill_width:
+            pygame.draw.rect(
+                surface,
+                (255, 180, 100),
+                (progress_rect.x, progress_rect.y, fill_width, progress_rect.height),
+                border_radius=2,
+            )
 
 
 def draw_ward(surface, ward_x, ward_y, camera_x, camera_y, zoom, image=None):
@@ -566,6 +580,16 @@ def draw_quick_slot_cooldowns(surface, slots, cooldowns, font):
         if end_time <= now:
             continue
         remain = max(0.0, (end_time - now) / 1000.0)
+        if slot.assigned_skill == "텔포":
+            draw_cooldown_indicator(
+                surface,
+                slot.rect,
+                end_time - now,
+                TELEPORT_COOLDOWN_MS,
+                font,
+                (180, 255, 180),
+            )
+            continue
         overlay_size = (slot.rect.width, slot.rect.height)
         overlay = _cooldown_overlays.get(overlay_size)
         if overlay is None:
@@ -575,6 +599,36 @@ def draw_quick_slot_cooldowns(surface, slots, cooldowns, font):
         surface.blit(overlay, slot.rect.topleft)
         text = font.render(f"{remain:.1f}s", True, (255, 255, 255))
         surface.blit(text, (slot.rect.centerx - text.get_width() / 2, slot.rect.centery - 8))
+
+
+def draw_cooldown_indicator(
+    surface, rect, remaining_ms, duration_ms, font, color=(180, 255, 180)
+):
+    """Dim an item and show its remaining cooldown as a shrinking radial arc."""
+    remaining = max(0, min(duration_ms, remaining_ms))
+    if duration_ms <= 0 or remaining <= 0:
+        return
+    ratio = remaining / duration_ms
+    overlay_size = rect.size
+    overlay = _cooldown_overlays.get(overlay_size)
+    if overlay is None:
+        overlay = pygame.Surface(overlay_size, pygame.SRCALPHA)
+        pygame.draw.rect(
+            overlay, (0, 0, 0, 170), overlay.get_rect(), border_radius=8
+        )
+        _cooldown_overlays[overlay_size] = overlay
+    surface.blit(overlay, rect.topleft)
+    ring_rect = rect.inflate(-10, -10)
+    pygame.draw.arc(
+        surface,
+        color,
+        ring_rect,
+        -math.pi / 2,
+        -math.pi / 2 + math.tau * ratio,
+        max(2, rect.width // 18),
+    )
+    text = font.render(f"{remaining / 1000:.1f}s", True, (255, 255, 255))
+    surface.blit(text, text.get_rect(center=rect.center))
 
 
 def draw_damage_numbers(surface, damage_numbers, camera_x, camera_y, zoom, font, now):

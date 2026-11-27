@@ -158,6 +158,7 @@ class WeaponState:
         self.magazine_ammo = WEAPONS[weapon_id].magazine_size
         self.reserve_ammo = WEAPONS[weapon_id].reserve_ammo
         self.unlimited_ammo = False
+        self.infinite_reserve = False
         self._ammo_by_weapon = {
             weapon_id: (self.magazine_ammo, self.reserve_ammo),
         }
@@ -195,6 +196,7 @@ class WeaponState:
             self.weapon_id = weapon_id
         config = self.config
         self.unlimited_ammo = False
+        self.infinite_reserve = False
         self.magazine_ammo = config.magazine_size
         self.reserve_ammo = config.reserve_ammo
         self._ammo_by_weapon = {
@@ -216,6 +218,9 @@ class WeaponState:
             self.reloading = False
             self.reload_started_at = 0.0
             self.reload_finished_at = 0.0
+
+    def set_infinite_reserve(self, enabled):
+        self.infinite_reserve = bool(enabled)
 
     def reset_weapon_ammo(self, weapon_id):
         if weapon_id not in WEAPONS:
@@ -323,7 +328,7 @@ class WeaponState:
             return False
         if self.magazine_ammo >= self.config.magazine_size:
             return False
-        if self.reserve_ammo <= 0:
+        if not self.infinite_reserve and self.reserve_ammo <= 0:
             return False
 
         now = time.monotonic()
@@ -346,7 +351,11 @@ class WeaponState:
             return True
 
         missing = self.config.magazine_size - self.magazine_ammo
-        loaded = min(missing, self.reserve_ammo)
+        loaded = (
+            missing
+            if self.infinite_reserve
+            else min(missing, self.reserve_ammo)
+        )
         if loaded <= 0:
             self.reloading = False
             self.reload_started_at = 0.0
@@ -354,7 +363,8 @@ class WeaponState:
             return False
 
         self.magazine_ammo += loaded
-        self.reserve_ammo -= loaded
+        if not self.infinite_reserve:
+            self.reserve_ammo -= loaded
         self.reloading = False
         self.reload_started_at = 0.0
         self.reload_finished_at = 0.0
@@ -366,4 +376,5 @@ class WeaponState:
     def ammo_text(self):
         if self.reloading:
             return f"재장전 {self.config.name}..."
-        return f"{self.magazine_ammo}/{self.reserve_ammo}"
+        reserve = "∞" if self.infinite_reserve else self.reserve_ammo
+        return f"{self.magazine_ammo}/{reserve}"

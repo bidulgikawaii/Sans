@@ -127,11 +127,6 @@ class Imageload:
             )
         else:
             self.GoldenRevolver = None
-        self.LaserGunEffect = self._load_animation(
-            "sprite_",
-            (112, 64),
-            directory="Laser_Gun_Effect",
-        )
         self.CooldownReady = self._load_animation(
             "cooldown-ready_",
             directory="cooldown-ready-frames",
@@ -457,9 +452,6 @@ class Imageload:
 
     def GetGoldenSunFrames(self):
         return self.GoldenSun
-
-    def GetLaserGunEffectFrames(self):
-        return self.LaserGunEffect
 
     def GetCooldownReadyFrames(self):
         return self.CooldownReady

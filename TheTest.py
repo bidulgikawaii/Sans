@@ -1460,7 +1460,7 @@ def ModeSelectView():
     button_rects = main_screen.draw_mode_select()
     if pygame.time.get_ticks() < lobby_notice_until:
         notice = GuiFont.render(lobby_notice, True, (255, 220, 140))
-        display.blit(notice, notice.get_rect(center=(ScreenX // 2, ScreenY - 72)))
+        display.blit(notice, notice.get_rect(center=(ScreenX // 2, ScreenY - 142)))
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -2369,6 +2369,7 @@ def activate_quick_slot(key, reinstall=False):
             scale = TELEPORT_MAX_DISTANCE / target_distance
             target_x = old_x + delta_x * scale
             target_y = old_y + delta_y * scale
+            target_distance = TELEPORT_MAX_DISTANCE
         landing = TileGene.find_teleport_landing(
             target_x,
             target_y,
@@ -2376,6 +2377,7 @@ def activate_quick_slot(key, reinstall=False):
             target_y - old_y,
             my_player.rect.width,
             my_player.rect.height,
+            max_distance=TELEPORT_MAX_DISTANCE - target_distance,
         )
         if landing is not None and math.hypot(
             landing[0] - old_x, landing[1] - old_y
@@ -4930,6 +4932,29 @@ def GameFrame(practice_mode: bool = False):
         pygame.draw.line(display, (40, 190, 255), start, end, middle_width)
         pygame.draw.line(display, (225, 250, 255), start, end, core_width)
         if not charging:
+            ion_frames = IML.GetIonCannonFrames()
+            if ion_frames:
+                frame = ion_frames[(now // 50) % len(ion_frames)]
+                beam_length = math.hypot(end[0] - start[0], end[1] - start[1])
+                frame = _scale_cached(
+                    frame,
+                    (
+                        max(1, round(beam_length)),
+                        max(1, round(180 * camera_zoom * pulse)),
+                    ),
+                )
+                frame = pygame.transform.rotate(
+                    frame, -math.degrees(beam["angle"])
+                )
+                display.blit(
+                    frame,
+                    frame.get_rect(
+                        center=(
+                            round((start[0] + end[0]) / 2),
+                            round((start[1] + end[1]) / 2),
+                        )
+                    ),
+                )
             progress = min(
                 1.0,
                 max(0.0, (now - beam["fires_at"]) / max(1, beam["until"] - beam["fires_at"])),

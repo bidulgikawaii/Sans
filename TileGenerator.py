@@ -735,8 +735,12 @@ class TileGenerator(TileRenderingMixin):
         direction_x /= direction_length
         direction_y /= direction_length
         step = max(4, self.tile_size // 4)
-        search_distance = max_distance or self.tile_size * 8
-        for distance in range(step, search_distance + step, step):
+        search_distance = (
+            self.tile_size * 8
+            if max_distance is None
+            else max(0, max_distance)
+        )
+        for distance in range(step, search_distance + 1, step):
             landing_x = target_x + direction_x * distance
             landing_y = target_y + direction_y * distance
             if not (
